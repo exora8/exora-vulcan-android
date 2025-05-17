@@ -1,10 +1,10 @@
 import requests
-# pandas diganti dengan list of dictionaries
+# pandas diganti dengan list of dictionaries lebih friendly ke termux
 import time
 import json
 import os
 import logging
-from datetime import datetime # datetime sudah diimport dengan benar
+from datetime import datetime, timedelta # datetime sudah diimport dengan benar, tambahkan timedelta
 import smtplib # Untuk email
 from email.mime.text import MIMEText # Untuk email
 import sys # Untuk cek platform (beep)
@@ -28,10 +28,12 @@ console_formatter = logging.Formatter(f'%(asctime)s - {AnsiColors.BOLD}%(levelna
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# File Handler (selalu append)
 fh = logging.FileHandler("trading_log.txt", mode='a')
 fh.setFormatter(file_formatter)
 logger.addHandler(fh)
 
+# Console Handler
 ch = logging.StreamHandler()
 ch.setFormatter(console_formatter)
 logger.addHandler(ch)
@@ -39,7 +41,8 @@ logger.addHandler(ch)
 
 SETTINGS_FILE = "settings.json"
 CRYPTOCOMPARE_MAX_LIMIT = 1999 # Maksimum limit data dari CryptoCompare API per request
-INITIAL_HISTORICAL_BARS_TO_FETCH = 5000 # NEW: Jumlah bar historis awal yang diinginkan
+# INITIAL_HISTORICAL_BARS_TO_FETCH = 5000 # DIHAPUS, digantikan logika BIG DATA
+TARGET_BIG_DATA_CANDLES = 2500 # Target jumlah candle untuk fitur BIG DATA
 
 # --- FUNGSI BEEP ---
 def play_notification_sound():
@@ -48,8 +51,8 @@ def play_notification_sound():
             import winsound
             winsound.Beep(1000, 500)
         else: # Linux, macOS, Termux
-            print('\a', end='', flush=True)
-            time.sleep(0.2)
+            print('\a', end='', flush=True) # Bell character
+            time.sleep(0.2) # Short pause for distinct beeps if called rapidly
             print('\a', end='', flush=True)
     except Exception as e:
         logging.warning(f"Tidak bisa memainkan suara notifikasi: {e}")
@@ -117,7 +120,12 @@ def settings_menu(current_settings):
         tf_input = (input(f"Timeframe (minute/hour/day) [{current_settings.get('timeframe','hour')}]: ") or current_settings.get('timeframe','hour')).lower()
         if tf_input in ['minute', 'hour', 'day']: new_settings["timeframe"] = tf_input
         else: print("Timeframe tidak valid."); new_settings["timeframe"] = current_settings.get('timeframe','hour')
-        new_settings["refresh_interval_seconds"] = int(input(f"Interval Refresh (detik) [{current_settings.get('refresh_interval_seconds',60)}]: ") or current_settings.get('refresh_interval_seconds',60))
+        
+        # Refresh interval hanya relevan setelah pengumpulan BIG DATA selesai
+        min_refresh_val = 15 # Minimum refresh interval yang wajar
+        refresh_input = input(f"Interval Refresh (detik, setelah {TARGET_BIG_DATA_CANDLES} candle terkumpul) [{current_settings.get('refresh_interval_seconds',60)}]: ")
+        new_settings["refresh_interval_seconds"] = max(min_refresh_val, int(refresh_input or current_settings.get('refresh_interval_seconds',60)))
+
 
         print(f"\n{AnsiColors.HEADER}-- Parameter Pivot --{AnsiColors.ENDC}")
         new_settings["left_strength"] = int(input(f"Left Strength [{current_settings.get('left_strength',50)}]: ") or current_settings.get('left_strength',50))
@@ -148,39 +156,36 @@ def settings_menu(current_settings):
         print(f"{AnsiColors.RED}Input tidak valid. Pengaturan tidak diubah.{AnsiColors.ENDC}")
         return current_settings
 
-# --- FUNGSI PENGAMBILAN DATA --- (MODIFIED FOR PAGINATION TO FETCH MORE BARS)
+# --- FUNGSI PENGAMBILAN DATA ---
 def fetch_candles(symbol, currency, total_limit_desired, exchange_name, api_key, timeframe="hour"):
     all_accumulated_candles = []
-    current_to_ts = None  # Timestamp for pagination; None for the first (most recent) request
+    current_to_ts = None
 
     if timeframe == "minute": api_endpoint = "histominute"
     elif timeframe == "day": api_endpoint = "histoday"
-    else: api_endpoint = "histohour"
+    else: api_endpoint = "histohour" # Default to hour
 
     url = f"https://min-api.cryptocompare.com/data/v2/{api_endpoint}"
-
-    logging.info(f"Memulai pengambilan data: target {total_limit_desired} candle untuk {symbol}-{currency} TF {timeframe}.")
+    
+    # Log detail hanya jika mengambil banyak data (bukan update kecil)
+    if total_limit_desired > 10: # Threshold for detailed logging
+        logging.info(f"Memulai pengambilan data: target {total_limit_desired} candle untuk {symbol}-{currency} TF {timeframe}.")
 
     while len(all_accumulated_candles) < total_limit_desired:
         candles_still_needed = total_limit_desired - len(all_accumulated_candles)
-        
-        if current_to_ts is None: # First API call (for the most recent data)
-            limit_for_this_api_call = min(candles_still_needed, CRYPTOCOMPARE_MAX_LIMIT)
-        else: # Subsequent API calls (for older data)
-              # We request `candles_still_needed + 1` because one candle will be an overlap from the previous batch's oldest candle
-              # This is capped by CRYPTOCOMPARE_MAX_LIMIT
-            limit_for_this_api_call = min(candles_still_needed + 1, CRYPTOCOMPARE_MAX_LIMIT)
-            # If we only need 1 more distinct candle, candles_still_needed = 1. We request min(1+1, MAX_LIMIT)=2.
-            # This is to ensure we get at least one *new* candle after removing the overlap.
+        limit_for_this_api_call = min(candles_still_needed, CRYPTOCOMPARE_MAX_LIMIT)
 
-        if limit_for_this_api_call <= 0: # Should be caught by loop condition, but as safeguard
-            break
-        
-        # If after accounting for overlap, we'd request 1 (meaning we need 0 new candles), break.
-        # This can happen if candles_still_needed is 0, then limit_for_this_api_call is min(1, MAX_LIMIT)=1.
-        if current_to_ts is not None and limit_for_this_api_call == 1 and candles_still_needed == 0:
-             break
+        if current_to_ts is not None: # For subsequent calls in pagination
+            # Request one more than needed to handle potential overlap if we need more than 1.
+            # If candles_still_needed = 1, limit_for_this_api_call is 1.
+            # If candles_still_needed > 1, we ask for min(candles_still_needed + 1, MAX_LIMIT)
+            # This logic is more for fetching *older* data.
+            # For simple "get latest N", toTs is None and this isn't hit.
+            if candles_still_needed > 1 :
+                 limit_for_this_api_call = min(candles_still_needed + 1, CRYPTOCOMPARE_MAX_LIMIT)
 
+
+        if limit_for_this_api_call <= 0: break
 
         params = {
             "fsym": symbol, "tsym": currency,
@@ -193,7 +198,8 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, api_key,
             params["toTs"] = current_to_ts
         
         try:
-            logging.debug(f"Fetching data batch from: {url} with params: {params}")
+            if total_limit_desired > 10: # Only log for large fetches
+                logging.debug(f"Fetching data batch from: {url} with params: {params}")
             response = requests.get(url, params=params)
             response.raise_for_status() 
             data = response.json()
@@ -203,12 +209,14 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, api_key,
                 break 
             
             if 'Data' not in data or 'Data' not in data['Data'] or not data['Data']['Data']:
-                logging.info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil sejauh ini: {len(all_accumulated_candles)}.")
-                break
+                if total_limit_desired > 10:
+                    logging.info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.")
+                break # No more data or unexpected format
             
             raw_candles_from_api = data['Data']['Data']
-            if not raw_candles_from_api:
-                logging.info(f"API mengembalikan list candle kosong di batch ini. Total diambil sejauh ini: {len(all_accumulated_candles)}.")
+            if not raw_candles_from_api: # API returned empty list
+                if total_limit_desired > 10:
+                    logging.info(f"API mengembalikan list candle kosong. Total diambil: {len(all_accumulated_candles)}.")
                 break
 
             batch_candles_list = []
@@ -221,53 +229,45 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, api_key,
                 }
                 batch_candles_list.append(candle)
             
-            # API returns candles with index 0 being the oldest in the batch.
-            # batch_candles_list is [Oldest_In_Batch, ..., Newest_In_Batch]
-            
             if current_to_ts is not None and all_accumulated_candles and batch_candles_list:
-                # Newest candle in this older batch (batch_candles_list[-1]) might duplicate
-                # the oldest candle in our main list (all_accumulated_candles[0])
                 if batch_candles_list[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']:
-                    logging.debug(f"Menghapus candle tumpang tindih (overlap) dari paginasi: {batch_candles_list[-1]['timestamp']}")
+                    if total_limit_desired > 10: logging.debug(f"Menghapus candle tumpang tindih: {batch_candles_list[-1]['timestamp']}")
                     batch_candles_list.pop() 
             
-            if not batch_candles_list and current_to_ts is not None : # If batch became empty after overlap removal
-                logging.info("Batch candle menjadi kosong setelah pemeriksaan overlap atau memang kosong. Tidak ada candle baru yang unik untuk ditambahkan.")
+            if not batch_candles_list and current_to_ts is not None :
+                if total_limit_desired > 10: logging.info("Batch menjadi kosong setelah overlap removal.")
                 break
 
-            all_accumulated_candles = batch_candles_list + all_accumulated_candles # Prepend new (older) candles
-
-            # Set to_ts for the next iteration using the timestamp of the oldest candle from this raw batch
-            current_to_ts = raw_candles_from_api[0]['time']
+            all_accumulated_candles = batch_candles_list + all_accumulated_candles 
+            current_to_ts = raw_candles_from_api[0]['time'] # Oldest candle's time for next pagination
 
             if len(raw_candles_from_api) < limit_for_this_api_call:
-                # If API returned fewer candles than requested (limit_for_this_api_call includes the one for overlap)
-                logging.info(f"API mengembalikan {len(raw_candles_from_api)} candle, kurang dari yang diminta ({limit_for_this_api_call}). Mengasumsikan akhir dari histori.")
-                break
+                if total_limit_desired > 10: logging.info(f"API mengembalikan < limit. Akhir histori tercapai.")
+                break # Reached the end of available history
             
-            if len(all_accumulated_candles) >= total_limit_desired:
-                break 
+            if len(all_accumulated_candles) >= total_limit_desired: break 
 
-            if len(all_accumulated_candles) < total_limit_desired : # only sleep if we need more data
-                logging.debug(f"Mengambil {len(batch_candles_list)} candle baru (unik). Total sekarang: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay sebelum request berikutnya...")
-                time.sleep(0.3) # Be polite to the API
+            if len(all_accumulated_candles) < total_limit_desired and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT : # only sleep if we need more data AND it's a large historical fetch
+                if total_limit_desired > 10: logging.debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...")
+                time.sleep(0.3) 
 
         except requests.exceptions.RequestException as e:
             logging.error(f"{AnsiColors.RED}Kesalahan koneksi saat mengambil batch: {e}{AnsiColors.ENDC}")
             break 
         except Exception as e:
-            logging.error(f"{AnsiColors.RED}Error dalam fetch_candles (batch processing): {e}{AnsiColors.ENDC}")
+            logging.error(f"{AnsiColors.RED}Error dalam fetch_candles: {e}{AnsiColors.ENDC}")
             logging.exception("Traceback Error:")
             break 
 
     if len(all_accumulated_candles) > total_limit_desired:
-        all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
+        all_accumulated_candles = all_accumulated_candles[-total_limit_desired:] # Trim if too many (e.g. from a single large call)
     
-    logging.info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} candle diambil (target: {total_limit_desired}).")
+    if total_limit_desired > 10:
+        logging.info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} candle diambil (target: {total_limit_desired}).")
     return all_accumulated_candles
 
 
-# --- LOGIKA STRATEGI --- (MODIFIED: NO PANDAS)
+# --- LOGIKA STRATEGI ---
 strategy_state = {
     "last_signal_type": 0, "final_pivot_high_price_confirmed": None, "final_pivot_low_price_confirmed": None,
     "high_price_for_fib": None, "high_bar_index_for_fib": None, "active_fib_level": None,
@@ -284,26 +284,26 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
         is_pivot = True
         # Cek candle di kiri
         for j in range(1, left_strength + 1):
-            if series_list[i-j] is None or series_list[i] is None: # Handle None values
+            if series_list[i-j] is None or series_list[i] is None: 
                 is_pivot = False; break
             if is_high:
                 if series_list[i] <= series_list[i-j]: is_pivot = False; break
-            else: # is_low
+            else: 
                 if series_list[i] >= series_list[i-j]: is_pivot = False; break
         if not is_pivot: continue
         # Cek candle di kanan
         for j in range(1, right_strength + 1):
-            if series_list[i+j] is None or series_list[i] is None: # Handle None values
+            if series_list[i+j] is None or series_list[i] is None: 
                 is_pivot = False; break
             if is_high:
                 if series_list[i] < series_list[i+j]: is_pivot = False; break 
-            else: # is_low
+            else: 
                 if series_list[i] > series_list[i+j]: is_pivot = False; break 
         if is_pivot:
             pivots[i] = series_list[i] 
     return pivots
 
-def run_strategy_logic(candles_history, settings): # candles_history adalah list of dict
+def run_strategy_logic(candles_history, settings): 
     global strategy_state 
     
     strategy_state["final_pivot_high_price_confirmed"] = None
@@ -312,12 +312,11 @@ def run_strategy_logic(candles_history, settings): # candles_history adalah list
     left_strength = settings['left_strength']
     right_strength = settings['right_strength']
     
-    required_keys = ['high', 'low', 'open', 'close']
+    required_keys = ['high', 'low', 'open', 'close', 'timestamp']
     if not candles_history or not all(key in candles_history[0] for key in required_keys if candles_history[0]):
         logging.warning(f"{AnsiColors.ORANGE}Data candle kosong/kurang kunci di run_strategy_logic.{AnsiColors.ENDC}")
         return
 
-    # Ekstrak series harga High dan Low dari list of dictionaries
     high_prices = [c['high'] for c in candles_history]
     low_prices = [c['low'] for c in candles_history]
 
@@ -325,9 +324,8 @@ def run_strategy_logic(candles_history, settings): # candles_history adalah list
     raw_pivot_lows  = find_pivots(low_prices,  left_strength, right_strength, is_high=False)
     
     current_bar_index_in_list = len(candles_history) - 1 
-    if current_bar_index_in_list < 0 : return # Seharusnya sudah dicek oleh 'not candles_history'
+    if current_bar_index_in_list < 0 : return
 
-    # Index di mana event pivot terkonfirmasi (setelah right_strength bar)
     idx_pivot_event_high = current_bar_index_in_list - right_strength
     raw_pivot_high_price_at_event = None
     if 0 <= idx_pivot_event_high < len(raw_pivot_highs):
@@ -350,8 +348,7 @@ def run_strategy_logic(candles_history, settings): # candles_history adalah list
         pivot_timestamp = candles_history[idx_pivot_event_low]['timestamp']
         logging.info(f"{AnsiColors.CYAN}PIVOT LOW:  {strategy_state['final_pivot_low_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}")
 
-    current_candle = candles_history[current_bar_index_in_list] # Ini adalah dictionary candle terakhir
-    # Pastikan semua harga ada di current_candle
+    current_candle = candles_history[current_bar_index_in_list] 
     if any(current_candle.get(k) is None for k in ['open', 'high', 'low', 'close']):
         logging.warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp')}. Skip evaluasi.")
         return
@@ -372,11 +369,9 @@ def run_strategy_logic(candles_history, settings): # candles_history adalah list
                 calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price) / 2.0
                 is_fib_late = False
                 if settings["enable_secure_fib"]:
-                    price_to_check_key = settings["secure_fib_check_price"].lower() # 'close' atau 'high'
-                    if price_to_check_key not in current_candle or current_candle[price_to_check_key] is None:
-                        price_to_check_key = 'close' # Fallback
+                    price_to_check_key = settings["secure_fib_check_price"].lower() 
+                    price_val_current_candle = current_candle.get(price_to_check_key, current_candle.get('close')) # Fallback to close
                     
-                    price_val_current_candle = current_candle[price_to_check_key]
                     if price_val_current_candle is not None and price_val_current_candle > calculated_fib_level:
                         is_fib_late = True
                 
@@ -417,15 +412,14 @@ def run_strategy_logic(candles_history, settings): # candles_history adalah list
             strategy_state["active_fib_level"] = None; strategy_state["active_fib_line_start_index"] = None
 
     if strategy_state["position_size"] > 0:
-        # Pastikan highest_price_for_trailing adalah float, bukan None
         current_high_for_trailing = strategy_state.get("highest_price_for_trailing", current_candle['high'])
-        if current_high_for_trailing is None: current_high_for_trailing = current_candle['high'] # Fallback if None
+        if current_high_for_trailing is None: current_high_for_trailing = current_candle['high'] 
 
         strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
         
         if not strategy_state["trailing_tp_active_custom"] and strategy_state["entry_price_custom"] is not None:
             profit_percent = 0
-            if strategy_state["entry_price_custom"] != 0: # Hindari ZeroDivisionError
+            if strategy_state["entry_price_custom"] != 0: 
                  profit_percent = ((strategy_state["highest_price_for_trailing"] - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
             
             if profit_percent >= settings["profit_target_percent_activation"]:
@@ -484,15 +478,15 @@ def run_strategy_logic(candles_history, settings): # candles_history adalah list
         logging.debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, Current SL: {sl_display_str}")
 
 
-# --- FUNGSI UTAMA TRADING LOOP --- (MODIFIED: NO PANDAS)
+# --- FUNGSI UTAMA TRADING LOOP --- (MODIFIED FOR BIG DATA FEATURE)
 def start_trading(settings):
     display_pair = f"{settings.get('symbol','N/A')}-{settings.get('currency','N/A')}"
     display_exchange = settings.get('exchange','N/A')
     display_timeframe = settings.get('timeframe','N/A')
-    refresh_interval = settings.get('refresh_interval_seconds',0)
     
     logging.info(f"{AnsiColors.HEADER}================ STRATEGY START ================{AnsiColors.ENDC}")
-    logging.info(f"Pair: {AnsiColors.BOLD}{display_pair}{AnsiColors.ENDC} | Exchange: {AnsiColors.BOLD}{display_exchange}{AnsiColors.ENDC} | TF: {AnsiColors.BOLD}{display_timeframe}{AnsiColors.ENDC} | Refresh: {AnsiColors.BOLD}{refresh_interval}s{AnsiColors.ENDC}")
+    logging.info(f"Pair: {AnsiColors.BOLD}{display_pair}{AnsiColors.ENDC} | Exchange: {AnsiColors.BOLD}{display_exchange}{AnsiColors.ENDC} | TF: {AnsiColors.BOLD}{display_timeframe}{AnsiColors.ENDC}")
+    logging.info(f"Target Data: {AnsiColors.BOLD}{TARGET_BIG_DATA_CANDLES}{AnsiColors.ENDC} candle")
     logging.info(f"Params: LeftStr={settings.get('left_strength',0)}, RightStr={settings.get('right_strength',0)}, TrailActiv={settings.get('profit_target_percent_activation',0.0)}%, TrailGap={settings.get('trailing_stop_gap_percent',0.0)}%, EmergSL={settings.get('emergency_sl_percent',0.0)}%")
     logging.info(f"SecureFIB: {settings.get('enable_secure_fib',False)}, CheckPrice: {settings.get('secure_fib_check_price','N/A')}")
     if settings.get('enable_email_notifications'):
@@ -500,7 +494,6 @@ def start_trading(settings):
     else:
         logging.info(f"Email Notif: {AnsiColors.ORANGE}Nonaktif{AnsiColors.ENDC}")
     logging.info(f"{AnsiColors.HEADER}==============================================={AnsiColors.ENDC}")
-
 
     if settings.get('api_key',"") == "YOUR_API_KEY_HERE" or not settings.get('api_key',""):
         logging.error(f"{AnsiColors.RED}API Key belum diatur! Atur via menu Settings.{AnsiColors.ENDC}")
@@ -515,99 +508,138 @@ def start_trading(settings):
         "emergency_sl_level_custom": None, "position_size": 0,
     }
     
-    # MODIFIED: Menggunakan INITIAL_HISTORICAL_BARS_TO_FETCH untuk pengambilan data awal
-    all_candles_list = fetch_candles(settings.get('symbol'), settings.get('currency'), 
-                                     INITIAL_HISTORICAL_BARS_TO_FETCH, # MODIFIED HERE
-                                     settings.get('exchange'), settings.get('api_key'), settings.get('timeframe'))
+    big_data_collection_phase_active = True 
+    big_data_email_sent = False
+
+    # 1. Initial Fetch for BIG DATA mode: CRYPTOCOMPARE_MAX_LIMIT (1999)
+    logging.info(f"BIG DATA: Memulai pengambilan data awal ({CRYPTOCOMPARE_MAX_LIMIT} candle)...")
+    all_candles_list = fetch_candles(
+        settings.get('symbol'), settings.get('currency'),
+        CRYPTOCOMPARE_MAX_LIMIT, 
+        settings.get('exchange'), settings.get('api_key'), settings.get('timeframe')
+    )
 
     if not all_candles_list:
-        logging.error(f"{AnsiColors.RED}Tidak ada data awal. Periksa setting & koneksi. Menghentikan.{AnsiColors.ENDC}")
+        logging.error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal. Menghentikan.{AnsiColors.ENDC}")
         return
+    logging.info(f"BIG DATA: {len(all_candles_list)} candle awal diterima.")
 
-    logging.info(f"Memproses {max(0, len(all_candles_list) - 1)} candle historis awal untuk inisialisasi state...")
-    start_warmup_processing_idx = settings.get('left_strength',50) + settings.get('right_strength',150)
-    for i in range(start_warmup_processing_idx, len(all_candles_list) -1): 
-        historical_slice = all_candles_list[:i+1] 
-        if len(historical_slice) < start_warmup_processing_idx +1 : continue 
-        run_strategy_logic(historical_slice, settings)
-        if strategy_state["position_size"] > 0: 
-            strategy_state["position_size"] = 0; strategy_state["entry_price_custom"] = None 
-            strategy_state["emergency_sl_level_custom"] = None 
-            strategy_state["highest_price_for_trailing"] = None
-            strategy_state["trailing_tp_active_custom"] = False
-            strategy_state["current_trailing_stop_level"] = None
-            
-    logging.info(f"{AnsiColors.CYAN}Inisialisasi state selesai.{AnsiColors.ENDC}")
-    logging.info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ----------{AnsiColors.ENDC}")
+    # Warm-up state with initial candles
+    if all_candles_list:
+        logging.info(f"Memproses {max(0, len(all_candles_list) - 1)} candle historis awal untuk inisialisasi state...")
+        # The warm-up loop from original code:
+        start_warmup_processing_idx = settings.get('left_strength',50) + settings.get('right_strength',150)
+        # Ensure not to process if list is too short for even one pivot calc
+        # Warm up on slices, but don't take actions
+        # The loop processes up to the second to last candle for warm-up.
+        # The last candle will be processed in the main loop.
+        for i in range(start_warmup_processing_idx, len(all_candles_list) -1 ): 
+            historical_slice = all_candles_list[:i+1] 
+            if len(historical_slice) < start_warmup_processing_idx +1 : continue 
+            run_strategy_logic(historical_slice, settings)
+            if strategy_state["position_size"] > 0: # Reset any trade signals during warm-up
+                strategy_state["position_size"] = 0; strategy_state["entry_price_custom"] = None 
+                strategy_state["emergency_sl_level_custom"] = None 
+                strategy_state["highest_price_for_trailing"] = None
+                strategy_state["trailing_tp_active_custom"] = False
+                strategy_state["current_trailing_stop_level"] = None
+        logging.info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}")
+    else:
+        logging.warning("Tidak ada data awal untuk warm-up.")
 
     try:
         while True:
             current_loop_time = datetime.now()
-            logging.info(f"\n{AnsiColors.BOLD}--- Analisa Candle Baru ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) ---{AnsiColors.ENDC}")
-
-            last_candle_ts_before_fetch = all_candles_list[-1]['timestamp'] if all_candles_list else None
+            num_candles_before_fetch = len(all_candles_list)
             
-            # MODIFIED: Untuk update, kita fetch CRYPTOCOMPARE_MAX_LIMIT. Fungsi fetch_candles akan menanganinya sbg 1 batch.
-            new_candles_list = fetch_candles(settings.get('symbol'), settings.get('currency'), 
-                                             CRYPTOCOMPARE_MAX_LIMIT, # Fetch one standard batch for updates
-                                             settings.get('exchange'), settings.get('api_key'), settings.get('timeframe'))
-            
-            if not new_candles_list:
-                logging.warning(f"{AnsiColors.ORANGE}Gagal mengambil data baru atau tidak ada data baru saat ini. Mencoba lagi...{AnsiColors.ENDC}")
-                time.sleep(settings.get('refresh_interval_seconds',15))
-                continue
-            
-            merged_candles_dict = {c['timestamp']: c for c in all_candles_list} 
-            for candle in new_candles_list: 
-                merged_candles_dict[candle['timestamp']] = candle
-            all_candles_list = sorted(list(merged_candles_dict.values()), key=lambda c: c['timestamp']) 
-
-            processing_start_index = 0
-            if last_candle_ts_before_fetch:
-                idx_of_last_before_fetch = -1
-                for i_loop, candle in enumerate(all_candles_list):
-                    if candle['timestamp'] == last_candle_ts_before_fetch:
-                        idx_of_last_before_fetch = i_loop
-                        break
-                if idx_of_last_before_fetch != -1:
-                    processing_start_index = idx_of_last_before_fetch + 1 
-                else:
-                    logging.warning(f"{AnsiColors.ORANGE}Timestamp {last_candle_ts_before_fetch} tidak ditemukan setelah merge. Fallback: proses beberapa candle terakhir.{AnsiColors.ENDC}")
-                    min_hist_len = settings.get('left_strength',50) + settings.get('right_strength',150)
-                    processing_start_index = max(min_hist_len, len(all_candles_list) - 5)
-                    processing_start_index = max(0, processing_start_index) 
-            else:
-                idx = max(0, len(all_candles_list) - int(CRYPTOCOMPARE_MAX_LIMIT / 2)) # Example, might need tuning
-                min_hist_needed_from_start = settings.get('left_strength',50) + settings.get('right_strength',150)
-                processing_start_index = max(idx, min_hist_needed_from_start)
-
-
-            if processing_start_index >= len(all_candles_list):
-                ts_display = all_candles_list[-1]['timestamp'].strftime('%H:%M:%S') if all_candles_list else "N/A"
-                logging.info(f"Tidak ada candle baru untuk diproses (data terakhir @ {ts_display}). Menunggu {settings.get('refresh_interval_seconds',15)} detik...")
-            else:
-                num_candles_to_process = len(all_candles_list) - processing_start_index
-                start_ts_str = all_candles_list[processing_start_index]['timestamp'].strftime('%H:%M')
-                end_ts_str = all_candles_list[-1]['timestamp'].strftime('%H:%M')
-                logging.info(f"Memproses {AnsiColors.BOLD}{num_candles_to_process}{AnsiColors.ENDC} candle (dari indeks {processing_start_index}: {start_ts_str} hingga {end_ts_str}).")
+            effective_sleep_duration = 0
+            if big_data_collection_phase_active:
+                timeframe_setting = settings.get('timeframe', 'hour')
+                if timeframe_setting == "minute": effective_sleep_duration = 60
+                elif timeframe_setting == "day": effective_sleep_duration = 86400
+                else: effective_sleep_duration = 3600 # hour
                 
-                for i_slice_end_idx in range(processing_start_index, len(all_candles_list)):
-                    current_processing_slice = all_candles_list[:i_slice_end_idx + 1] 
-                    
-                    min_len_for_pivots = settings.get('left_strength',50) + settings.get('right_strength',150) + 1
-                    if len(current_processing_slice) < min_len_for_pivots: 
-                        continue 
-                    run_strategy_logic(current_processing_slice, settings)
+                logging.info(f"\n{AnsiColors.BOLD}--- PENGUMPULAN BIG DATA ({len(all_candles_list)}/{TARGET_BIG_DATA_CANDLES}) ---{AnsiColors.ENDC}")
+                logging.info(f"Menunggu ~{effective_sleep_duration}d untuk candle ({timeframe_setting}) berikutnya...")
+            else: 
+                effective_sleep_duration = settings.get('refresh_interval_seconds', 60)
+                logging.info(f"\n{AnsiColors.BOLD}--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(all_candles_list)} candles ---{AnsiColors.ENDC}")
+                logging.info(f"Menunggu {effective_sleep_duration}d untuk refresh berikutnya...")
+
+            time.sleep(effective_sleep_duration)
+
+            logging.info(f"Mengambil candle terbaru ({settings.get('symbol')}-{settings.get('currency')})...")
+            # Fetch 3 recent candles to ensure the latest closed one is captured.
+            new_candles_batch = fetch_candles(
+                settings.get('symbol'), settings.get('currency'),
+                3, 
+                settings.get('exchange'), settings.get('api_key'), settings.get('timeframe')
+            )
+
+            if not new_candles_batch:
+                logging.warning(f"{AnsiColors.ORANGE}Gagal mengambil data baru atau tidak ada data baru. Melanjutkan siklus...{AnsiColors.ENDC}")
+                continue
+
+            # Merge new candles using dictionary to handle updates to existing candles (e.g., last candle closing)
+            # and adding new ones, then sort.
+            merged_candles_dict = {c['timestamp']: c for c in all_candles_list}
+            for candle in new_candles_batch:
+                merged_candles_dict[candle['timestamp']] = candle 
             
-            # MODIFIED: Sesuaikan max_retained_candles jika INITIAL_HISTORICAL_BARS_TO_FETCH lebih besar
-            max_retained_candles = int(max(INITIAL_HISTORICAL_BARS_TO_FETCH, CRYPTOCOMPARE_MAX_LIMIT) * 1.5)
-            if len(all_candles_list) > max_retained_candles:
-                all_candles_list = all_candles_list[-max_retained_candles:]
-                logging.debug(f"Ukuran all_candles_list dipangkas menjadi {len(all_candles_list)} candle.")
+            all_candles_list_temp = sorted(list(merged_candles_dict.values()), key=lambda c: c['timestamp'])
+            
+            num_candles_after_fetch = len(all_candles_list_temp)
+            num_newly_added_or_updated = num_candles_after_fetch - num_candles_before_fetch
+            if all_candles_list and all_candles_list_temp and all_candles_list[-1]['timestamp'] == all_candles_list_temp[-1]['timestamp'] and all_candles_list[-1] != all_candles_list_temp[-1]:
+                 logging.info(f"Candle terakhir @{all_candles_list_temp[-1]['timestamp'].strftime('%H:%M')} diupdate.")
+                 # If only update, num_newly_added_or_updated might be 0 if no *new* timestamp candle added.
+                 # Consider it a "new data event" if the last candle changed.
+                 if num_newly_added_or_updated <=0 : num_newly_added_or_updated = 1 # Treat as one update for processing
+            
+            all_candles_list = all_candles_list_temp
 
-            logging.info(f"{AnsiColors.BOLD}--- Selesai Loop Analisa. Menunggu {settings.get('refresh_interval_seconds',15)} detik ---{AnsiColors.ENDC}")
-            time.sleep(settings.get('refresh_interval_seconds',15))
 
+            if num_newly_added_or_updated > 0 :
+                 logging.info(f"{num_newly_added_or_updated if num_candles_after_fetch > num_candles_before_fetch else 'Beberapa'} candle baru/diupdate. Total candle: {len(all_candles_list)}.")
+            else:
+                 logging.info("Tidak ada candle dengan timestamp baru. Candle terakhir mungkin telah diupdate jika masih dalam periode timeframe.")
+
+
+            # Manage candle list size and BIG DATA phase transition
+            if big_data_collection_phase_active:
+                if len(all_candles_list) >= TARGET_BIG_DATA_CANDLES:
+                    logging.info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI!{AnsiColors.ENDC}")
+                    if len(all_candles_list) > TARGET_BIG_DATA_CANDLES:
+                        all_candles_list = all_candles_list[-TARGET_BIG_DATA_CANDLES:] 
+                        logging.info(f"Jumlah candle dipangkas menjadi {len(all_candles_list)}.")
+                    
+                    if not big_data_email_sent:
+                        email_subject = "Data Downloading Complete!"
+                        pair_info = f"{settings.get('symbol','')}-{settings.get('currency','')}"
+                        email_body = f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_info}."
+                        send_email_notification(email_subject, email_body, settings)
+                        big_data_email_sent = True
+                    
+                    big_data_collection_phase_active = False 
+                    logging.info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS (dengan {TARGET_BIG_DATA_CANDLES} candles) ----------{AnsiColors.ENDC}")
+            else: # Normal operation, maintain TARGET_BIG_DATA_CANDLES
+                if len(all_candles_list) > TARGET_BIG_DATA_CANDLES:
+                    all_candles_list = all_candles_list[-TARGET_BIG_DATA_CANDLES:]
+                    logging.debug(f"Ukuran data candle dipertahankan {len(all_candles_list)}.")
+
+            # Run strategy logic
+            min_len_for_pivots = settings.get('left_strength', 50) + settings.get('right_strength', 150) + 1
+            if len(all_candles_list) >= min_len_for_pivots:
+                # Process if new candles were actually added/updated OR if still collecting (to update pivot search with new "current" bar)
+                if num_newly_added_or_updated > 0 or big_data_collection_phase_active : 
+                     logging.info(f"Menjalankan logika strategi dengan {len(all_candles_list)} candle...")
+                     run_strategy_logic(all_candles_list, settings) # Pass the whole list
+                elif not big_data_collection_phase_active: 
+                     last_c_time = all_candles_list[-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if all_candles_list else "N/A"
+                     logging.info(f"Tidak ada candle baru untuk diproses. Data terakhir @ {last_c_time}.")
+            else:
+                logging.info(f"Data ({len(all_candles_list)}) belum cukup utk analisa (min: {min_len_for_pivots}).")
+            
     except KeyboardInterrupt:
         logging.info(f"\n{AnsiColors.ORANGE}Proses trading dihentikan oleh pengguna.{AnsiColors.ENDC}")
     except Exception as e:
@@ -623,9 +655,19 @@ def main_menu():
         display_pair = f"{settings.get('symbol','N/A')}-{settings.get('currency','N/A')}"
         display_exchange = settings.get('exchange','N/A')
         display_timeframe = settings.get('timeframe','N/A')
-        refresh_interval = settings.get('refresh_interval_seconds',0)
+        
+        refresh_interval_display = "Sesuai Timeframe (Pengumpulan Data)"
+        if len(all_candles_list if 'all_candles_list' in globals() else []) >= TARGET_BIG_DATA_CANDLES : # Quick check if data likely collected
+             # This is a heuristic as all_candles_list is not directly in this scope always
+             # Better: rely on a more persistent state or pass it around. For display, this is an approximation.
+            refresh_interval_display = f"{settings.get('refresh_interval_seconds',0)}s (Operasi Normal)"
+
+
         print(f"\n{AnsiColors.HEADER}========= Crypto Strategy Runner ========={AnsiColors.ENDC}")
-        print(f"Pair: {AnsiColors.BOLD}{display_pair}{AnsiColors.ENDC} | Exch: {AnsiColors.BOLD}{display_exchange}{AnsiColors.ENDC} | TF: {AnsiColors.BOLD}{display_timeframe}{AnsiColors.ENDC} | Int: {AnsiColors.BOLD}{refresh_interval}s{AnsiColors.ENDC}")
+        print(f"Pair: {AnsiColors.BOLD}{display_pair}{AnsiColors.ENDC} | Exch: {AnsiColors.BOLD}{display_exchange}{AnsiColors.ENDC} | TF: {AnsiColors.BOLD}{display_timeframe}{AnsiColors.ENDC}")
+        # Note: refresh_interval_display here is a simplification, actual interval depends on runtime state.
+        # The `settings.get('refresh_interval_seconds',0)` is the one set by user for *after* data collection.
+        print(f"Target Data: {TARGET_BIG_DATA_CANDLES} candle | Refresh (setelah target): {settings.get('refresh_interval_seconds',0)}s")
         print("--------------------------------------")
         print(f"1. {AnsiColors.GREEN}Mulai Analisa Realtime{AnsiColors.ENDC}")
         print(f"2. {AnsiColors.ORANGE}Pengaturan{AnsiColors.ENDC}")
@@ -633,6 +675,11 @@ def main_menu():
         choice = input("Pilihan Anda: ")
 
         if choice == '1':
+            # Reset all_candles_list if we are starting a new session of trading
+            # This ensures that if start_trading is called multiple times without restarting the script,
+            # it doesn't reuse old candle data from a previous run.
+            if 'all_candles_list' in globals():
+                del globals()['all_candles_list'] 
             start_trading(settings)
         elif choice == '2':
             settings = settings_menu(settings)
@@ -643,4 +690,6 @@ def main_menu():
             print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
 
 if __name__ == "__main__":
+    # Initialize all_candles_list globally for the main_menu display heuristic, though it's primarily managed within start_trading
+    all_candles_list = [] 
     main_menu()
