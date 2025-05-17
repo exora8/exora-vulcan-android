@@ -8,6 +8,7 @@ import smtplib
 from email.mime.text import MIMEText
 import sys
 import uuid
+from pick import pick # <--- Tambahkan ini
 
 # --- ANSI COLOR CODES --- (Sama seperti sebelumnya)
 class AnsiColors:
@@ -26,7 +27,7 @@ class APIKeyError(Exception):
     """Custom exception for API key related errors."""
     pass
 
-# --- KONFIGURASI LOGGING --- (Sama, pastikan filter ada)
+# --- KONFIGURASI LOGGING ---
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 if logger.hasHandlers():
@@ -57,11 +58,15 @@ def log_error(message, pair_name="SYSTEM"): logger.error(message, extra={'pair_n
 def log_debug(message, pair_name="SYSTEM"): logger.debug(message, extra={'pair_name': pair_name})
 def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra={'pair_name': pair_name})
 
-
-SETTINGS_FILE = "settings_multiple_recovery.json" # Nama file baru
+SETTINGS_FILE = "settings_multiple_recovery.json"
 CRYPTOCOMPARE_MAX_LIMIT = 1999
 TARGET_BIG_DATA_CANDLES = 2500
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
+
+# --- FUNGSI CLEAR SCREEN ---
+def clear_screen():
+    """Membersihkan layar terminal."""
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 # --- API KEY MANAGER ---
 class APIKeyManager:
@@ -70,14 +75,13 @@ class APIKeyManager:
         if primary_key and primary_key != "YOUR_API_KEY_HERE" and primary_key != "YOUR_PRIMARY_KEY":
             self.keys.append(primary_key)
         if recovery_keys_list:
-            self.keys.extend([k for k in recovery_keys_list if k]) # Tambahkan recovery keys yang valid
+            self.keys.extend([k for k in recovery_keys_list if k])
 
         self.current_index = 0
         self.global_email_settings = global_settings_for_email or {}
         
         if not self.keys:
             log_warning("Tidak ada API key yang valid (primary atau recovery) yang dikonfigurasi.")
-            # Tidak raise error di sini, biarkan fetch_candles gagal jika dipanggil tanpa key
 
     def get_current_key(self):
         if not self.keys:
@@ -85,7 +89,7 @@ class APIKeyManager:
             return None
         if self.current_index < len(self.keys):
             return self.keys[self.current_index]
-        return None # Semua key sudah habis
+        return None
 
     def switch_to_next_key(self):
         if not self.keys: return None
@@ -94,7 +98,6 @@ class APIKeyManager:
         if self.current_index < len(self.keys):
             new_key_display = self.keys[self.current_index][:5] + "..." + self.keys[self.current_index][-3:] if len(self.keys[self.current_index]) > 8 else self.keys[self.current_index]
             log_info(f"{AnsiColors.ORANGE}Beralih ke API key berikutnya: Index {self.current_index} ({new_key_display}){AnsiColors.ENDC}")
-            # Kirim email notifikasi jika ada key baru dan email diaktifkan (secara global)
             if self.global_email_settings.get("enable_global_email_notifications_for_key_switch", False):
                 email_subject = "Peringatan: API Key CryptoCompare Diganti Otomatis"
                 email_body = (f"Skrip trading telah secara otomatis mengganti API key CryptoCompare.\n\n"
@@ -102,21 +105,16 @@ class APIKeyManager:
                               f"Sekarang menggunakan API key dengan index: {self.current_index}\n"
                               f"Key: ...{new_key_display[-8:]} (bagian akhir ditampilkan untuk identifikasi)\n\n"
                               f"Harap periksa status API key Anda di CryptoCompare.")
-                
-                # Gunakan fungsi send_email_notification yang ada, tapi butuh 'crypto_settings' palsu
-                # atau modifikasi send_email_notification untuk menerima settings global saja.
-                # Untuk sementara, kita buat dummy config untuk email global
                 dummy_email_cfg = {
-                    "enable_email_notifications": True, # Force enable for this specific notification
+                    "enable_email_notifications": True,
                     "email_sender_address": self.global_email_settings.get("email_sender_address"),
                     "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
-                    "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address")) # Prioritaskan admin
+                    "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
                 }
-                if all(dummy_email_cfg.values()): # Hanya kirim jika semua detail email global ada
-                     send_email_notification(email_subject, email_body, dummy_email_cfg) # Kirim ke admin/penerima utama
+                if all(dummy_email_cfg.values()):
+                     send_email_notification(email_subject, email_body, dummy_email_cfg)
                 else:
                     log_warning("Konfigurasi email global tidak lengkap untuk notifikasi pergantian API key.")
-
             return self.keys[self.current_index]
         else:
             log_error(f"{AnsiColors.RED}{AnsiColors.BOLD}SEMUA API KEY TELAH HABIS/GAGAL! Tidak dapat mengambil data.{AnsiColors.ENDC}")
@@ -146,7 +144,7 @@ class APIKeyManager:
     def get_current_key_index(self):
         return self.current_index
 
-# --- FUNGSI BEEP & EMAIL --- (Sama seperti sebelumnya)
+# --- FUNGSI BEEP & EMAIL ---
 def play_notification_sound():
     try:
         if sys.platform == "win32":
@@ -159,7 +157,7 @@ def play_notification_sound():
     except Exception as e:
         log_warning(f"Tidak bisa memainkan suara notifikasi: {e}")
 
-def send_email_notification(subject, body_text, settings_for_email): # settings_for_email bisa crypto_settings atau dummy global
+def send_email_notification(subject, body_text, settings_for_email):
     if not settings_for_email.get("enable_email_notifications", False):
         return
 
@@ -168,7 +166,7 @@ def send_email_notification(subject, body_text, settings_for_email): # settings_
     receiver_email = settings_for_email.get("email_receiver_address")
 
     if not all([sender_email, sender_password, receiver_email]):
-        pair_name_ctx = settings_for_email.get('symbol', 'GLOBAL_EMAIL') # Konteks
+        pair_name_ctx = settings_for_email.get('symbol', 'GLOBAL_EMAIL')
         log_warning(f"Konfigurasi email tidak lengkap. Notifikasi email dilewati.", pair_name=pair_name_ctx)
         return
 
@@ -187,9 +185,8 @@ def send_email_notification(subject, body_text, settings_for_email): # settings_
         pair_name_ctx = settings_for_email.get('symbol', 'GLOBAL_EMAIL')
         log_error(f"{AnsiColors.RED}Gagal mengirim email notifikasi: {e}{AnsiColors.ENDC}", pair_name=pair_name_ctx)
 
-
 # --- FUNGSI PENGATURAN ---
-def get_default_crypto_config(): # Sama
+def get_default_crypto_config():
     return {
         "id": str(uuid.uuid4()), "enabled": True,
         "symbol": "BTC", "currency": "USD", "exchange": "CCCAGG",
@@ -205,10 +202,10 @@ def load_settings():
     default_api_settings = {
         "primary_key": "YOUR_PRIMARY_KEY",
         "recovery_keys": [],
-        "enable_global_email_notifications_for_key_switch": False, # Notifikasi jika key switch
-        "email_sender_address": "pengirim.global@gmail.com", # Email global untuk notif admin
+        "enable_global_email_notifications_for_key_switch": False,
+        "email_sender_address": "pengirim.global@gmail.com",
         "email_sender_app_password": "xxxx xxxx xxxx xxxx",
-        "email_receiver_address_admin": "admin.penerima@example.com" # Email admin untuk notif key
+        "email_receiver_address_admin": "admin.penerima@example.com"
     }
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
@@ -216,11 +213,10 @@ def load_settings():
                 settings = json.load(f)
                 if "api_settings" not in settings:
                     settings["api_settings"] = default_api_settings.copy()
-                else: # Pastikan semua sub-key ada di api_settings
+                else:
                     for k, v in default_api_settings.items():
                         if k not in settings["api_settings"]:
                             settings["api_settings"][k] = v
-
                 if "cryptos" not in settings or not isinstance(settings["cryptos"], list):
                     settings["cryptos"] = []
                 for crypto_cfg in settings["cryptos"]:
@@ -231,12 +227,13 @@ def load_settings():
                 log_error("Error membaca settings.json. Menggunakan default.")
     return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
 
-def save_settings(settings): # Sama
+def save_settings(settings):
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(settings, f, indent=4)
     log_info(f"{AnsiColors.CYAN}Pengaturan disimpan ke {SETTINGS_FILE}{AnsiColors.ENDC}")
 
-def _prompt_crypto_config(current_config): # Sama
+def _prompt_crypto_config(current_config): # Tetap menggunakan input() karena lebih cocok untuk field individual
+    clear_screen()
     new_config = current_config.copy()
     print(f"\n{AnsiColors.HEADER}--- Konfigurasi Crypto Pair ({new_config.get('symbol','BARU')}-{new_config.get('currency','BARU')}) ---{AnsiColors.ENDC}")
     
@@ -282,6 +279,7 @@ def _prompt_crypto_config(current_config): # Sama
 
 def settings_menu(current_settings):
     while True:
+        clear_screen()
         api_s = current_settings.get("api_settings", {})
         primary_key_display = api_s.get('primary_key', 'BELUM DIATUR')
         if len(primary_key_display) > 10: primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
@@ -289,50 +287,84 @@ def settings_menu(current_settings):
         recovery_keys = api_s.get('recovery_keys', [])
         num_recovery_keys = len(recovery_keys)
 
-        print(f"\n{AnsiColors.HEADER}--- Menu Pengaturan Utama ---{AnsiColors.ENDC}")
-        print(f"Primary API Key: {AnsiColors.CYAN}{primary_key_display}{AnsiColors.ENDC}")
-        print(f"Recovery API Keys: {AnsiColors.CYAN}{num_recovery_keys} tersimpan{AnsiColors.ENDC}")
-        print("------------------------------------")
-        print("Daftar Konfigurasi Crypto:")
-        # ... (sama seperti sebelumnya untuk list crypto) ...
+        title = f"{AnsiColors.HEADER}--- Menu Pengaturan Utama ---{AnsiColors.ENDC}\n"
+        title += f"Primary API Key: {AnsiColors.CYAN}{primary_key_display}{AnsiColors.ENDC}\n"
+        title += f"Recovery API Keys: {AnsiColors.CYAN}{num_recovery_keys} tersimpan{AnsiColors.ENDC}\n"
+        title += "------------------------------------\n"
+        title += "Daftar Konfigurasi Crypto:\n"
+        
         if not current_settings["cryptos"]:
-            print(f"  {AnsiColors.ORANGE}(Belum ada konfigurasi crypto){AnsiColors.ENDC}")
+            title += f"  {AnsiColors.ORANGE}(Belum ada konfigurasi crypto){AnsiColors.ENDC}\n"
         for i, crypto_conf in enumerate(current_settings["cryptos"]):
             status = f"{AnsiColors.GREEN}Aktif{AnsiColors.ENDC}" if crypto_conf.get('enabled', True) else f"{AnsiColors.RED}Nonaktif{AnsiColors.ENDC}"
-            print(f"  {i+1}. {AnsiColors.BOLD}{crypto_conf['symbol']}-{crypto_conf['currency']}{AnsiColors.ENDC} ({crypto_conf['timeframe']}) - {status}")
-        print("------------------------------------")
-        print(f"{AnsiColors.HEADER}--- Pengaturan API & Global ---{AnsiColors.ENDC}")
-        print("1. Atur Primary API Key")
-        print("2. Kelola Recovery API Keys")
-        print("3. Atur Email Global untuk Notifikasi Sistem (API Key Switch, dll)")
-        print(f"{AnsiColors.HEADER}--- Pengaturan Crypto Pair ---{AnsiColors.ENDC}")
-        print("4. Tambah Konfigurasi Crypto Baru")
-        print("5. Ubah Konfigurasi Crypto")
-        print("6. Hapus Konfigurasi Crypto")
-        print(f"{AnsiColors.HEADER}-----------------------------{AnsiColors.ENDC}")
-        print("x. Kembali ke Menu Utama")
-        choice = input("Pilihan Anda: ").lower()
+            title += f"  {i+1}. {AnsiColors.BOLD}{crypto_conf['symbol']}-{crypto_conf['currency']}{AnsiColors.ENDC} ({crypto_conf['timeframe']}) - {status}\n"
+        title += "------------------------------------\n"
+        title += "Pilih tindakan:"
+
+        options = [
+            f"{AnsiColors.HEADER}--- Pengaturan API & Global ---{AnsiColors.ENDC}",
+            "Atur Primary API Key",
+            "Kelola Recovery API Keys",
+            "Atur Email Global untuk Notifikasi Sistem (API Key Switch, dll)",
+            f"{AnsiColors.HEADER}--- Pengaturan Crypto Pair ---{AnsiColors.ENDC}",
+            "Tambah Konfigurasi Crypto Baru",
+            "Ubah Konfigurasi Crypto",
+            "Hapus Konfigurasi Crypto",
+            f"{AnsiColors.HEADER}-----------------------------{AnsiColors.ENDC}",
+            "Kembali ke Menu Utama"
+        ]
+        
+        # Filter out header-like options for selection, then map index back
+        selectable_options = [opt for opt in options if not opt.startswith(AnsiColors.HEADER)]
+        raw_option_texts = [
+            "Atur Primary API Key", "Kelola Recovery API Keys", "Atur Email Global...",
+            "Tambah Konfigurasi Crypto Baru", "Ubah Konfigurasi Crypto", "Hapus Konfigurasi Crypto",
+            "Kembali ke Menu Utama"
+        ]
+
+        # Rebuild options list for pick, keeping original structure for display in title
+        display_options_for_pick = []
+        original_indices = []
+        current_original_idx = 0
+        for opt_text in options:
+            if opt_text.startswith(AnsiColors.HEADER):
+                display_options_for_pick.append(opt_text) # Add as non-selectable header in pick's view
+            else:
+                display_options_for_pick.append(opt_text)
+                original_indices.append(current_original_idx) # Map pick's index to an action category
+                current_original_idx +=1
+
+
+        option, index = pick(selectable_options, title, indicator='=>', default_index=0)
+        # `index` here is the index within `selectable_options`
+        # We need to map this to our logic categories (0 to 6 for actions)
+
+        action_choice = raw_option_texts.index(option) # Get the index based on the text of the selected item
 
         try:
-            if choice == '1':
+            clear_screen() # Clear after pick, before next input/action
+            if action_choice == 0: # Atur Primary API Key
                 api_s["primary_key"] = input(f"Masukkan Primary API Key CryptoCompare baru [{api_s.get('primary_key','')}]: ") or api_s.get('primary_key','')
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
-            elif choice == '2':
+            elif action_choice == 1: # Kelola Recovery API Keys
                 while True:
-                    print(f"\n{AnsiColors.HEADER}-- Kelola Recovery API Keys --{AnsiColors.ENDC}")
+                    clear_screen()
+                    recovery_title = f"\n{AnsiColors.HEADER}-- Kelola Recovery API Keys --{AnsiColors.ENDC}\n"
                     current_recovery = api_s.get('recovery_keys', [])
                     if not current_recovery:
-                        print(f"  {AnsiColors.ORANGE}(Tidak ada recovery key tersimpan){AnsiColors.ENDC}")
+                        recovery_title += f"  {AnsiColors.ORANGE}(Tidak ada recovery key tersimpan){AnsiColors.ENDC}\n"
                     else:
                         for i, r_key in enumerate(current_recovery):
                             r_key_display = r_key[:5] + "..." + r_key[-3:] if len(r_key) > 8 else r_key
-                            print(f"  {i+1}. {r_key_display}")
-                    print("\n  a. Tambah Recovery Key")
-                    print("  b. Hapus Recovery Key")
-                    print("  c. Kembali ke Pengaturan Utama")
-                    sub_choice = input("Pilihan Recovery Key: ").lower()
-                    if sub_choice == 'a':
+                            recovery_title += f"  {i+1}. {r_key_display}\n"
+                    recovery_title += "\nPilih tindakan:"
+                    
+                    recovery_options = ["Tambah Recovery Key", "Hapus Recovery Key", "Kembali ke Pengaturan Utama"]
+                    rec_option, rec_index = pick(recovery_options, recovery_title, indicator='=>', default_index=0)
+                    clear_screen()
+
+                    if rec_index == 0: # Tambah
                         new_r_key = input("Masukkan Recovery API Key baru: ").strip()
                         if new_r_key:
                             current_recovery.append(new_r_key)
@@ -341,9 +373,11 @@ def settings_menu(current_settings):
                             print(f"{AnsiColors.GREEN}Recovery key ditambahkan.{AnsiColors.ENDC}")
                         else:
                             print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
-                    elif sub_choice == 'b':
+                        input("Tekan Enter untuk kembali...")
+                    elif rec_index == 1: # Hapus
                         if not current_recovery:
                             print(f"{AnsiColors.ORANGE}Tidak ada recovery key untuk dihapus.{AnsiColors.ENDC}")
+                            input("Tekan Enter untuk kembali...")
                             continue
                         try:
                             idx_del = int(input("Nomor recovery key yang akan dihapus: ")) - 1
@@ -356,11 +390,10 @@ def settings_menu(current_settings):
                                 print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
                         except ValueError:
                             print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
-                    elif sub_choice == 'c':
+                        input("Tekan Enter untuk kembali...")
+                    elif rec_index == 2: # Kembali
                         break
-                    else:
-                        print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
-            elif choice == '3':
+            elif action_choice == 2: # Atur Email Global
                 print(f"\n{AnsiColors.HEADER}-- Pengaturan Email Global Notifikasi Sistem --{AnsiColors.ENDC}")
                 enable_g_email = input(f"Aktifkan notifikasi email global (API Key switch, dll)? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower()
                 api_s['enable_global_email_notifications_for_key_switch'] = True if enable_g_email == 'true' else (False if enable_g_email == 'false' else api_s.get('enable_global_email_notifications_for_key_switch',False))
@@ -369,23 +402,31 @@ def settings_menu(current_settings):
                 api_s['email_receiver_address_admin'] = input(f"Email Penerima Notifikasi Sistem (Admin) [{api_s.get('email_receiver_address_admin','')}]: ") or api_s.get('email_receiver_address_admin','')
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
-
-            elif choice == '4': # Tambah Crypto
+                input("Tekan Enter untuk kembali...")
+            elif action_choice == 3: # Tambah Crypto
                 new_crypto_conf = get_default_crypto_config()
-                new_crypto_conf = _prompt_crypto_config(new_crypto_conf)
+                new_crypto_conf = _prompt_crypto_config(new_crypto_conf) # _prompt_crypto_config sudah ada clear_screen()
                 current_settings["cryptos"].append(new_crypto_conf)
                 save_settings(current_settings)
                 log_info(f"Konfigurasi untuk {new_crypto_conf['symbol']}-{new_crypto_conf['currency']} ditambahkan.")
-            elif choice == '5': # Ubah Crypto
-                if not current_settings["cryptos"]: print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk diubah.{AnsiColors.ENDC}"); continue
+                input("Tekan Enter untuk kembali...")
+            elif action_choice == 4: # Ubah Crypto
+                if not current_settings["cryptos"]: 
+                    print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk diubah.{AnsiColors.ENDC}")
+                    input("Tekan Enter untuk kembali..."); 
+                    continue
                 idx_choice = int(input("Nomor konfigurasi crypto yang akan diubah: ")) - 1
                 if 0 <= idx_choice < len(current_settings["cryptos"]):
                     current_settings["cryptos"][idx_choice] = _prompt_crypto_config(current_settings["cryptos"][idx_choice])
                     save_settings(current_settings)
                     log_info(f"Konfigurasi untuk {current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']} diubah.")
                 else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
-            elif choice == '6': # Hapus Crypto
-                if not current_settings["cryptos"]: print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk dihapus.{AnsiColors.ENDC}"); continue
+                input("Tekan Enter untuk kembali...")
+            elif action_choice == 5: # Hapus Crypto
+                if not current_settings["cryptos"]: 
+                    print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk dihapus.{AnsiColors.ENDC}")
+                    input("Tekan Enter untuk kembali..."); 
+                    continue
                 idx_choice = int(input("Nomor konfigurasi crypto yang akan dihapus: ")) - 1
                 if 0 <= idx_choice < len(current_settings["cryptos"]):
                     removed_pair = f"{current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']}"
@@ -393,14 +434,15 @@ def settings_menu(current_settings):
                     save_settings(current_settings)
                     log_info(f"Konfigurasi untuk {removed_pair} dihapus.")
                 else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
-            elif choice == 'x':
+                input("Tekan Enter untuk kembali...")
+            elif action_choice == 6: # Kembali
                 break
-            else:
-                print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
         except ValueError:
             print(f"{AnsiColors.RED}Input angka tidak valid.{AnsiColors.ENDC}")
+            input("Tekan Enter untuk kembali...")
         except Exception as e:
             log_error(f"Terjadi kesalahan di menu pengaturan: {e}")
+            input("Tekan Enter untuk kembali...")
     return current_settings
 
 
@@ -408,7 +450,7 @@ def settings_menu(current_settings):
 def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_api_key_to_use, timeframe="hour", pair_name="N/A"):
     if not current_api_key_to_use:
         log_error(f"Tidak ada API key yang diberikan untuk fetch_candles.", pair_name=pair_name)
-        raise APIKeyError("API Key tidak tersedia untuk request.") # Penting untuk memicu pergantian
+        raise APIKeyError("API Key tidak tersedia untuk request.")
 
     all_accumulated_candles = []
     current_to_ts = None
@@ -422,7 +464,6 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         log_info(f"Memulai pengambilan data: target {total_limit_desired} TF {timeframe}.", pair_name=pair_name)
 
     while len(all_accumulated_candles) < total_limit_desired:
-        # ... (logika limit_for_this_api_call dan params sama seperti sebelumnya, tapi gunakan current_api_key_to_use)
         candles_still_needed = total_limit_desired - len(all_accumulated_candles)
         limit_for_this_api_call = min(candles_still_needed, CRYPTOCOMPARE_MAX_LIMIT)
         if current_to_ts is not None and candles_still_needed > 1 :
@@ -432,42 +473,38 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         params = {
             "fsym": symbol, "tsym": currency,
             "limit": limit_for_this_api_call,
-            "api_key": current_api_key_to_use # <--- Gunakan key yang dioper
+            "api_key": current_api_key_to_use
         }
         if exchange_name and exchange_name.upper() != "CCCAGG": params["e"] = exchange_name
         if current_to_ts is not None: params["toTs"] = current_to_ts
         
         try:
             if is_large_fetch: log_debug(f"Fetching batch (Key: ...{current_api_key_to_use[-5:]})", pair_name=pair_name)
-            response = requests.get(url, params=params, timeout=20) # Timeout sedikit lebih lama
+            response = requests.get(url, params=params, timeout=20)
             
-            # Cek DULU status code sebelum raise_for_status, untuk error API Key yang lebih spesifik
-            if response.status_code in [401, 403, 429]: # Unauthorized, Forbidden, Too Many Requests
+            if response.status_code in [401, 403, 429]:
                 error_data = response.json() if response.content else {}
                 error_message = error_data.get('Message', f"HTTP Error {response.status_code}")
                 log_warning(f"{AnsiColors.RED}API Key Error (HTTP {response.status_code}): {error_message}{AnsiColors.ENDC} Key: ...{current_api_key_to_use[-5:]}", pair_name=pair_name)
                 raise APIKeyError(f"HTTP {response.status_code}: {error_message}")
 
-            response.raise_for_status() # Untuk error lain (5xx, 404, dll)
+            response.raise_for_status()
             data = response.json()
 
             if data.get('Response') == 'Error':
                 error_message = data.get('Message', 'N/A')
-                # Cek apakah error message mengindikasikan masalah API Key
-                # Ini bisa disesuaikan dengan pesan error aktual dari CryptoCompare
                 key_related_error_messages = [
                     "api key is invalid", "apikey_is_missing", "apikey_invalid",
                     "your_monthly_calls_are_over_the_limit", "rate limit exceeded",
                     "your_pro_tier_has_expired_or_is_not_active" 
-                ] # Tambahkan pesan error lain yang relevan
+                ]
                 if any(keyword.lower() in error_message.lower() for keyword in key_related_error_messages):
                     log_warning(f"{AnsiColors.RED}API Key Error (JSON): {error_message}{AnsiColors.ENDC} Key: ...{current_api_key_to_use[-5:]}", pair_name=pair_name)
                     raise APIKeyError(f"JSON Error: {error_message}")
-                else: # Error API lain, bukan soal key
+                else:
                     log_error(f"{AnsiColors.RED}API Error CryptoCompare: {error_message}{AnsiColors.ENDC} (Params: {params})", pair_name=pair_name)
                     break 
             
-            # ... (sisa logika parsing data sama seperti sebelumnya) ...
             if 'Data' not in data or 'Data' not in data['Data'] or not data['Data']['Data']:
                 if is_large_fetch: log_info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
                 break 
@@ -497,11 +534,10 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                 log_debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...", pair_name=pair_name)
                 time.sleep(0.3)
 
-        except APIKeyError: # Re-raise APIKeyError agar ditangkap oleh start_trading
+        except APIKeyError:
             raise
-        except requests.exceptions.RequestException as e: # Error koneksi, timeout, dll. (BUKAN API Key)
+        except requests.exceptions.RequestException as e:
             log_error(f"{AnsiColors.RED}Kesalahan koneksi/permintaan saat mengambil batch: {e}{AnsiColors.ENDC}", pair_name=pair_name)
-            # Tidak raise APIKeyError, ini masalah jaringan atau server API, bukan key-nya.
             break 
         except Exception as e:
             log_error(f"{AnsiColors.RED}Error tak terduga dalam fetch_candles: {e}{AnsiColors.ENDC}", pair_name=pair_name)
@@ -514,9 +550,8 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         log_info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} (target: {total_limit_desired}).", pair_name=pair_name)
     return all_accumulated_candles
 
-
-# --- LOGIKA STRATEGI --- (get_initial_strategy_state, find_pivots, run_strategy_logic sama)
-def get_initial_strategy_state(): # Sama
+# --- LOGIKA STRATEGI ---
+def get_initial_strategy_state():
     return {
         "last_signal_type": 0, "final_pivot_high_price_confirmed": None, "final_pivot_low_price_confirmed": None,
         "high_price_for_fib": None, "high_bar_index_for_fib": None, "active_fib_level": None,
@@ -525,7 +560,7 @@ def get_initial_strategy_state(): # Sama
         "emergency_sl_level_custom": None, "position_size": 0,
     }
 
-def find_pivots(series_list, left_strength, right_strength, is_high=True): # Sama
+def find_pivots(series_list, left_strength, right_strength, is_high=True):
     pivots = [None] * len(series_list)
     if len(series_list) < left_strength + right_strength + 1: return pivots
     for i in range(left_strength, len(series_list) - right_strength):
@@ -546,7 +581,7 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True): # Sam
         if is_pivot: pivots[i] = series_list[i] 
     return pivots
 
-def run_strategy_logic(candles_history, crypto_config, strategy_state): # Sama
+def run_strategy_logic(candles_history, crypto_config, strategy_state):
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
     strategy_state["final_pivot_high_price_confirmed"] = None
     strategy_state["final_pivot_low_price_confirmed"] = None
@@ -654,23 +689,25 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state): # Sama
         log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
     return strategy_state
 
-
-# --- FUNGSI UTAMA TRADING LOOP (MODIFIED) ---
+# --- FUNGSI UTAMA TRADING LOOP ---
 def start_trading(global_settings_dict):
+    clear_screen()
     api_settings = global_settings_dict.get("api_settings", {})
     api_key_manager = APIKeyManager(
         api_settings.get("primary_key"),
         api_settings.get("recovery_keys", []),
-        api_settings # Kirim semua api_settings untuk email global
+        api_settings
     )
 
     if not api_key_manager.has_valid_keys():
         log_error(f"{AnsiColors.RED}Tidak ada API key (primary/recovery) yang valid dikonfigurasi. Tidak dapat memulai.{AnsiColors.ENDC}")
+        input("Tekan Enter untuk kembali ke menu...")
         return
 
     all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
     if not all_crypto_configs:
         log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
+        input("Tekan Enter untuk kembali ke menu...")
         return
 
     log_info(f"{AnsiColors.HEADER}================ MULTI-CRYPTO STRATEGY START (Key Recovery Enabled) ================{AnsiColors.ENDC}")
@@ -682,7 +719,6 @@ def start_trading(global_settings_dict):
     for config in all_crypto_configs:
         pair_id = f"{config['symbol']}-{config['currency']}_{config['timeframe']}"
         config['pair_name'] = f"{config['symbol']}-{config['currency']}"
-        # ... (log info konfigurasi pair sama seperti sebelumnya) ...
         log_info(f"Menginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config['exchange']} | TF: {config['timeframe']}", pair_name=config['pair_name'])
 
         crypto_data_manager[pair_id] = {
@@ -691,15 +727,14 @@ def start_trading(global_settings_dict):
             "last_candle_fetch_time": datetime.min, "data_fetch_failed_consecutively": 0
         }
 
-        # Initial BIG DATA Fetch with retry logic for API keys
         initial_candles = []
-        max_retries_initial = api_key_manager.total_keys() # Coba semua key jika perlu
+        max_retries_initial = api_key_manager.total_keys()
         retries_done_initial = 0
         initial_fetch_successful = False
 
         while retries_done_initial < max_retries_initial and not initial_fetch_successful:
             current_api_key = api_key_manager.get_current_key()
-            if not current_api_key: # Semua key habis
+            if not current_api_key:
                 log_error(f"BIG DATA: Semua API key habis saat mencoba mengambil data awal untuk {config['pair_name']}.", pair_name=config['pair_name'])
                 break 
             
@@ -710,16 +745,14 @@ def start_trading(global_settings_dict):
                     config['exchange'], current_api_key, config['timeframe'],
                     pair_name=config['pair_name']
                 )
-                initial_fetch_successful = True # Jika tidak ada exception, sukses
+                initial_fetch_successful = True
             except APIKeyError:
                 log_warning(f"BIG DATA: API Key gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
-                if not api_key_manager.switch_to_next_key(): # Jika switch_to_next_key mengembalikan None (semua habis)
-                    break # Keluar dari loop retry jika tidak ada key lagi
+                if not api_key_manager.switch_to_next_key(): break
                 retries_done_initial += 1
-            except requests.exceptions.RequestException as e: # Error jaringan, bukan key
+            except requests.exceptions.RequestException as e:
                 log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
-                # Mungkin perlu break atau skip pair ini jika error jaringan persisten
-                break # Untuk saat ini, break jika ada error jaringan saat initial fetch
+                break
 
         if not initial_candles:
             log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses.{AnsiColors.ENDC}", pair_name=config['pair_name'])
@@ -728,24 +761,22 @@ def start_trading(global_settings_dict):
         
         crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
         log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
-        # ... (Warm-up logic sama seperti sebelumnya) ...
         if initial_candles:
             log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
             min_len_for_pivots = config['left_strength'] + config['right_strength'] + 1
-            temp_strategy_state_before_warmup = crypto_data_manager[pair_id]["strategy_state"].copy()
+            # temp_strategy_state_before_warmup = crypto_data_manager[pair_id]["strategy_state"].copy() # Not strictly needed if reset below
             for i in range(min_len_for_pivots -1, len(initial_candles) - 1): 
                 historical_slice = initial_candles[:i+1]
                 if len(historical_slice) < min_len_for_pivots: continue
                 temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy()
                 temp_state_for_warmup["position_size"] = 0 
                 crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup)
-                if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0:
+                if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: # Reset if a buy was triggered during warm-up
                     crypto_data_manager[pair_id]["strategy_state"] = {**crypto_data_manager[pair_id]["strategy_state"], **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None, "highest_price_for_trailing":None, "trailing_tp_active_custom":False, "current_trailing_stop_level":None}}
             log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
         else: log_warning("Tidak ada data awal untuk warm-up.", pair_name=config['pair_name'])
         log_info(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", pair_name=config['pair_name'])
 
-    # Main trading loop
     try:
         while True:
             active_cryptos_in_big_data = 0
@@ -753,12 +784,11 @@ def start_trading(global_settings_dict):
             any_data_fetched_this_cycle = False
 
             for pair_id, data in crypto_data_manager.items():
-                if data.get("data_fetch_failed_consecutively", 0) >= api_key_manager.total_keys() + 1 and api_key_manager.total_keys() > 0 : # Jika semua key dicoba dan masih gagal
-                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # Coba lagi setelah 1 jam
-                        # log_debug(f"Skipping {data['config']['pair_name']}, semua key gagal, menunggu 1 jam.", pair_name=data['config']['pair_name'])
-                        continue # Skip pair ini untuk sementara
+                if data.get("data_fetch_failed_consecutively", 0) >= api_key_manager.total_keys() + 1 and api_key_manager.total_keys() > 0 :
+                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600:
+                        continue
                     else:
-                        data["data_fetch_failed_consecutively"] = 0 # Reset counter untuk coba lagi
+                        data["data_fetch_failed_consecutively"] = 0
 
                 config = data["config"]
                 pair_name = config['pair_name']
@@ -784,26 +814,19 @@ def start_trading(global_settings_dict):
                 if data["big_data_collection_phase_active"]: log_info(f"\n{AnsiColors.BOLD}--- PENGUMPULAN BIG DATA ({len(data['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---{AnsiColors.ENDC}", pair_name=pair_name)
                 else: log_info(f"\n{AnsiColors.BOLD}--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(data['all_candles_list'])} candles ---{AnsiColors.ENDC}", pair_name=pair_name)
 
-                # Fetch new candles with retry for API keys
                 new_candles_batch = []
                 fetch_update_successful = False
-                # Retries for update fetch are implicitly handled by the global API key manager cycling.
-                # We attempt with the current key from the manager. If it fails, the manager cycles,
-                # and on the *next main loop's processing of this pair*, it will try the new key.
-                # OR, we implement a small retry loop here too for immediate effect:
-                
                 max_retries_update = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                 retries_done_update = 0
-                
                 original_key_index_before_fetch = api_key_manager.get_current_key_index()
 
                 while retries_done_update < max_retries_update and not fetch_update_successful:
                     current_api_key = api_key_manager.get_current_key()
                     if not current_api_key:
                         log_error(f"Semua API key habis saat mencoba mengambil update untuk {pair_name}.", pair_name=pair_name)
-                        data["data_fetch_failed_consecutively"] = (data.get("data_fetch_failed_consecutively", 0) +1) if api_key_manager.get_current_key_index() == original_key_index_before_fetch else 1 # Hanya increment jika key belum ganti global
+                        data["data_fetch_failed_consecutively"] = (data.get("data_fetch_failed_consecutively", 0) +1) if api_key_manager.get_current_key_index() == original_key_index_before_fetch else 1
                         if data["data_fetch_failed_consecutively"] >= api_key_manager.total_keys() +1: data["last_attempt_after_all_keys_failed"] = datetime.now()
-                        break # Keluar dari retry loop untuk pair ini
+                        break
 
                     log_info(f"Mengambil 3 candle terbaru (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name)
                     try:
@@ -813,28 +836,25 @@ def start_trading(global_settings_dict):
                             pair_name=pair_name
                         )
                         fetch_update_successful = True
-                        data["data_fetch_failed_consecutively"] = 0 # Reset counter on success
+                        data["data_fetch_failed_consecutively"] = 0
                         any_data_fetched_this_cycle = True
                     except APIKeyError:
                         log_warning(f"API Key gagal untuk update {pair_name}. Mencoba key berikutnya.", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = (data.get("data_fetch_failed_consecutively", 0) +1) if api_key_manager.get_current_key_index() == original_key_index_before_fetch else 1
-                        if not api_key_manager.switch_to_next_key(): break # Semua key habis
-                        # Update original_key_index_before_fetch as manager has switched globally
+                        if not api_key_manager.switch_to_next_key(): break
                         original_key_index_before_fetch = api_key_manager.get_current_key_index() 
                         retries_done_update += 1
                     except requests.exceptions.RequestException as e:
                         log_error(f"Error jaringan saat mengambil update {pair_name}: {e}. Tidak mengganti key.", pair_name=pair_name)
-                        data["data_fetch_failed_consecutively"] += 1 # Anggap sebagai kegagalan fetch
+                        data["data_fetch_failed_consecutively"] += 1
                         if data["data_fetch_failed_consecutively"] >= api_key_manager.total_keys() +1: data["last_attempt_after_all_keys_failed"] = datetime.now()
-                        break # Keluar dari retry loop, coba lagi di siklus berikutnya
+                        break
                 
                 if not fetch_update_successful or not new_candles_batch:
-                    if fetch_update_successful and not new_candles_batch: # Sukses fetch tapi data kosong
+                    if fetch_update_successful and not new_candles_batch:
                         log_warning(f"{AnsiColors.ORANGE}Tidak ada data candle baru diterima meskipun fetch berhasil.{AnsiColors.ENDC}", pair_name=pair_name)
-                    # Jika tidak, error sudah di log sebelumnya (gagal fetch setelah retry)
-                    continue # Lanjut ke crypto berikutnya dalam loop utama
+                    continue
 
-                # ... (Merging candles and strategy logic sama seperti sebelumnya) ...
                 merged_candles_dict = {c['timestamp']: c for c in data["all_candles_list"]}
                 for candle in new_candles_batch: merged_candles_dict[candle['timestamp']] = candle 
                 all_candles_list_temp = sorted(list(merged_candles_dict.values()), key=lambda c: c['timestamp'])
@@ -869,16 +889,15 @@ def start_trading(global_settings_dict):
                          log_info(f"Tidak ada candle baru untuk diproses. Data terakhir @ {last_c_time_str}.", pair_name=pair_name)
                 else: log_info(f"Data ({len(data['all_candles_list'])}) belum cukup utk analisa (min: {min_len_for_pivots}).", pair_name=pair_name)
             
-            # Sleep logic (sama seperti sebelumnya, tapi dengan pengecekan jika ada data yang berhasil di-fetch)
             sleep_duration = 15 
-            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: # Semua key habis dan tidak ada data fetch
+            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None:
                 log_error("Semua API key gagal dan tidak ada data berhasil di-fetch. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
                 sleep_duration = 3600
             elif active_cryptos_in_big_data > 0:
                 sleep_duration = min(30, min_next_refresh_interval if min_next_refresh_interval != float('inf') else 30) 
                 log_debug(f"Masih ada {active_cryptos_in_big_data} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
             else:
-                sleep_duration = min_next_refresh_interval if min_next_refresh_interval != float('inf') else global_settings_dict.get("api_settings",{}).get("refresh_interval_seconds", 60) # Fallback ke setting global jika ada
+                sleep_duration = min_next_refresh_interval if min_next_refresh_interval != float('inf') else global_settings_dict.get("api_settings",{}).get("refresh_interval_seconds", 60)
                 sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, sleep_duration)
                 log_debug(f"Semua pair live. Interval refresh terpendek: {min_next_refresh_interval if min_next_refresh_interval != float('inf') else 'N/A'}s. Sleep {sleep_duration}s.", pair_name="SYSTEM")
             
@@ -897,43 +916,75 @@ def start_trading(global_settings_dict):
     except Exception as e:
         log_error(f"{AnsiColors.RED}Error tak terduga di loop trading utama: {e}{AnsiColors.ENDC}", pair_name="SYSTEM")
         log_exception("Traceback Error:", pair_name="SYSTEM")
-    finally: log_info(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", pair_name="SYSTEM")
-
+    finally: 
+        log_info(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", pair_name="SYSTEM")
+        input("Tekan Enter untuk kembali ke menu utama...")
 
 # --- MENU UTAMA ---
-def main_menu(): # Sama
+def main_menu():
     settings = load_settings()
     global all_candles_list 
     all_candles_list = [] 
 
     while True:
-        print(f"\n{AnsiColors.HEADER}========= Crypto Strategy Runner (Multi + Key Recovery) ========={AnsiColors.ENDC}")
+        clear_screen() # <--- Membersihkan layar di awal setiap loop menu utama
+        title = f"{AnsiColors.HEADER}========= Crypto Strategy Runner (Multi + Key Recovery) ========={AnsiColors.ENDC}\n"
+        
         active_configs = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
         if active_configs:
-            print(f"{AnsiColors.CYAN}--- Crypto Aktif ({len(active_configs)}) ---{AnsiColors.ENDC}")
-            for i, cfg in enumerate(active_configs): print(f"  {i+1}. {AnsiColors.BOLD}{cfg['symbol']}-{cfg['currency']}{AnsiColors.ENDC} (TF: {cfg['timeframe']}, Exch: {cfg['exchange']})")
-        else: print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif.{AnsiColors.ENDC}")
+            title += f"{AnsiColors.CYAN}--- Crypto Aktif ({len(active_configs)}) ---{AnsiColors.ENDC}\n"
+            for i, cfg in enumerate(active_configs): 
+                title += f"  {i+1}. {AnsiColors.BOLD}{cfg['symbol']}-{cfg['currency']}{AnsiColors.ENDC} (TF: {cfg['timeframe']}, Exch: {cfg['exchange']})\n"
+        else: 
+            title += f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif.{AnsiColors.ENDC}\n"
         
         api_s = settings.get("api_settings", {})
         primary_key_display = api_s.get('primary_key', 'BELUM DIATUR')
         if len(primary_key_display) > 10: primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
         num_recovery_keys = len(api_s.get('recovery_keys',[]))
 
-        print("-----------------------------------------------")
-        print(f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle")
-        print(f"Primary API Key: {AnsiColors.CYAN}{primary_key_display}{AnsiColors.ENDC} | Recovery Keys: {AnsiColors.CYAN}{num_recovery_keys}{AnsiColors.ENDC}")
-        print("-----------------------------------------------")
-        print(f"1. {AnsiColors.GREEN}Mulai Analisa Realtime Semua Pair Aktif{AnsiColors.ENDC}")
-        print(f"2. {AnsiColors.ORANGE}Pengaturan{AnsiColors.ENDC}")
-        print(f"3. {AnsiColors.RED}Keluar{AnsiColors.ENDC}")
-        choice = input("Pilihan Anda: ")
+        title += "-----------------------------------------------\n"
+        title += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
+        title += f"Primary API Key: {AnsiColors.CYAN}{primary_key_display}{AnsiColors.ENDC} | Recovery Keys: {AnsiColors.CYAN}{num_recovery_keys}{AnsiColors.ENDC}\n"
+        title += "-----------------------------------------------\n"
+        title += "Pilih Opsi:"
 
-        if choice == '1': start_trading(settings)
-        elif choice == '2': settings = settings_menu(settings)
-        elif choice == '3': log_info("Aplikasi ditutup.", pair_name="SYSTEM"); break
-        else: print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
+        options = [
+            f"{AnsiColors.GREEN}Mulai Analisa Realtime Semua Pair Aktif{AnsiColors.ENDC}",
+            f"{AnsiColors.ORANGE}Pengaturan{AnsiColors.ENDC}",
+            f"{AnsiColors.RED}Keluar{AnsiColors.ENDC}"
+        ]
+        
+        try:
+            option, index = pick(options, title, indicator='=>', default_index=0)
+            
+            # Setelah pick selesai, bersihkan layar sebelum aksi atau sub-menu
+            # clear_screen() 
+
+            if index == 0: 
+                start_trading(settings)
+            elif index == 1: 
+                settings = settings_menu(settings)
+            elif index == 2: 
+                log_info("Aplikasi ditutup.", pair_name="SYSTEM")
+                clear_screen()
+                break
+        except Exception as e: # Tangkap jika user keluar dari pick dengan Ctrl+C misalnya
+            log_warning(f"Operasi menu dibatalkan atau error: {e}", pair_name="SYSTEM")
+            if isinstance(e, KeyboardInterrupt): # Khusus untuk Ctrl+C
+                log_info("Aplikasi dihentikan oleh pengguna.", pair_name="SYSTEM")
+                clear_screen()
+                break
+            time.sleep(1) # Beri jeda sebelum loop menu berikutnya
 
 if __name__ == "__main__":
-    # Filter sudah ditambahkan di awal
     all_candles_list = [] 
-    main_menu()
+    try:
+        main_menu()
+    except KeyboardInterrupt:
+        clear_screen()
+        print(f"{AnsiColors.ORANGE}Aplikasi dihentikan paksa. Bye!{AnsiColors.ENDC}")
+    except Exception as e:
+        clear_screen()
+        print(f"{AnsiColors.RED}Terjadi error tak terduga di level utama: {e}{AnsiColors.ENDC}")
+        logger.exception("MAIN LEVEL EXCEPTION:")
