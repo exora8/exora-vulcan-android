@@ -9,8 +9,9 @@ from email.mime.text import MIMEText
 import sys
 import uuid
 from pick import pick
+import subprocess # Ditambahkan untuk termux-notification
 
-# --- ANSI COLOR CODES --- (Sama seperti sebelumnya, ini aman digunakan di luar 'pick')
+# --- ANSI COLOR CODES --- (Sama seperti sebelumnya)
 class AnsiColors:
     HEADER = '\033[95m'
     BLUE = '\033[94m'
@@ -22,11 +23,10 @@ class AnsiColors:
     UNDERLINE = '\033[4m'
     CYAN = '\033[96m'
     MAGENTA = '\033[35m'
-    YELLOW_BG = '\033[43m' # Contoh tambahan jika diperlukan
+    YELLOW_BG = '\033[43m'
 
-# --- ANIMATION HELPER FUNCTIONS ---
+# --- ANIMATION HELPER FUNCTIONS --- (Tidak berubah)
 def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True):
-    """Menampilkan teks dengan efek ketik per karakter."""
     for char in text:
         sys.stdout.write(color + char + AnsiColors.ENDC if color else char)
         sys.stdout.flush()
@@ -35,37 +35,32 @@ def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True
         print()
 
 def show_spinner(duration_seconds, message="Processing..."):
-    """Menampilkan animasi spinner sederhana untuk durasi tertentu."""
-    spinner_chars = ['-', '\\', '|', '/'] # Backslash perlu di-escape
+    spinner_chars = ['-', '\\', '|', '/'] 
     start_time = time.time()
     idx = 0
-    sys.stdout.write(AnsiColors.MAGENTA) # Warna untuk spinner
-    term_width = 80 # Default width
-    if os.isatty(sys.stdout.fileno()): # Cek apakah output adalah terminal
+    sys.stdout.write(AnsiColors.MAGENTA) 
+    term_width = 80 
+    if os.isatty(sys.stdout.fileno()): 
         try:
             term_width = os.get_terminal_size().columns
-        except OSError: # Bisa terjadi di lingkungan non-standar
+        except OSError: 
             pass
 
     while (time.time() - start_time) < duration_seconds:
-        # Pastikan pesan tidak melebihi lebar terminal yang wajar sebelum spinner
         display_message = message[:term_width - 5]
         sys.stdout.write(f"\r{display_message} {spinner_chars[idx % len(spinner_chars)]} ")
         sys.stdout.flush()
         time.sleep(0.1)
         idx += 1
-    sys.stdout.write(f"\r{' ' * (len(display_message) + 3)}\r") # Clear spinner line
-    sys.stdout.write(AnsiColors.ENDC) # Reset warna
+    sys.stdout.write(f"\r{' ' * (len(display_message) + 3)}\r") 
+    sys.stdout.write(AnsiColors.ENDC) 
     sys.stdout.flush()
 
 def simple_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
-    """Membuat dan menampilkan progress bar sederhana."""
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-
-    # Pastikan output tidak melebihi lebar terminal
-    term_width = 80 # Default width
+    term_width = 80 
     if os.isatty(sys.stdout.fileno()):
         try:
             term_width = os.get_terminal_size().columns
@@ -73,18 +68,17 @@ def simple_progress_bar(iteration, total, prefix='', suffix='', decimals=1, leng
             pass
             
     progress_line = f'\r{AnsiColors.GREEN}{prefix} |{bar}| {percent}% {suffix}{AnsiColors.ENDC}'
-    sys.stdout.write(progress_line[:term_width]) # Potong jika terlalu panjang
+    sys.stdout.write(progress_line[:term_width]) 
     sys.stdout.flush()
     if iteration == total:
-        sys.stdout.write('\n') # Baris baru setelah selesai
+        sys.stdout.write('\n') 
         sys.stdout.flush()
 
-# --- CUSTOM EXCEPTION ---
+# --- CUSTOM EXCEPTION --- (Tidak berubah)
 class APIKeyError(Exception):
-    """Custom exception for API key related errors."""
     pass
 
-# --- KONFIGURASI LOGGING ---
+# --- KONFIGURASI LOGGING --- (Tidak berubah)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 if logger.hasHandlers():
@@ -116,21 +110,17 @@ def log_debug(message, pair_name="SYSTEM"): logger.debug(message, extra={'pair_n
 def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra={'pair_name': pair_name})
 
 SETTINGS_FILE = "settings_multiple_recovery.json"
-CRYPTOCOMPARE_MAX_LIMIT = 1999 # Sesuai dokumentasi CryptoCompare, limit per request bisa sampai 2000
+CRYPTOCOMPARE_MAX_LIMIT = 1999
 TARGET_BIG_DATA_CANDLES = 2500
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
 
-# --- FUNGSI CLEAR SCREEN (DIMODIFIKASI dengan animasi kecil) ---
+# --- FUNGSI CLEAR SCREEN --- (Tidak berubah)
 def clear_screen_animated():
-    """Membersihkan layar terminal dengan sedikit animasi."""
-    # Optional: Tampilkan pesan singkat sebelum clear
-    # animated_text_display("Clearing...", delay=0.01, color=AnsiColors.MAGENTA, new_line=False) # Bisa di-skip jika terlalu banyak animasi
-    show_spinner(0.1, "Clearing screen") # Durasi lebih singkat
+    show_spinner(0.1, "Clearing screen") 
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- API KEY MANAGER ---
+# --- API KEY MANAGER --- (Tidak berubah)
 class APIKeyManager:
-    # PERBAIKAN: Konstruktor harus __init__
     def __init__(self, primary_key, recovery_keys_list, global_settings_for_email=None):
         self.keys = []
         if primary_key and primary_key != "YOUR_API_KEY_HERE" and primary_key != "YOUR_PRIMARY_KEY":
@@ -146,7 +136,7 @@ class APIKeyManager:
 
     def get_current_key(self):
         if not self.keys:
-            log_error("Tidak ada API key yang tersedia di APIKeyManager.")
+            # log_error("Tidak ada API key yang tersedia di APIKeyManager.") # Komentari agar tidak terlalu verbose
             return None
         if self.current_index < len(self.keys):
             return self.keys[self.current_index]
@@ -167,16 +157,15 @@ class APIKeyManager:
                               f"Key: ...{new_key_display[-8:] if len(new_key_display) > 8 else new_key_display} (bagian akhir ditampilkan untuk identifikasi)\n\n"
                               f"Harap periksa status API key Anda di CryptoCompare.")
                 dummy_email_cfg = {
-                    "enable_email_notifications": True,
+                    "enable_email_notifications": True, # Ini harus True untuk mengirim
                     "email_sender_address": self.global_email_settings.get("email_sender_address"),
                     "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
                     "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
                 }
-                # Cek apakah semua nilai penting untuk email ada (tidak None atau string kosong)
                 if all(dummy_email_cfg.get(k) for k in ["email_sender_address", "email_sender_app_password", "email_receiver_address"]):
                     send_email_notification(email_subject, email_body, dummy_email_cfg)
                 else:
-                    log_warning("Konfigurasi email global tidak lengkap untuk notifikasi pergantian API key.")
+                    log_warning("Konfigurasi email global tidak lengkap untuk notifikasi pergantian API key (APIKeyManager).")
             return self.keys[self.current_index]
         else:
             log_error(f"{AnsiColors.RED}{AnsiColors.BOLD}SEMUA API KEY TELAH HABIS/GAGAL! Tidak dapat mengambil data.{AnsiColors.ENDC}")
@@ -186,7 +175,7 @@ class APIKeyManager:
                               f"Skrip tidak dapat lagi mengambil data harga.\n"
                               f"Harap segera periksa akun CryptoCompare Anda dan konfigurasi API key di skrip.")
                 dummy_email_cfg = {
-                    "enable_email_notifications": True,
+                     "enable_email_notifications": True, # Ini harus True untuk mengirim
                     "email_sender_address": self.global_email_settings.get("email_sender_address"),
                     "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
                     "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
@@ -194,7 +183,7 @@ class APIKeyManager:
                 if all(dummy_email_cfg.get(k) for k in ["email_sender_address", "email_sender_app_password", "email_receiver_address"]):
                     send_email_notification(email_subject, email_body, dummy_email_cfg)
                 else:
-                    log_warning("Konfigurasi email global tidak lengkap untuk notifikasi KRITIS semua API key gagal.")
+                    log_warning("Konfigurasi email global tidak lengkap untuk notifikasi KRITIS semua API key gagal (APIKeyManager).")
             return None
 
     def has_valid_keys(self):
@@ -206,21 +195,18 @@ class APIKeyManager:
     def get_current_key_index(self):
         return self.current_index
 
-# --- FUNGSI BEEP & EMAIL ---
-def play_notification_sound():
+# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION ---
+def play_notification_sound(): # (Tidak berubah)
     try:
         if sys.platform == "win32":
             import winsound
-            winsound.Beep(1000, 500) # Frekuensi 1kHz, durasi 500ms
+            winsound.Beep(1000, 500) 
         else:
-            # Bell character, standar. Mungkin perlu \a dua kali untuk Termux/Linux
             print('\a', end='', flush=True)
-            # time.sleep(0.2) # Jeda kecil jika perlu, tapi biasanya tidak
-            # print('\a', end='', flush=True) # Satu saja biasanya cukup
     except Exception as e:
         log_warning(f"Tidak bisa memainkan suara notifikasi: {e}")
 
-def send_email_notification(subject, body_text, settings_for_email):
+def send_email_notification(subject, body_text, settings_for_email): # (Tidak berubah)
     if not settings_for_email.get("enable_email_notifications", False):
         return
 
@@ -229,7 +215,8 @@ def send_email_notification(subject, body_text, settings_for_email):
     receiver_email = settings_for_email.get("email_receiver_address")
 
     if not all([sender_email, sender_password, receiver_email]):
-        pair_name_ctx = settings_for_email.get('symbol', 'GLOBAL_EMAIL') # Dapatkan pair_name dari config jika ada
+        pair_name_ctx = settings_for_email.get('pair_name', # Ambil pair_name jika ada
+                                             settings_for_email.get('symbol', 'GLOBAL_EMAIL')) 
         log_warning(f"Konfigurasi email tidak lengkap. Notifikasi email dilewati.", pair_name=pair_name_ctx)
         return
 
@@ -242,14 +229,32 @@ def send_email_notification(subject, body_text, settings_for_email):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server:
             smtp_server.login(sender_email, sender_password)
             smtp_server.sendmail(sender_email, receiver_email, msg.as_string())
-        pair_name_ctx = settings_for_email.get('symbol', 'GLOBAL_EMAIL')
+        pair_name_ctx = settings_for_email.get('pair_name', settings_for_email.get('symbol', 'GLOBAL_EMAIL'))
         log_info(f"{AnsiColors.CYAN}Notifikasi email berhasil dikirim ke {receiver_email}{AnsiColors.ENDC}", pair_name=pair_name_ctx)
     except Exception as e:
-        pair_name_ctx = settings_for_email.get('symbol', 'GLOBAL_EMAIL')
+        pair_name_ctx = settings_for_email.get('pair_name', settings_for_email.get('symbol', 'GLOBAL_EMAIL'))
         log_error(f"{AnsiColors.RED}Gagal mengirim email notifikasi: {e}{AnsiColors.ENDC}", pair_name=pair_name_ctx)
 
+# --- BARU: Fungsi untuk Notifikasi Termux ---
+def send_termux_notification(title, content_msg, global_settings, pair_name_for_log="SYSTEM"):
+    """Mengirim notifikasi menggunakan termux-notification jika diaktifkan."""
+    api_settings = global_settings.get("api_settings", {})
+    if not api_settings.get("enable_termux_notifications", False):
+        return
+
+    try:
+        # subprocess.run lebih aman dan modern daripada os.system
+        subprocess.run(['termux-notification', '--title', title, '--content', content_msg], 
+                       check=False, # Jangan error jika termux-notification gagal, cukup log
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        log_info(f"{AnsiColors.CYAN}Notifikasi Termux dikirim: '{title}'{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+    except FileNotFoundError:
+        log_warning(f"{AnsiColors.ORANGE}Perintah 'termux-notification' tidak ditemukan. Pastikan Termux:API terinstal dan paket termux-api sudah diinstal di Termux (pkg install termux-api).{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+    except Exception as e:
+        log_error(f"{AnsiColors.RED}Gagal mengirim notifikasi Termux: {e}{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+
 # --- FUNGSI PENGATURAN ---
-def get_default_crypto_config():
+def get_default_crypto_config(): # (Tidak berubah)
     return {
         "id": str(uuid.uuid4()), "enabled": True,
         "symbol": "BTC", "currency": "USD", "exchange": "CCCAGG",
@@ -261,49 +266,45 @@ def get_default_crypto_config():
         "email_sender_address": "", "email_sender_app_password": "", "email_receiver_address": ""
     }
 
-def load_settings():
+def load_settings(): # (Modifikasi: tambahkan default untuk notif termux)
     default_api_settings = {
         "primary_key": "YOUR_PRIMARY_KEY",
         "recovery_keys": [],
         "enable_global_email_notifications_for_key_switch": False,
         "email_sender_address": "pengirim.global@gmail.com",
         "email_sender_app_password": "xxxx xxxx xxxx xxxx",
-        "email_receiver_address_admin": "admin.penerima@example.com"
+        "email_receiver_address_admin": "admin.penerima@example.com",
+        "enable_termux_notifications": False # --- BARU ---
     }
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
             try:
                 settings = json.load(f)
-                # Pastikan api_settings ada dan memiliki semua kunci default
                 if "api_settings" not in settings:
                     settings["api_settings"] = default_api_settings.copy()
                 else:
                     for k, v in default_api_settings.items():
-                        if k not in settings["api_settings"]:
+                        if k not in settings["api_settings"]: # Tambahkan key baru jika belum ada
                             settings["api_settings"][k] = v
 
                 if "cryptos" not in settings or not isinstance(settings["cryptos"], list):
                     settings["cryptos"] = []
-
-                # Pastikan setiap crypto config memiliki ID dan status enabled
                 for crypto_cfg in settings["cryptos"]:
                     if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
-                    if "enabled" not in crypto_cfg: crypto_cfg["enabled"] = True # Default ke True jika tidak ada
+                    if "enabled" not in crypto_cfg: crypto_cfg["enabled"] = True
                 return settings
             except json.JSONDecodeError:
                 log_error(f"Error membaca {SETTINGS_FILE}. Menggunakan default atau membuat file baru.")
-                # Fallback ke struktur default jika file korup
                 return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
-    # Return a structure that includes api_settings and cryptos
     return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
 
 
-def save_settings(settings):
+def save_settings(settings): # (Tidak berubah)
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings, f, indent=4)
     log_info(f"{AnsiColors.CYAN}Pengaturan disimpan ke {SETTINGS_FILE}{AnsiColors.ENDC}")
 
-def _prompt_crypto_config(current_config):
+def _prompt_crypto_config(current_config): # (Tidak berubah dari versi Anda sebelumnya)
     clear_screen_animated() 
     new_config = current_config.copy()
     animated_text_display(f"--- Konfigurasi Crypto Pair ({new_config.get('symbol','BARU')}-{new_config.get('currency','BARU')}) ---", color=AnsiColors.HEADER)
@@ -327,7 +328,6 @@ def _prompt_crypto_config(current_config):
         print(f"{AnsiColors.RED}Input interval refresh tidak valid. Menggunakan default: {new_config.get('refresh_interval_seconds',60)}{AnsiColors.ENDC}")
         new_config["refresh_interval_seconds"] = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, new_config.get('refresh_interval_seconds',60))
 
-
     animated_text_display("\n-- Parameter Pivot --", color=AnsiColors.HEADER, delay=0.01)
     try:
         new_config["left_strength"] = int(input(f"{AnsiColors.BLUE}Left Strength [{new_config.get('left_strength',50)}]: {AnsiColors.ENDC}").strip() or new_config.get('left_strength',50))
@@ -336,7 +336,6 @@ def _prompt_crypto_config(current_config):
         print(f"{AnsiColors.RED}Input strength tidak valid. Menggunakan default.{AnsiColors.ENDC}")
         new_config["left_strength"] = new_config.get('left_strength',50)
         new_config["right_strength"] = new_config.get('right_strength',150)
-
 
     animated_text_display("\n-- Parameter Trading --", color=AnsiColors.HEADER, delay=0.01)
     try:
@@ -349,7 +348,6 @@ def _prompt_crypto_config(current_config):
         new_config["trailing_stop_gap_percent"] = new_config.get('trailing_stop_gap_percent',5.0)
         new_config["emergency_sl_percent"] = new_config.get('emergency_sl_percent',10.0)
 
-
     animated_text_display("\n-- Fitur Secure FIB --", color=AnsiColors.HEADER, delay=0.01)
     enable_sf_input = input(f"Aktifkan Secure FIB? (true/false) [{new_config.get('enable_secure_fib',True)}]: ").lower().strip()
     new_config["enable_secure_fib"] = True if enable_sf_input == 'true' else (False if enable_sf_input == 'false' else new_config.get('enable_secure_fib',True))
@@ -358,9 +356,8 @@ def _prompt_crypto_config(current_config):
     if secure_fib_price_input in ["Close", "High"]: new_config["secure_fib_check_price"] = secure_fib_price_input
     else: print(f"{AnsiColors.RED}Pilihan harga Secure FIB tidak valid. Menggunakan default: {new_config.get('secure_fib_check_price','Close')}{AnsiColors.ENDC}");
 
-
     animated_text_display("\n-- Notifikasi Email (Gmail) untuk Pair Ini --", color=AnsiColors.HEADER, delay=0.01)
-    print(f"{AnsiColors.ORANGE}Kosongkan jika ingin menggunakan pengaturan email global dari API Settings (jika notif global aktif).{AnsiColors.ENDC}")
+    print(f"{AnsiColors.ORANGE}Kosongkan jika ingin menggunakan pengaturan email global dari API Settings (jika notif global aktif).{AnsiColors.ENDC}") # Teks ini tetap, tapi fungsionalitasnya spesifik per pair
     email_enable_input = input(f"Aktifkan Notifikasi Email? (true/false) [{new_config.get('enable_email_notifications',False)}]: ").lower().strip()
     new_config["enable_email_notifications"] = True if email_enable_input == 'true' else (False if email_enable_input == 'false' else new_config.get('enable_email_notifications',False))
     
@@ -371,7 +368,7 @@ def _prompt_crypto_config(current_config):
     return new_config
 
 
-def settings_menu(current_settings):
+def settings_menu(current_settings): # (Modifikasi: tambahkan opsi untuk notif termux)
     while True:
         clear_screen_animated() 
         api_s = current_settings.get("api_settings", {})
@@ -380,20 +377,22 @@ def settings_menu(current_settings):
             primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
 
         recovery_keys = api_s.get('recovery_keys', [])
-        num_recovery_keys = len([k for k in recovery_keys if k]) # Hitung hanya yang tidak kosong
+        num_recovery_keys = len([k for k in recovery_keys if k]) 
+        termux_notif_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif" # --- BARU ---
 
-        # Judul untuk 'pick' dibuat tanpa kode ANSI
         pick_title_settings = "--- Menu Pengaturan Utama ---\n"
         pick_title_settings += f"Primary API Key: {primary_key_display}\n"
         pick_title_settings += f"Recovery API Keys: {num_recovery_keys} tersimpan\n"
+        pick_title_settings += f"Notifikasi Termux: {termux_notif_status}\n" # --- BARU ---
         pick_title_settings += "------------------------------------\n"
         pick_title_settings += "Daftar Konfigurasi Crypto:\n"
 
-        if not current_settings["cryptos"]:
+        if not current_settings.get("cryptos"): # Lebih aman pakai .get()
             pick_title_settings += "  (Belum ada konfigurasi crypto)\n"
-        for i, crypto_conf in enumerate(current_settings["cryptos"]):
-            status = "Aktif" if crypto_conf.get('enabled', True) else "Nonaktif"
-            pick_title_settings += f"  {i+1}. {crypto_conf.get('symbol','N/A')}-{crypto_conf.get('currency','N/A')} ({crypto_conf.get('timeframe','N/A')}) - {status}\n"
+        else:
+            for i, crypto_conf in enumerate(current_settings["cryptos"]):
+                status = "Aktif" if crypto_conf.get('enabled', True) else "Nonaktif"
+                pick_title_settings += f"  {i+1}. {crypto_conf.get('symbol','N/A')}-{crypto_conf.get('currency','N/A')} ({crypto_conf.get('timeframe','N/A')}) - {status}\n"
         pick_title_settings += "------------------------------------\n"
         pick_title_settings += "Pilih tindakan:"
 
@@ -401,7 +400,8 @@ def settings_menu(current_settings):
             ("header", "--- Pengaturan API & Global ---"),
             ("option", "Atur Primary API Key"),
             ("option", "Kelola Recovery API Keys"),
-            ("option", "Atur Email Global untuk Notifikasi Sistem (API Key Switch, dll)"),
+            ("option", "Atur Email Global untuk Notifikasi Sistem"),
+            ("option", "Aktifkan/Nonaktifkan Notifikasi Termux Realtime"), # --- BARU ---
             ("header", "--- Pengaturan Crypto Pair ---"),
             ("option", "Tambah Konfigurasi Crypto Baru"),
             ("option", "Ubah Konfigurasi Crypto"),
@@ -409,23 +409,20 @@ def settings_menu(current_settings):
             ("header", "-----------------------------"),
             ("option", "Kembali ke Menu Utama")
         ]
-
+        # ... (sisa dari settings_menu seperti sebelumnya, dengan penyesuaian index pilihan)
         selectable_options = [text for type, text in original_options_structure if type == "option"]
         
         try:
-            # pick() bisa error jika terminal tidak support atau terlalu kecil
             option_text, index = pick(selectable_options, pick_title_settings, indicator='=>', default_index=0)
         except Exception as e_pick:
             log_error(f"Error dengan library 'pick': {e_pick}. Gunakan input manual.")
-            # Fallback ke input manual jika pick gagal
             print(pick_title_settings)
             for idx, opt_text in enumerate(selectable_options):
                 print(f"  {idx + 1}. {opt_text}")
             try:
                 choice = int(input("Pilih nomor opsi: ")) -1
                 if 0 <= choice < len(selectable_options):
-                    option_text = selectable_options[choice]
-                    index = choice # index adalah pilihan user
+                    index = choice 
                 else:
                     print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
                     show_spinner(1.5, "Kembali...")
@@ -435,7 +432,7 @@ def settings_menu(current_settings):
                 show_spinner(1.5, "Kembali...")
                 continue
         
-        action_choice = index # action_choice sekarang adalah index dari selectable_options
+        action_choice = index 
 
         try:
             clear_screen_animated()
@@ -446,11 +443,12 @@ def settings_menu(current_settings):
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
             elif action_choice == 1: # Kelola Recovery API Keys
+                # ... (logika kelola recovery key seperti sebelumnya)
                 while True:
                     clear_screen_animated()
                     recovery_pick_title = "\n-- Kelola Recovery API Keys --\n"
-                    current_recovery = [k for k in api_s.get('recovery_keys', []) if k] # Filter empty strings
-                    api_s['recovery_keys'] = current_recovery # Update list di api_s
+                    current_recovery = [k for k in api_s.get('recovery_keys', []) if k] 
+                    api_s['recovery_keys'] = current_recovery 
 
                     if not current_recovery:
                         recovery_pick_title += "  (Tidak ada recovery key tersimpan)\n"
@@ -484,7 +482,7 @@ def settings_menu(current_settings):
 
                     clear_screen_animated()
 
-                    if rec_index == 0: # Tambah
+                    if rec_index == 0: 
                         animated_text_display("-- Tambah Recovery Key --", color=AnsiColors.HEADER)
                         new_r_key = input("Masukkan Recovery API Key baru: ").strip()
                         if new_r_key:
@@ -495,14 +493,13 @@ def settings_menu(current_settings):
                         else:
                             print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
-                    elif rec_index == 1: # Hapus
+                    elif rec_index == 1: 
                         animated_text_display("-- Hapus Recovery Key --", color=AnsiColors.HEADER)
                         if not current_recovery:
                             print(f"{AnsiColors.ORANGE}Tidak ada recovery key untuk dihapus.{AnsiColors.ENDC}")
                             show_spinner(1, "Kembali...")
                             continue
                         try:
-                            # Tampilkan daftar sebelum meminta input
                             for i_del, r_key_del in enumerate(current_recovery):
                                 r_key_del_display = r_key_del[:5] + "..." + r_key_del[-3:] if len(r_key_del) > 8 else r_key_del
                                 print(f"  {i_del+1}. {r_key_del_display}")
@@ -522,9 +519,10 @@ def settings_menu(current_settings):
                         except ValueError:
                             print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
-                    elif rec_index == 2: # Kembali
+                    elif rec_index == 2: 
                         break
-            
+
+
             elif action_choice == 2: # Atur Email Global
                 animated_text_display("-- Pengaturan Email Global Notifikasi Sistem --", color=AnsiColors.HEADER)
                 enable_g_email = input(f"Aktifkan notifikasi email global (API Key switch, dll)? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip()
@@ -536,17 +534,36 @@ def settings_menu(current_settings):
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
+            
+            elif action_choice == 3: # --- BARU: Aktifkan/Nonaktifkan Notifikasi Termux ---
+                animated_text_display("-- Pengaturan Notifikasi Termux Realtime --", color=AnsiColors.HEADER)
+                current_status = api_s.get('enable_termux_notifications', False)
+                new_status_input = input(f"Aktifkan Notifikasi Termux? (true/false) [{current_status}]: ").lower().strip()
+                if new_status_input == 'true':
+                    api_s['enable_termux_notifications'] = True
+                    print(f"{AnsiColors.GREEN}Notifikasi Termux diaktifkan.{AnsiColors.ENDC}")
+                    print(f"{AnsiColors.ORANGE}Pastikan Termux:API terinstal dan `pkg install termux-api` sudah dijalankan di Termux.{AnsiColors.ENDC}")
+                elif new_status_input == 'false':
+                    api_s['enable_termux_notifications'] = False
+                    print(f"{AnsiColors.GREEN}Notifikasi Termux dinonaktifkan.{AnsiColors.ENDC}")
+                else: # Jika input kosong atau tidak valid, tidak ubah status
+                    print(f"{AnsiColors.ORANGE}Input tidak valid. Status Notifikasi Termux tidak berubah: {current_status}.{AnsiColors.ENDC}")
 
-            elif action_choice == 3: # Tambah Konfigurasi Crypto Baru
+                current_settings["api_settings"] = api_s
+                save_settings(current_settings)
+                show_spinner(2, "Menyimpan & Kembali...")
+
+
+            elif action_choice == 4: # Tambah Konfigurasi Crypto Baru (index +1 dari sebelumnya)
                 new_crypto_conf = get_default_crypto_config()
                 new_crypto_conf = _prompt_crypto_config(new_crypto_conf)
-                current_settings["cryptos"].append(new_crypto_conf)
+                current_settings.setdefault("cryptos", []).append(new_crypto_conf) # Lebih aman
                 save_settings(current_settings)
                 log_info(f"Konfigurasi untuk {new_crypto_conf['symbol']}-{new_crypto_conf['currency']} ditambahkan.")
                 show_spinner(1, "Menyimpan & Kembali...")
 
-            elif action_choice == 4: # Ubah Konfigurasi Crypto
-                if not current_settings["cryptos"]:
+            elif action_choice == 5: # Ubah Konfigurasi Crypto (index +1)
+                if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk diubah.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali...");
                     continue
@@ -558,18 +575,19 @@ def settings_menu(current_settings):
                 if not idx_choice_str:
                     print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali..."); continue
-                
-                idx_choice = int(idx_choice_str) - 1
-
-                if 0 <= idx_choice < len(current_settings["cryptos"]):
-                    current_settings["cryptos"][idx_choice] = _prompt_crypto_config(current_settings["cryptos"][idx_choice])
-                    save_settings(current_settings)
-                    log_info(f"Konfigurasi untuk {current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']} diubah.")
-                else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
+                try:
+                    idx_choice = int(idx_choice_str) - 1
+                    if 0 <= idx_choice < len(current_settings["cryptos"]):
+                        current_settings["cryptos"][idx_choice] = _prompt_crypto_config(current_settings["cryptos"][idx_choice])
+                        save_settings(current_settings)
+                        log_info(f"Konfigurasi untuk {current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']} diubah.")
+                    else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
+                except ValueError:
+                     print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                 show_spinner(1, "Kembali...")
 
-            elif action_choice == 5: # Hapus Konfigurasi Crypto
-                if not current_settings["cryptos"]:
+            elif action_choice == 6: # Hapus Konfigurasi Crypto (index +1)
+                if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk dihapus.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali...");
                     continue
@@ -581,18 +599,19 @@ def settings_menu(current_settings):
                 if not idx_choice_str:
                     print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali..."); continue
-
-                idx_choice = int(idx_choice_str) - 1
-
-                if 0 <= idx_choice < len(current_settings["cryptos"]):
-                    removed_pair = f"{current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']}"
-                    current_settings["cryptos"].pop(idx_choice)
-                    save_settings(current_settings)
-                    log_info(f"Konfigurasi untuk {removed_pair} dihapus.")
-                else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
+                try:
+                    idx_choice = int(idx_choice_str) - 1
+                    if 0 <= idx_choice < len(current_settings["cryptos"]):
+                        removed_pair = f"{current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']}"
+                        current_settings["cryptos"].pop(idx_choice)
+                        save_settings(current_settings)
+                        log_info(f"Konfigurasi untuk {removed_pair} dihapus.")
+                    else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
+                except ValueError:
+                    print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                 show_spinner(1, "Kembali...")
             
-            elif action_choice == 6: # Kembali ke Menu Utama
+            elif action_choice == 7: # Kembali ke Menu Utama (index +1)
                 break
 
         except ValueError:
@@ -600,10 +619,11 @@ def settings_menu(current_settings):
             show_spinner(1.5, "Error, kembali...")
         except Exception as e:
             log_error(f"Terjadi kesalahan di menu pengaturan: {e}")
+            log_exception("Traceback Error Settings Menu:")
             show_spinner(1.5, "Error, kembali...")
     return current_settings
 
-# --- FUNGSI PENGAMBILAN DATA (MODIFIED) ---
+# --- FUNGSI PENGAMBILAN DATA --- (Tidak berubah)
 def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_api_key_to_use, timeframe="hour", pair_name="N/A"):
     if not current_api_key_to_use:
         log_error(f"Tidak ada API key yang diberikan untuk fetch_candles.", pair_name=pair_name)
@@ -654,7 +674,7 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                 try:
                     error_data = response.json()
                 except json.JSONDecodeError:
-                    pass # Biarkan error_message default yang dipakai
+                    pass 
                 error_message = error_data.get('Message', f"HTTP Error {response.status_code}")
                 key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
                 log_warning(f"{AnsiColors.RED}API Key Error (HTTP {response.status_code}): {error_message}{AnsiColors.ENDC} Key: ...{key_display}", pair_name=pair_name)
@@ -749,7 +769,7 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     return all_accumulated_candles
 
 # --- LOGIKA STRATEGI ---
-def get_initial_strategy_state():
+def get_initial_strategy_state(): # (Tidak berubah)
     return {
         "last_signal_type": 0, 
         "final_pivot_high_price_confirmed": None,
@@ -766,15 +786,13 @@ def get_initial_strategy_state():
         "position_size": 0, 
     }
 
-def find_pivots(series_list, left_strength, right_strength, is_high=True):
+def find_pivots(series_list, left_strength, right_strength, is_high=True): # (Tidak berubah)
     pivots = [None] * len(series_list) 
     if len(series_list) < left_strength + right_strength + 1:
         return pivots 
 
     for i in range(left_strength, len(series_list) - right_strength):
         is_pivot = True
-        
-        # Cek null sebelum akses
         if series_list[i] is None: continue
 
         for j in range(1, left_strength + 1):
@@ -796,10 +814,10 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
             pivots[i] = series_list[i] 
     return pivots
 
-
-def run_strategy_logic(candles_history, crypto_config, strategy_state):
+# (Modifikasi: tambahkan global_settings untuk notif termux)
+def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings): 
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
-
+    # ... (sisa logika pivot, FIB, seperti sebelumnya)
     strategy_state["final_pivot_high_price_confirmed"] = None
     strategy_state["final_pivot_low_price_confirmed"] = None
 
@@ -811,11 +829,8 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
         log_warning(f"{AnsiColors.ORANGE}Data candle kosong atau kunci OHLC tidak lengkap di run_strategy_logic.{AnsiColors.ENDC}", pair_name=pair_name)
         return strategy_state
 
-    high_prices = [c.get('high') for c in candles_history] # Gunakan .get() untuk keamanan
-    low_prices = [c.get('low') for c in candles_history]   # Gunakan .get()
-
-    # Filter None dari high_prices dan low_prices sebelum find_pivots jika diperlukan, atau handle None di find_pivots
-    # Untuk saat ini, find_pivots sudah menghandle None.
+    high_prices = [c.get('high') for c in candles_history] 
+    low_prices = [c.get('low') for c in candles_history]   
 
     raw_pivot_highs = find_pivots(high_prices, left_strength, right_strength, True)
     raw_pivot_lows = find_pivots(low_prices,  left_strength, right_strength, False)
@@ -862,32 +877,31 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
             current_low_bar_index = idx_pivot_event_low 
 
             if current_low_bar_index > strategy_state["high_bar_index_for_fib"]:
-                if strategy_state["high_price_for_fib"] is None or current_low_price is None: # Safety check
+                if strategy_state["high_price_for_fib"] is None or current_low_price is None: 
                      log_warning("Harga untuk kalkulasi FIB tidak valid (None).", pair_name=pair_name)
-                     return strategy_state
+                     # return strategy_state # Pertimbangkan untuk tidak keluar, mungkin FIB bisa terbentuk di iterasi berikutnya
+                else: # Hanya lanjut jika harga valid
+                    calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price) / 2.0
 
-                calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price) / 2.0
+                    is_fib_late = False
+                    if crypto_config["enable_secure_fib"]:
+                        price_val_current_candle = current_candle.get(crypto_config["secure_fib_check_price"].lower(), current_candle.get('close'))
+                        if price_val_current_candle is not None and calculated_fib_level is not None and price_val_current_candle > calculated_fib_level:
+                            is_fib_late = True
 
-                is_fib_late = False
-                if crypto_config["enable_secure_fib"]:
-                    price_val_current_candle = current_candle.get(crypto_config["secure_fib_check_price"].lower(), current_candle.get('close'))
-                    if price_val_current_candle is not None and calculated_fib_level is not None and price_val_current_candle > calculated_fib_level:
-                        is_fib_late = True
-
-                if is_fib_late:
-                    log_info(f"{AnsiColors.ORANGE}FIB Terlambat ({calculated_fib_level:.5f}), Harga Cek ({crypto_config['secure_fib_check_price']}: {price_val_current_candle:.5f}) > FIB.{AnsiColors.ENDC}", pair_name=pair_name)
-                    strategy_state["active_fib_level"] = None 
-                    strategy_state["active_fib_line_start_index"] = None
-                elif calculated_fib_level is not None : # Pastikan calculated_fib_level tidak None
-                    log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {current_low_price:.2f})", pair_name=pair_name)
-                    strategy_state["active_fib_level"] = calculated_fib_level
-                    strategy_state["active_fib_line_start_index"] = current_low_bar_index
+                    if is_fib_late:
+                        log_info(f"{AnsiColors.ORANGE}FIB Terlambat ({calculated_fib_level:.5f}), Harga Cek ({crypto_config['secure_fib_check_price']}: {price_val_current_candle:.5f}) > FIB.{AnsiColors.ENDC}", pair_name=pair_name)
+                        strategy_state["active_fib_level"] = None 
+                        strategy_state["active_fib_line_start_index"] = None
+                    elif calculated_fib_level is not None : 
+                        log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {current_low_price:.2f})", pair_name=pair_name)
+                        strategy_state["active_fib_level"] = calculated_fib_level
+                        strategy_state["active_fib_line_start_index"] = current_low_bar_index
             
             strategy_state["high_price_for_fib"] = None
             strategy_state["high_bar_index_for_fib"] = None
     
     if strategy_state["active_fib_level"] is not None and strategy_state["active_fib_line_start_index"] is not None:
-        # Safety check untuk nilai None sebelum perbandingan
         if current_candle.get('close') is None or current_candle.get('open') is None:
             log_warning("Nilai close atau open tidak ada di candle saat ini. Skip entry check.", pair_name=pair_name)
             return strategy_state
@@ -910,6 +924,11 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
                 log_msg = f"BUY ENTRY @ {entry_px:.5f} (FIB {strategy_state['active_fib_level']:.5f} dilewati). Emerg SL: {emerg_sl:.5f}"
                 log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
                 play_notification_sound()
+                
+                # --- BARU: Notifikasi Termux untuk BUY ---
+                termux_title = f"BUY Signal: {pair_name}"
+                termux_content = f"Entry @ {entry_px:.5f}. SL: {emerg_sl:.5f}"
+                send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
 
                 email_subject = f"BUY Signal: {pair_name}"
                 email_body = (f"New BUY signal for {pair_name} on {crypto_config['exchange']}.\n\n"
@@ -917,29 +936,34 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
                               f"FIB Level: {strategy_state['active_fib_level']:.5f}\n"
                               f"Emergency SL: {emerg_sl:.5f}\n"
                               f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-                send_email_notification(email_subject, email_body, crypto_config)
+                send_email_notification(email_subject, email_body, crypto_config) # crypto_config untuk email pair
             
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
     if strategy_state["position_size"] > 0: 
         current_high_for_trailing = strategy_state.get("highest_price_for_trailing", current_candle.get('high'))
-        if current_high_for_trailing is None or current_candle.get('high') is None: # Safety check
+        if current_high_for_trailing is None or current_candle.get('high') is None: 
             log_warning("Harga tertinggi untuk trailing atau high candle tidak valid (None).", pair_name=pair_name)
-            return strategy_state # Atau set default
-        strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
+            # return strategy_state 
+        else:
+             strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
+
 
         if not strategy_state["trailing_tp_active_custom"] and strategy_state["entry_price_custom"] is not None:
-            if strategy_state["entry_price_custom"] == 0: # Hindari ZeroDivisionError
+            if strategy_state["entry_price_custom"] == 0: 
                 profit_percent = 0.0
+            elif strategy_state.get("highest_price_for_trailing") is None: # Tambahan cek
+                profit_percent = 0.0
+                log_warning("highest_price_for_trailing is None saat kalkulasi profit.", pair_name=pair_name)
             else:
                 profit_percent = ((strategy_state["highest_price_for_trailing"] - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
             
             if profit_percent >= crypto_config["profit_target_percent_activation"]:
                 strategy_state["trailing_tp_active_custom"] = True
-                log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High: {strategy_state['highest_price_for_trailing']:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
+                log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High: {strategy_state.get('highest_price_for_trailing',0):.5f}{AnsiColors.ENDC}", pair_name=pair_name)
 
-        if strategy_state["trailing_tp_active_custom"] and strategy_state["highest_price_for_trailing"] is not None:
+        if strategy_state["trailing_tp_active_custom"] and strategy_state.get("highest_price_for_trailing") is not None:
             potential_new_stop_price = strategy_state["highest_price_for_trailing"] * (1 - (crypto_config["trailing_stop_gap_percent"] / 100.0))
             if strategy_state["current_trailing_stop_level"] is None or potential_new_stop_price > strategy_state["current_trailing_stop_level"]:
                 strategy_state["current_trailing_stop_level"] = potential_new_stop_price
@@ -955,13 +979,11 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
                 exit_comment = "Trailing Stop"
                 exit_color = AnsiColors.BLUE 
         
-        # Pastikan current_candle['low'] tidak None
         if final_stop_for_exit is not None and current_candle.get('low') is not None and current_candle['low'] <= final_stop_for_exit:
-            # Pastikan current_candle['open'] tidak None
             exit_price_open = current_candle.get('open')
             if exit_price_open is None:
                 log_warning("Harga open candle tidak ada untuk exit. Menggunakan SL sebagai harga exit.", pair_name=pair_name)
-                exit_price = final_stop_for_exit # Fallback jika open tidak ada
+                exit_price = final_stop_for_exit 
             else:
                 exit_price = min(exit_price_open, final_stop_for_exit)
             
@@ -976,6 +998,11 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
             log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
             play_notification_sound()
 
+            # --- BARU: Notifikasi Termux untuk EXIT ---
+            termux_title_exit = f"EXIT Signal: {pair_name}"
+            termux_content_exit = f"{exit_comment} @ {exit_price:.5f}. PnL: {pnl:.2f}%"
+            send_termux_notification(termux_title_exit, termux_content_exit, global_settings, pair_name_for_log=pair_name)
+
             email_subject = f"Trade Closed: {pair_name} ({exit_comment})"
             email_body = (f"Trade closed for {pair_name} on {crypto_config['exchange']}.\n\n"
                           f"Exit Price: {exit_price:.5f}\n"
@@ -983,7 +1010,7 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
                           f"Entry Price: {strategy_state.get('entry_price_custom', 0):.5f}\n"
                           f"PnL: {pnl:.2f}%\n"
                           f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-            send_email_notification(email_subject, email_body, crypto_config)
+            send_email_notification(email_subject, email_body, crypto_config) # crypto_config untuk email pair
 
             strategy_state["position_size"] = 0
             strategy_state["entry_price_custom"] = None
@@ -1007,13 +1034,14 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state):
     return strategy_state
 
 # --- FUNGSI UTAMA TRADING LOOP ---
-def start_trading(global_settings_dict):
+# (Modifikasi: teruskan global_settings ke run_strategy_logic)
+def start_trading(global_settings_dict): # global_settings_dict adalah settings utama
     clear_screen_animated() 
     api_settings = global_settings_dict.get("api_settings", {})
-    api_key_manager = APIKeyManager( # PERBAIKAN: __init__ akan dipanggil di sini
+    api_key_manager = APIKeyManager( 
         api_settings.get("primary_key"),
         api_settings.get("recovery_keys", []),
-        api_settings 
+        api_settings # Teruskan semua api_settings untuk notif global email & termux
     )
 
     if not api_key_manager.has_valid_keys():
@@ -1029,7 +1057,7 @@ def start_trading(global_settings_dict):
         input()
         return
 
-    animated_text_display("================ MULTI-CRYPTO STRATEGY START (Key Recovery Enabled) ================", color=AnsiColors.HEADER, delay=0.005)
+    animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
     current_key_display_val = api_key_manager.get_current_key()
     current_key_display = "N/A"
     if current_key_display_val:
@@ -1039,13 +1067,13 @@ def start_trading(global_settings_dict):
 
     crypto_data_manager = {} 
     for config in all_crypto_configs:
-        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}" # Default jika kunci tidak ada
+        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}" 
         config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" 
 
         animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
 
         crypto_data_manager[pair_id] = {
-            "config": config,
+            "config": config, # Ini adalah crypto_config spesifik pair
             "all_candles_list": [],
             "strategy_state": get_initial_strategy_state(),
             "big_data_collection_phase_active": True, 
@@ -1053,7 +1081,7 @@ def start_trading(global_settings_dict):
             "last_candle_fetch_time": datetime.min, 
             "data_fetch_failed_consecutively": 0 
         }
-
+        # ... (logika pengambilan data awal seperti sebelumnya)
         initial_candles_target = TARGET_BIG_DATA_CANDLES
         initial_candles = []
         max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
@@ -1081,7 +1109,7 @@ def start_trading(global_settings_dict):
             except requests.exceptions.RequestException as e:
                 log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
                 break 
-            except Exception as e_gen: # Tangkap error umum lainnya
+            except Exception as e_gen: 
                 log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
                 log_exception("Traceback Error Initial Fetch:", pair_name=config['pair_name'])
                 break
@@ -1096,7 +1124,7 @@ def start_trading(global_settings_dict):
         log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
 
         if initial_candles:
-            min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1 # Default jika tidak ada
+            min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1 
             if len(initial_candles) >= min_len_for_pivots:
                 log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
                 
@@ -1107,7 +1135,8 @@ def start_trading(global_settings_dict):
                     temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy()
                     temp_state_for_warmup["position_size"] = 0 
                     
-                    crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup)
+                    # Teruskan global_settings_dict ke warm-up logic juga
+                    crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
                     
                     if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: 
                         crypto_data_manager[pair_id]["strategy_state"] = {
@@ -1126,22 +1155,26 @@ def start_trading(global_settings_dict):
             crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
             log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
             if not crypto_data_manager[pair_id]["big_data_email_sent"]:
+                # Untuk notifikasi email "Data Downloading Complete", gunakan config pair
                 send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", config)
                 crypto_data_manager[pair_id]["big_data_email_sent"] = True
             log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[pair_id]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+
 
     animated_text_display(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
     
     try:
         while True:
+            # ... (logika loop trading utama seperti sebelumnya)
             active_cryptos_still_in_big_data_collection = 0
             min_overall_next_refresh_seconds = float('inf') 
             any_data_fetched_this_cycle = False 
 
             for pair_id, data in crypto_data_manager.items():
-                config = data["config"]
+                config = data["config"] # ini adalah crypto_config spesifik pair
                 pair_name = config['pair_name'] 
 
+                # ... (logika cooldown, cek waktu fetch, dll seperti sebelumnya)
                 if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 : 
                     if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: 
                         log_debug(f"Pair {pair_name} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name)
@@ -1160,7 +1193,7 @@ def start_trading(global_settings_dict):
                     elif config.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 23.8 
                     else: required_interval_for_this_pair = 3580 
                 else: 
-                    required_interval_for_this_pair = config.get('refresh_interval_seconds', 60) # Default jika tidak ada
+                    required_interval_for_this_pair = config.get('refresh_interval_seconds', 60) 
 
                 if time_since_last_fetch_seconds < required_interval_for_this_pair:
                     remaining_time_for_this_pair = required_interval_for_this_pair - time_since_last_fetch_seconds
@@ -1190,11 +1223,14 @@ def start_trading(global_settings_dict):
 
                     limit_fetch = 3 
                     if data["big_data_collection_phase_active"]:
-                        limit_fetch = min(TARGET_BIG_DATA_CANDLES - len(data["all_candles_list"]), CRYPTOCOMPARE_MAX_LIMIT)
-                        limit_fetch = max(limit_fetch, 3) 
-                        if limit_fetch <=0 : 
+                        limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data["all_candles_list"])
+                        if limit_fetch_needed <=0 : # Sudah terkumpul semua
                              fetch_update_successful_for_this_pair = True 
+                             new_candles_batch = [] # Pastikan batch kosong jika tidak perlu fetch
                              break
+                        limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT)
+                        limit_fetch = max(limit_fetch, 1) # Minimal 1 jika masih butuh
+
 
                     log_info(f"Mengambil {limit_fetch} candle (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name)
                     try:
@@ -1220,7 +1256,7 @@ def start_trading(global_settings_dict):
                         log_error(f"Error jaringan saat mengambil update {pair_name}: {e}. Tidak mengganti key.", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
                         break 
-                    except Exception as e_gen_update: # Tangkap error umum lainnya
+                    except Exception as e_gen_update: 
                         log_error(f"Error umum saat mengambil update {pair_name}: {e_gen_update}. Tidak mengganti key.", pair_name=pair_name)
                         log_exception("Traceback Error Update Fetch:", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
@@ -1242,7 +1278,7 @@ def start_trading(global_settings_dict):
                 newly_added_count_this_batch = 0
                 updated_count_this_batch = 0 
 
-                for candle in new_candles_batch:
+                for candle in new_candles_batch: # new_candles_batch bisa kosong jika fetch_update_successful_for_this_pair=True tapi limit_fetch_needed <=0
                     ts = candle['timestamp']
                     if ts not in merged_candles_dict:
                         merged_candles_dict[ts] = candle
@@ -1257,8 +1293,9 @@ def start_trading(global_settings_dict):
 
                 if actual_new_or_updated_count > 0:
                      log_info(f"{actual_new_or_updated_count} candle baru/diupdate. Total: {len(data['all_candles_list'])}.", pair_name=pair_name)
-                elif new_candles_batch : 
+                elif new_candles_batch : # Hanya log jika batch tidak kosong tapi tidak ada yg baru (mis. identik)
                      log_info("Tidak ada candle dengan timestamp baru atau update konten. Data terakhir mungkin identik.", pair_name=pair_name)
+
 
                 if data["big_data_collection_phase_active"]:
                     if len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
@@ -1271,7 +1308,7 @@ def start_trading(global_settings_dict):
                             data["big_data_email_sent"] = True
                         
                         data["big_data_collection_phase_active"] = False 
-                        active_cryptos_still_in_big_data_collection -=1 
+                        active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) # Kurangi counter
                         log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data['all_candles_list'])} candles) untuk {pair_name} ----------{AnsiColors.ENDC}", pair_name=pair_name)
                 else: 
                     if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
@@ -1281,11 +1318,12 @@ def start_trading(global_settings_dict):
                 if len(data["all_candles_list"]) >= min_len_for_pivots:
                     process_logic_now = (actual_new_or_updated_count > 0 or
                                          (not data["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or
-                                         (data["big_data_collection_phase_active"]))
+                                         (data["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) ) # Untuk big data, hanya proses jika ada candle baru
 
                     if process_logic_now:
                          log_info(f"Menjalankan logika strategi dengan {len(data['all_candles_list'])} candle...", pair_name=pair_name)
-                         data["strategy_state"] = run_strategy_logic(data["all_candles_list"], config, data["strategy_state"])
+                         # Teruskan global_settings_dict ke run_strategy_logic
+                         data["strategy_state"] = run_strategy_logic(data["all_candles_list"], config, data["strategy_state"], global_settings_dict)
                     elif not data["big_data_collection_phase_active"]: 
                          last_c_time_str = data["all_candles_list"][-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if data["all_candles_list"] else "N/A"
                          log_info(f"Tidak ada candle baru untuk diproses untuk {pair_name}. Data terakhir @ {last_c_time_str}.", pair_name=pair_name)
@@ -1294,6 +1332,7 @@ def start_trading(global_settings_dict):
                 
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
             
+            # ... (logika penentuan sleep_duration seperti sebelumnya)
             sleep_duration = 15 
 
             if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None:
@@ -1301,25 +1340,35 @@ def start_trading(global_settings_dict):
                 sleep_duration = 3600 
             elif active_cryptos_still_in_big_data_collection > 0:
                 min_big_data_interval = float('inf')
-                for pid, pdata in crypto_data_manager.items():
-                    if pdata["big_data_collection_phase_active"]:
-                        pconfig = pdata["config"]
-                        interval_bd = 55 if pconfig.get('timeframe') == "minute" else (3600 * 23.8 if pconfig.get('timeframe') == "day" else 3580)
+                for pid_loop, pdata_loop in crypto_data_manager.items(): # Ganti nama variabel loop
+                    if pdata_loop["big_data_collection_phase_active"]:
+                        pconfig_loop = pdata_loop["config"]
+                        interval_bd = 55 if pconfig_loop.get('timeframe') == "minute" else (3600 * 23.8 if pconfig_loop.get('timeframe') == "day" else 3580)
                         min_big_data_interval = min(min_big_data_interval, interval_bd)
                 
-                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30) # Max 30s jika masih big data
+                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30) 
                 log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
             else: 
-                if min_overall_next_refresh_seconds != float('inf'):
+                if min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0 : # Tambah cek > 0
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya (min interval dari semua pair).", pair_name="SYSTEM")
+                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
                 else: 
-                    default_refresh = global_settings_dict.get("api_settings",{}).get("refresh_interval_seconds", 60) 
-                    sleep_duration = default_refresh
-                    log_debug(f"Default sleep {sleep_duration}s (fallback).", pair_name="SYSTEM")
+                    # Fallback jika min_overall_next_refresh_seconds tidak valid atau 0
+                    # Coba ambil refresh interval dari salah satu config jika ada, atau default
+                    default_refresh_from_config = 60
+                    if all_crypto_configs :
+                        default_refresh_from_config = all_crypto_configs[0].get('refresh_interval_seconds', 60)
+
+                    sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_config)
+                    log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama).", pair_name="SYSTEM")
+
 
             if sleep_duration > 0:
                 show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s...")
+            else: # Safety net jika sleep_duration jadi 0 atau negatif
+                log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
+                time.sleep(1)
+
 
     except KeyboardInterrupt:
         animated_text_display(f"\n{AnsiColors.ORANGE}Proses trading dihentikan oleh pengguna.{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01)
@@ -1332,12 +1381,11 @@ def start_trading(global_settings_dict):
         input()
 
 # --- MENU UTAMA ---
-def main_menu():
+def main_menu(): # (Tidak berubah signifikan, hanya index pilihan disesuaikan)
     settings = load_settings()
 
     while True:
         clear_screen_animated() 
-
         animated_text_display("========= Crypto Strategy Runner (Multi + Key Recovery) =========", color=AnsiColors.HEADER, delay=0.005)
 
         pick_title_main = "" 
@@ -1354,11 +1402,13 @@ def main_menu():
         if primary_key_display and len(primary_key_display) > 10 and primary_key_display not in ["YOUR_PRIMARY_KEY", "BELUM DIATUR"]:
              primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
         num_recovery_keys = len([k for k in api_s.get('recovery_keys',[]) if k])
+        termux_notif_main_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
 
 
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
         pick_title_main += f"Primary API Key: {primary_key_display} | Recovery Keys: {num_recovery_keys}\n"
+        pick_title_main += f"Notifikasi Termux: {termux_notif_main_status}\n"
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += "Pilih Opsi:"
 
@@ -1370,12 +1420,10 @@ def main_menu():
         
         selected_index = -1
         try:
-            # pick() bisa error jika terminal tidak support atau terlalu kecil
             _option_text, selected_index = pick(options_plain, pick_title_main, indicator='=>', default_index=0)
         except Exception as e_pick_main:
             log_error(f"Error dengan library 'pick' di menu utama: {e_pick_main}. Gunakan input manual.")
-            # Fallback ke input manual jika pick gagal
-            print(pick_title_main) # Tampilkan judul yang sudah dibuat
+            print(pick_title_main) 
             for idx_main, opt_text_main in enumerate(options_plain):
                 print(f"  {idx_main + 1}. {opt_text_main}")
             try:
@@ -1391,30 +1439,26 @@ def main_menu():
                 show_spinner(1.5, "Kembali...")
                 continue
 
-
         if selected_index == 0:
-            start_trading(settings)
+            start_trading(settings) # settings adalah global_settings_dict
         elif selected_index == 1:
-            settings = settings_menu(settings) # Simpan perubahan dari settings_menu
+            settings = settings_menu(settings) 
         elif selected_index == 2:
             log_info("Aplikasi ditutup.", pair_name="SYSTEM")
             clear_screen_animated()
             animated_text_display("Terima kasih telah menggunakan skrip ini! Sampai jumpa!", color=AnsiColors.MAGENTA)
             show_spinner(0.5, "Exiting")
             break
-        # Tambahkan else atau penanganan untuk selected_index == -1 jika diperlukan (misalnya jika input manual gagal)
 
-# PERBAIKAN: __name__
 if __name__ == "__main__":
     try:
         main_menu()
     except KeyboardInterrupt:
         clear_screen_animated()
         animated_text_display(f"{AnsiColors.ORANGE}Aplikasi dihentikan paksa. Bye!{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01)
-    except Exception as e: # Tangkap semua exception lain di level teratas
+    except Exception as e: 
         clear_screen_animated()
         print(f"{AnsiColors.RED}Terjadi error tak terduga di level utama: {e}{AnsiColors.ENDC}")
-        # Log exception ini juga
-        logger.critical("MAIN LEVEL UNHANDLED EXCEPTION:", exc_info=True) # exc_info=True akan mencetak traceback
+        logger.critical("MAIN LEVEL UNHANDLED EXCEPTION:", exc_info=True) 
         animated_text_display("Tekan Enter untuk keluar...", color=AnsiColors.RED, delay=0.01)
         input()
