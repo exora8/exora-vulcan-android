@@ -2031,14 +2031,3 @@ if __name__ == "__main__":
     finally:
         log_info("Program selesai.", pair_name="SYSTEM_EXIT")
 
-```
-
-**Penting Sebelum Menjalankan:**
-1.  **Install Flask**: Jika belum, jalankan `pip install Flask` di Termux.
-2.  **Port**: Server akan berjalan di port `5000` secara default (bisa diubah di pengaturan). Pastikan port ini tidak digunakan oleh aplikasi lain.
-3.  **Akses**: Kamu bisa mengaksesnya dari browser di HP Termux-mu dengan alamat `http://localhost:5000` atau `http://127.0.0.1:5000`. Jika HP dan PC/laptopmu ada di jaringan WiFi yang sama, kamu bisa mengaksesnya dari PC dengan `http://IP_HP_TERMUX:5000` (ganti `IP_HP_TERMUX` dengan alamat IP HP-mu di jaringan WiFi).
-4.  **Histori Pivot**: Saya sudah menambahkan penyimpanan histori untuk 10 pivot high/low terakhir yang terkonfirmasi agar bisa ditampilkan di chart.
-5.  **Data di Web**: Data candle yang dikirim ke web dibatasi `MAX_CANDLES_FOR_WEB` (default 500) agar tidak terlalu berat.
-6.  **Update UI**: UI web akan polling data setiap 3 detik.
-
-Ini adalah implementasi yang cukup komprehensif. Semoga sesuai dengan yang kamu inginkan, bro! Jika ada masalah atau mau ada penyesuaian lagi, kasih tau aja.
