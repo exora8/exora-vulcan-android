@@ -141,27 +141,40 @@ HTML_TEMPLATE = """
 <html>
 <head>
     <title>Realtime Trading Analysis</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- BARU: Viewport untuk mobile -->
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif; margin: 0; background-color: #1e1e1e; color: #d4d4d4; display: flex; flex-direction: column; min-height: 100vh; }
-        #appContainer { display: flex; flex: 1; }
-        #sidebar { width: 300px; background-color: #252526; padding: 15px; overflow-y: auto; border-right: 1px solid #333; }
-        #mainContent { flex: 1; display: flex; flex-direction: column; padding:10px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif; margin: 0; background-color: #1e1e1e; color: #d4d4d4; display: flex; flex-direction: column; min-height: 100vh; font-size: 14px; /* Ukuran font dasar sedikit lebih kecil */ }
+        #appContainer { display: flex; flex: 1; flex-direction: column; /* Ubah ke column untuk mobile-first thinking */}
+        #sidebar { width: 100%; /* Lebar penuh di mobile */ max-width: 260px; /* Maksimum di desktop */ background-color: #252526; padding: 10px; overflow-y: auto; border-bottom: 1px solid #333; /* Border bawah di mobile */ }
+        #mainContent { flex: 1; display: flex; flex-direction: column; padding:10px; overflow: auto; /* Agar konten bisa scroll jika melebihi */ }
         #chartContainerOuter { display: flex; flex-direction: column; align-items: center; width: 100%; }
-        #controls { margin-bottom: 10px; background-color: #2D2D2D; padding: 10px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); display: flex; align-items: center; }
-        #pairSelectorLabel { margin-right: 10px; font-size: 0.9em; }
-        #pairSelector { padding: 8px; border-radius: 3px; border: 1px solid #3c3c3c; background-color: #3c3c3c; color: #d4d4d4; font-size: 0.9em;}
-        #chartContainer { width: 100%; height: 60vh; min-height: 400px; background-color: #1e1e1e; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); margin-top:10px;}
-        #analysisInfo { margin-top: 15px; padding: 15px; background-color: #252526; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); width: 100%; font-size:0.9em; }
+        #controls { margin-bottom: 10px; background-color: #2D2D2D; padding: 10px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); display: flex; align-items: center; flex-wrap: wrap; /* Agar bisa wrap di mobile */ }
+        #pairSelectorLabel { margin-right: 8px; font-size: 0.9em; }
+        #selectedPairTitle { font-size: 1.2em; margin-left: 5px; color: #00aaff; }
+        #chartContainer { width: 100%; height: 55vh; /* Sedikit lebih kecil untuk memberi ruang info */ min-height: 300px; background-color: #1e1e1e; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); margin-top:10px;}
+        #analysisInfo { margin-top: 15px; padding: 10px; background-color: #252526; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); width: 100%; font-size:0.85em; line-height: 1.5;}
         h1 { text-align: center; color: #007acc; margin-top:0; margin-bottom:15px; font-size: 1.5em;}
-        h3 { color: #007acc; border-bottom: 1px solid #333; padding-bottom: 5px; font-size: 1.1em;}
-        p { margin: 8px 0; line-height: 1.6; }
-        .loader { border: 5px solid #f3f3f3; border-radius: 50%; border-top: 5px solid #3498db; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        h3 { color: #007acc; border-bottom: 1px solid #333; padding-bottom: 5px; font-size: 1.1em; margin-top: 5px; margin-bottom: 10px;}
+        p { margin: 6px 0; }
+        .loader { border: 4px solid #333; border-radius: 50%; border-top: 4px solid #00aaff; width: 25px; height: 25px; animation: spin 1s linear infinite; margin: 20px auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .status-dot { height: 10px; width: 10px; background-color: #bbb; border-radius: 50%; display: inline-block; margin-right: 5px; }
+        .status-dot { height: 8px; width: 8px; background-color: #bbb; border-radius: 50%; display: inline-block; margin-right: 5px; vertical-align: middle; }
         .status-dot.active { background-color: #28a745; }
         .status-dot.inactive { background-color: #dc3545; }
         .status-dot.loading { background-color: #ffc107; }
+        #pairList button { display: block; width: 100%; text-align: left; padding: 8px; margin-bottom: 5px; background-color: #3c3c3c; color: #d4d4d4; border: none; border-radius: 3px; cursor: pointer; font-size: 0.9em; }
+        #pairList button:hover { background-color: #4f4f4f; }
+        #pairList button.selected { background-color: #007acc; }
+        #pairList button small { color:#aaa; float:right; font-size: 0.8em; }
+
+        /* Style untuk layar lebih besar (desktop-like) */
+        @media (min-width: 768px) {
+            #appContainer { flex-direction: row; /* Kembali ke row untuk desktop */ }
+            #sidebar { height: 100vh; border-right: 1px solid #333; border-bottom: none; /* Hapus border bawah */ width: 260px; /* Lebar sidebar di desktop */ }
+            #mainContent { height: 100vh; overflow-y: auto;}
+            #chartContainer { height: 60vh; min-height: 400px; }
+        }
     </style>
 </head>
 <body>
@@ -179,8 +192,8 @@ HTML_TEMPLATE = """
         <div id="mainContent">
             <div id="chartContainerOuter">
                 <div id="controls">
-                    <span id="pairSelectorLabel">Selected Pair:</span>
-                    <h1 id="selectedPairTitle">Select a pair</h1>
+                    <span id="pairSelectorLabel">Pair:</span>
+                    <h2 id="selectedPairTitle" style="margin:0; font-size:1.1em;">Select a pair</h2>
                 </div>
                 <div id="chartContainer"><div class="loader" id="chartLoader"></div></div>
             </div>
@@ -191,22 +204,21 @@ HTML_TEMPLATE = """
     <script>
         let chart = null;
         let candlestickSeries = null;
-        let priceLines = {}; // { fib: lineObj, entry: lineObj, sl: lineObj }
+        let priceLines = {}; 
         let currentPairIdGlobal = null;
-        let lastDataTimestamp = null; // To check if data is new
+        let lastDataTimestamp = null; 
 
         const chartContainer = document.getElementById('chartContainer');
         const pairListDiv = document.getElementById('pairList');
-        const selectedPairTitle = document.getElementById('selectedPairTitle');
+        const selectedPairTitleElem = document.getElementById('selectedPairTitle');
         const analysisInfoDiv = document.getElementById('analysisInfo');
         const chartLoader = document.getElementById('chartLoader');
         const lastSyncedTimeSpan = document.getElementById('lastSyncedTime');
         const serverStatusSpan = document.getElementById('serverStatus');
 
-
         function initChart(pairId) {
             if (chart) { chart.remove(); chart = null; }
-            chartLoader.style.display = 'block'; // Show loader
+            chartLoader.style.display = 'block'; 
 
             chart = LightweightCharts.createChart(chartContainer, {
                 width: chartContainer.clientWidth,
@@ -222,11 +234,12 @@ HTML_TEMPLATE = """
                 wickUpColor: 'rgba(0, 180, 136, 1)', wickDownColor: 'rgba(255, 82, 82, 1)',
                 borderVisible: false,
             });
-            selectedPairTitle.textContent = pairId.replace("_", " TF: ");
-            chartLoader.style.display = 'none'; // Hide loader
+            selectedPairTitleElem.textContent = pairId.replace("_", " TF: ");
+            // chartLoader.style.display = 'none'; // Hide loader after data is set
         }
 
         function clearPriceLines() {
+             if (!candlestickSeries) return;
             Object.values(priceLines).forEach(line => {
                 if (line) candlestickSeries.removePriceLine(line);
             });
@@ -249,20 +262,31 @@ HTML_TEMPLATE = """
 
                 if (currentPairIdGlobal && allData[currentPairIdGlobal]) {
                     const pairData = allData[currentPairIdGlobal];
-                     // Only update chart if data is newer
                     if (pairData.last_update && pairData.last_update !== lastDataTimestamp) {
                         lastDataTimestamp = pairData.last_update;
                         updateChart(pairData);
                         updateAnalysisInfo(pairData);
-                    } else if (!pairData.last_update && candlestickSeries) { // Data might have been cleared
+                    } else if (!pairData.last_update && candlestickSeries) { 
                         candlestickSeries.setData([]);
                         analysisInfoDiv.innerHTML = "<p>No data available for this pair currently.</p>";
+                        chartLoader.style.display = 'none';
                     }
                 } else if (currentPairIdGlobal && !allData[currentPairIdGlobal]) {
-                    // Current pair is no longer in data, clear it
-                    selectedPairTitle.textContent = "Pair data not found";
+                    selectedPairTitleElem.textContent = "Pair data not found";
                     if (candlestickSeries) candlestickSeries.setData([]);
-                    analysisInfoDiv.innerHTML = "<p>Data for the selected pair is no longer available. It might have been disabled or removed.</p>";
+                    analysisInfoDiv.innerHTML = "<p>Data for the selected pair is no longer available.</p>";
+                    chartLoader.style.display = 'none';
+                } else if (!currentPairIdGlobal && Object.keys(allData).length > 0) {
+                    // If no pair is selected yet, but data is available, select the first one
+                    currentPairIdGlobal = Object.keys(allData)[0];
+                    initChart(currentPairIdGlobal);
+                    fetchDataForCurrentPair(allData[currentPairIdGlobal]);
+                } else if (Object.keys(allData).length === 0) {
+                    // No pairs active at all
+                    if(candlestickSeries) candlestickSeries.setData([]);
+                    selectedPairTitleElem.textContent = "No Active Pairs";
+                    analysisInfoDiv.innerHTML = "<p>No crypto pairs are currently being analyzed.</p>";
+                    chartLoader.style.display = 'none';
                 }
 
 
@@ -270,11 +294,13 @@ HTML_TEMPLATE = """
                 console.error('Error fetching all pairs data:', error);
                 serverStatusSpan.textContent = 'Connection Error';
                 serverStatusSpan.style.color = 'red';
+                 chartLoader.style.display = 'none'; // Hide loader on error too
             }
         }
         
         function updatePairList(allData) {
-            pairListDiv.innerHTML = ''; // Clear old list
+            const oldSelectedPairId = currentPairIdGlobal;
+            pairListDiv.innerHTML = ''; 
             const pairIds = Object.keys(allData);
 
             if (pairIds.length === 0) {
@@ -282,69 +308,83 @@ HTML_TEMPLATE = """
                 p.textContent = "No active pairs.";
                 p.style.color = "#888";
                 pairListDiv.appendChild(p);
-                if (candlestickSeries) candlestickSeries.setData([]); // Clear chart if no pairs
-                selectedPairTitle.textContent = "No Active Pairs";
-                analysisInfoDiv.innerHTML = "<p>No crypto pairs are currently being analyzed or the backend is not providing data.</p>";
+                if (candlestickSeries) candlestickSeries.setData([]);
+                selectedPairTitleElem.textContent = "No Active Pairs";
+                analysisInfoDiv.innerHTML = "<p>No crypto pairs configured or backend not providing data.</p>";
                 chartLoader.style.display = 'none';
+                currentPairIdGlobal = null;
                 return;
             }
 
             pairIds.forEach(pairId => {
                 const pairData = allData[pairId];
                 const button = document.createElement('button');
-                button.style.cssText = "display: block; width: 100%; text-align: left; padding: 10px; margin-bottom: 5px; background-color: #3c3c3c; color: #d4d4d4; border: none; border-radius: 3px; cursor: pointer;";
                 
-                let statusText = "Analyzing";
+                let statusText = "Live";
                 let dotClass = "active";
                 if (pairData.is_loading_big_data) {
-                    statusText = `Loading (${pairData.candles_loaded || 0}/${pairData.candles_target || 'N/A'})`;
+                    statusText = `Load (${pairData.candles_loaded || 0}/${pairData.candles_target || 'N/A'})`;
                     dotClass = "loading";
                 } else if (!pairData.candles || pairData.candles.length === 0) {
                     statusText = "No Data";
                     dotClass = "inactive";
                 }
 
-                button.innerHTML = `<span class="status-dot ${dotClass}"></span> ${pairId.replace("_", " TF: ")} <small style='color:#888;float:right;'>${statusText}</small>`;
+                button.innerHTML = `<span class="status-dot ${dotClass}"></span> ${pairId.replace("_", " TF: ")} <small>${statusText}</small>`;
                 button.onclick = () => {
+                    if (currentPairIdGlobal === pairId && candlestickSeries) return; // Already selected and chart exists
                     currentPairIdGlobal = pairId;
-                    lastDataTimestamp = null; // Reset last timestamp to force update
-                    if (!candlestickSeries || (chart && chartContainer.clientWidth === 0)) { // If chart not init or not visible
+                    lastDataTimestamp = null; 
+                    
+                    // Highlight new selection
+                    document.querySelectorAll('#pairList button').forEach(btn => btn.classList.remove('selected'));
+                    button.classList.add('selected');
+
+                    if (!chart || chartContainer.clientWidth === 0) { 
                         initChart(pairId);
                     } else {
-                         selectedPairTitle.textContent = pairId.replace("_", " TF: ");
+                         selectedPairTitleElem.textContent = pairId.replace("_", " TF: ");
                     }
-                    fetchDataForCurrentPair(pairData); // Use already fetched data first for responsiveness
+                    fetchDataForCurrentPair(pairData); 
                 };
                  if (pairId === currentPairIdGlobal) {
-                    button.style.backgroundColor = "#007acc"; // Highlight selected
+                    button.classList.add('selected');
                 }
                 pairListDiv.appendChild(button);
             });
 
-            // If no current pair is selected, or selected pair disappeared, pick the first one
+            // Auto-select logic
             if (!currentPairIdGlobal && pairIds.length > 0) {
-                currentPairIdGlobal = pairIds[0];
-                initChart(currentPairIdGlobal);
-                fetchDataForCurrentPair(allData[currentPairIdGlobal]);
+                currentPairIdGlobal = pairIds[0]; // Select the first pair
             } else if (currentPairIdGlobal && !pairIds.includes(currentPairIdGlobal) && pairIds.length > 0) {
-                // current selected pair is gone, select the first available
-                currentPairIdGlobal = pairIds[0];
-                initChart(currentPairIdGlobal);
-                fetchDataForCurrentPair(allData[currentPairIdGlobal]);
+                currentPairIdGlobal = pairIds[0]; // Previously selected is gone, pick first
             } else if (pairIds.length === 0) {
                 currentPairIdGlobal = null;
-                 if (candlestickSeries) candlestickSeries.setData([]);
-                 selectedPairTitle.textContent = "No Active Pairs";
+            }
+
+            if (currentPairIdGlobal && (!oldSelectedPairId || oldSelectedPairId !== currentPairIdGlobal || !candlestickSeries)) {
+                 // If selection changed or chart not init, init and fetch for the current one
+                initChart(currentPairIdGlobal);
+                fetchDataForCurrentPair(allData[currentPairIdGlobal]);
+                const currentButton = Array.from(pairListDiv.querySelectorAll('button')).find(b => b.textContent.startsWith(currentPairIdGlobal.replace("_", " TF: ")));
+                if(currentButton) currentButton.classList.add('selected');
+            } else if (!currentPairIdGlobal && candlestickSeries){
+                 candlestickSeries.setData([]);
+                 selectedPairTitleElem.textContent = "No Active Pairs";
                  analysisInfoDiv.innerHTML = "<p>No crypto pairs configured.</p>";
+                 chartLoader.style.display = 'none';
             }
         }
 
         function fetchDataForCurrentPair(pairData) {
-            if (!pairData) { // If pairData is not directly passed, means we need a full refresh
-                if(currentPairIdGlobal) fetchAllPairsData(); // This will find and update the current pair
+            if (!pairData) { 
+                if(currentPairIdGlobal) fetchAllPairsData();
                 return;
             }
-            if (!candlestickSeries) initChart(currentPairIdGlobal);
+            if (!candlestickSeries || !chart) { // Ensure chart is initialized
+                 if (!currentPairIdGlobal) return; // Should not happen if pairData is present
+                 initChart(currentPairIdGlobal);
+            }
             updateChart(pairData);
             updateAnalysisInfo(pairData);
         }
@@ -352,21 +392,22 @@ HTML_TEMPLATE = """
 
         function formatCandleData(candles) {
             return candles.map(c => ({
-                time: new Date(c.timestamp).getTime() / 1000, // UTC timestamp in seconds
+                time: new Date(c.timestamp).getTime() / 1000, 
                 open: c.open, high: c.high, low: c.low, close: c.close
             })).sort((a, b) => a.time - b.time);
         }
 
         function updateChart(data) {
             if (!candlestickSeries) return;
-            chartLoader.style.display = 'none';
-
+            
             clearPriceLines();
 
             if (!data.candles || data.candles.length === 0) {
                 candlestickSeries.setData([]);
+                chartLoader.style.display = 'none';
                 return;
             }
+            chartLoader.style.display = 'block'; // Show loader while processing
 
             const formattedCandles = formatCandleData(data.candles);
             candlestickSeries.setData(formattedCandles);
@@ -389,10 +430,10 @@ HTML_TEMPLATE = """
             let slPrice = data.emergency_sl_level_custom;
             let slTitle = "Emerg SL";
             if (data.current_trailing_stop_level !== null && data.trailing_tp_active_custom) {
-                 if (data.entry_price_custom !== null && data.current_trailing_stop_level > data.emergency_sl_level_custom) { // Assuming long
+                 if (data.entry_price_custom !== null && data.current_trailing_stop_level > data.emergency_sl_level_custom) { 
                     slPrice = data.current_trailing_stop_level;
                     slTitle = "Trail SL";
-                 } else if (data.entry_price_custom === null) { // No entry, could be from prev state
+                 } else if (data.entry_price_custom === null) { 
                      slPrice = data.current_trailing_stop_level;
                      slTitle = "Trail SL";
                  }
@@ -415,42 +456,49 @@ HTML_TEMPLATE = """
                     time: new Date(pl.timestamp).getTime() / 1000, position: 'belowBar', color: '#00bfa5', shape: 'arrowUp', text: `PL ${pl.price.toFixed(precision)}`
                 });
             });
-            if (markers.length > 0) candlestickSeries.setMarkers(markers.sort((a,b) => a.time - b.time));
+             // Filter markers to only include those within the visible candle range to improve performance
+            const visibleCandleTimes = formattedCandles.map(c => c.time);
+            const filteredMarkers = markers.filter(m => visibleCandleTimes.includes(m.time));
+
+            if (filteredMarkers.length > 0) candlestickSeries.setMarkers(filteredMarkers.sort((a,b) => a.time - b.time));
             else candlestickSeries.setMarkers([]);
 
 
-            if (formattedCandles.length > 1) {
-                // chart.timeScale().fitContent(); // This can be jumpy
+            if (formattedCandles.length > 1 && chart) {
                  const lastTime = formattedCandles[formattedCandles.length - 1].time;
                  const firstTime = formattedCandles[0].time;
-                 chart.timeScale().setVisibleRange({ from: firstTime, to: lastTime + (lastTime-firstTime)*0.05 }); // Add some padding to the right
+                 // chart.timeScale().setVisibleRange({ from: firstTime, to: lastTime + (lastTime-firstTime)*0.05 });
+                 chart.timeScale().fitContent(); // Usually better for dynamic data
             }
+            chartLoader.style.display = 'none'; // Hide loader after updates
         }
 
         function updateAnalysisInfo(data) {
-            let html = `<h3>Analysis for ${currentPairIdGlobal.replace("_", " TF: ")}</h3>`;
+            let html = `<h3>Analysis: ${currentPairIdGlobal.replace("_", " TF: ")}</h3>`;
             const precision = data.currency_precision !== undefined ? data.currency_precision : 5;
 
-            if (data.last_update) html += `<p>Last Update: ${new Date(data.last_update).toLocaleString()}</p>`;
+            if (data.last_update) html += `<p><small>Last Update: ${new Date(data.last_update).toLocaleString()}</small></p>`;
             
             if (data.is_loading_big_data){
                 html += `<p style="color:#ffc107;">Status: Loading initial data (${data.candles_loaded || 0}/${data.candles_target || 'N/A'})...</p>`;
             } else if (!data.candles || data.candles.length === 0) {
-                 html += `<p style="color:#ffc107;">Status: No candle data available.</p>`;
+                 html += `<p style="color:#ffc107;">Status: No candle data currently available for chart.</p>`;
             } else {
                  html += `<p style="color:lightgreen;">Status: Live Analysis</p>`;
             }
 
 
-            if (data.final_pivot_high_info) html += `<p>Last Confirmed Pivot High: ${data.final_pivot_high_info.price.toFixed(precision)} @ ${new Date(data.final_pivot_high_info.timestamp).toLocaleTimeString()}</p>`;
-            if (data.final_pivot_low_info) html += `<p>Last Confirmed Pivot Low: ${data.final_pivot_low_info.price.toFixed(precision)} @ ${new Date(data.final_pivot_low_info.timestamp).toLocaleTimeString()}</p>`;
-            if (data.fib_level && data.fib_level.value !== null) html += `<p>Active FIB 0.5 Level: ${data.fib_level.value.toFixed(precision)}</p>`;
+            if (data.final_pivot_high_info) html += `<p>Last Conf. PH: ${data.final_pivot_high_info.price.toFixed(precision)} @ ${new Date(data.final_pivot_high_info.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>`;
+            if (data.final_pivot_low_info) html += `<p>Last Conf. PL: ${data.final_pivot_low_info.price.toFixed(precision)} @ ${new Date(data.final_pivot_low_info.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>`;
+            if (data.fib_level && data.fib_level.value !== null) html += `<p>Active FIB 0.5: ${data.fib_level.value.toFixed(precision)}</p>`;
 
             if (data.entry_price_custom !== null) {
-                html += `<p style="color:#28a745;">Current Entry: ${data.entry_price_custom.toFixed(precision)}</p>`;
-                if (data.emergency_sl_level_custom !== null) html += `<p style="color:#dc3545;">Emergency SL: ${data.emergency_sl_level_custom.toFixed(precision)}</p>`;
-                if (data.current_trailing_stop_level !== null && data.trailing_tp_active_custom) html += `<p style="color:#ff8c00;">Trailing SL: ${data.current_trailing_stop_level.toFixed(precision)} (Active)</p>`;
-                if (data.highest_price_for_trailing !== null) html += `<p>Highest Price Since Entry: ${data.highest_price_for_trailing.toFixed(precision)}</p>`;
+                html += `<p style="color:#28a745;"><strong>Active Position</strong></p>`;
+                html += `<p style="margin-left:10px;">Entry: ${data.entry_price_custom.toFixed(precision)}</p>`;
+                if (data.emergency_sl_level_custom !== null) html += `<p style="margin-left:10px; color:#dc3545;">Emerg SL: ${data.emergency_sl_level_custom.toFixed(precision)}</p>`;
+                if (data.current_trailing_stop_level !== null && data.trailing_tp_active_custom) html += `<p style="margin-left:10px; color:#ff8c00;">Trailing SL: ${data.current_trailing_stop_level.toFixed(precision)} (Active)</p>`;
+                else if (data.trailing_tp_active_custom) html += `<p style="margin-left:10px; color:#ff8c00;">Trailing SL Pending Activation</p>`;
+                if (data.highest_price_for_trailing !== null) html += `<p style="margin-left:10px;">Highest Since Entry: ${data.highest_price_for_trailing.toFixed(precision)}</p>`;
             } else {
                 html += "<p>No active position.</p>"
             }
@@ -458,7 +506,7 @@ HTML_TEMPLATE = """
         }
 
         // Initial load and polling
-        fetchAllPairsData(); // Fetch all pair data initially to populate sidebar
+        fetchAllPairsData(); 
         setInterval(() => {
             if (document.visibilityState === 'visible') {
                  fetchAllPairsData();
@@ -466,7 +514,9 @@ HTML_TEMPLATE = """
         }, 3000); // Poll every 3 seconds
 
         window.addEventListener('resize', () => {
-            if (chart) chart.resize(chartContainer.clientWidth, chartContainer.clientHeight);
+            if (chart && chartContainer.clientWidth > 0 && chartContainer.clientHeight > 0) {
+                 chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+            }
         });
     </script>
 </body>
@@ -594,21 +644,32 @@ def play_notification_sound():
 
 def send_email_notification(subject, body_text, settings_for_email):
     if not settings_for_email.get("enable_email_notifications", False):
-        return
+        # Check if global email is enabled AND specific pair email is NOT explicitly disabled
+        # This logic can be tricky. For now, explicit enable per pair or global switch for system notifications.
+        is_system_notification = 'symbol' not in settings_for_email # Heuristic
+        api_settings_ref = settings_for_email.get('api_settings_ref', {})
+        
+        if not (is_system_notification and api_settings_ref.get("enable_global_email_notifications_for_key_switch")):
+            return
+
 
     sender_email = settings_for_email.get("email_sender_address")
     sender_password = settings_for_email.get("email_sender_app_password")
     receiver_email = settings_for_email.get("email_receiver_address")
 
-    # Cek juga dari global settings jika individual pair tidak diset
-    if not sender_email and settings_for_email.get('api_settings_ref'):
-        sender_email = settings_for_email['api_settings_ref'].get("email_sender_address")
-    if not sender_password and settings_for_email.get('api_settings_ref'):
-        sender_password = settings_for_email['api_settings_ref'].get("email_sender_app_password")
-    # Receiver untuk pair-specific tetap pair-specific, atau admin jika itu notif sistem
-    is_system_notification_context = 'symbol' not in settings_for_email # Heuristic
-    if not receiver_email and is_system_notification_context and settings_for_email.get('api_settings_ref'):
-         receiver_email = settings_for_email['api_settings_ref'].get("email_receiver_address_admin")
+    # Fallback to global settings if pair-specific are empty
+    api_settings_ref = settings_for_email.get('api_settings_ref')
+    if not sender_email and api_settings_ref:
+        sender_email = api_settings_ref.get("email_sender_address")
+    if not sender_password and api_settings_ref:
+        sender_password = api_settings_ref.get("email_sender_app_password")
+    
+    # For system notifications, receiver might be admin if specific not set
+    is_system_notification_context = 'symbol' not in settings_for_email 
+    if not receiver_email and is_system_notification_context and api_settings_ref:
+         receiver_email = api_settings_ref.get("email_receiver_address_admin", api_settings_ref.get("email_receiver_address"))
+    elif not receiver_email and api_settings_ref: # For pair-specific, if receiver not set, could use global default receiver
+        receiver_email = api_settings_ref.get("email_receiver_address")
 
 
     if not all([sender_email, sender_password, receiver_email]):
@@ -658,7 +719,7 @@ def get_default_crypto_config():
         "left_strength": 50, "right_strength": 150,
         "profit_target_percent_activation": 5.0, "trailing_stop_gap_percent": 5.0,
         "emergency_sl_percent": 10.0, "enable_secure_fib": True, "secure_fib_check_price": "Close",
-        "enable_email_notifications": False,
+        "enable_email_notifications": False, # Email per pair defaultnya false
         "email_sender_address": "", "email_sender_app_password": "", "email_receiver_address": ""
     }
 
@@ -666,13 +727,14 @@ def load_settings():
     default_api_settings = {
         "primary_key": "YOUR_PRIMARY_KEY",
         "recovery_keys": [],
-        "enable_global_email_notifications_for_key_switch": False,
-        "email_sender_address": "pengirim.global@gmail.com",
-        "email_sender_app_password": "xxxx xxxx xxxx xxxx",
-        "email_receiver_address_admin": "admin.penerima@example.com",
+        "enable_global_email_notifications_for_key_switch": False, # Untuk notif sistem (key switch dll)
+        "email_sender_address": "", # Email global (jika diisi, bisa jadi default untuk pair)
+        "email_sender_app_password": "", # App pass global
+        "email_receiver_address_admin": "", # Penerima notif sistem
+        "email_receiver_address": "", # Penerima default untuk pair (jika pair tidak isi spesifik)
         "enable_termux_notifications": False,
-        "enable_localhost_server": False, # BARU
-        "localhost_server_port": 5000     # BARU
+        "enable_localhost_server": False, 
+        "localhost_server_port": 5000    
     }
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -690,6 +752,10 @@ def load_settings():
                 for crypto_cfg in settings["cryptos"]:
                     if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
                     if "enabled" not in crypto_cfg: crypto_cfg["enabled"] = True
+                     # Pastikan semua field email ada di config lama
+                    for email_k in ["enable_email_notifications", "email_sender_address", "email_sender_app_password", "email_receiver_address"]:
+                        if email_k not in crypto_cfg:
+                            crypto_cfg[email_k] = get_default_crypto_config()[email_k]
                 return settings
             except json.JSONDecodeError:
                 log_error(f"Error membaca {SETTINGS_FILE}. Menggunakan default atau membuat file baru.")
@@ -754,13 +820,13 @@ def _prompt_crypto_config(current_config):
     else: print(f"{AnsiColors.RED}Pilihan harga Secure FIB tidak valid. Menggunakan default: {new_config.get('secure_fib_check_price','Close')}{AnsiColors.ENDC}");
 
     animated_text_display("\n-- Notifikasi Email (Gmail) untuk Pair Ini --", color=AnsiColors.HEADER, delay=0.01)
-    print(f"{AnsiColors.ORANGE}Kosongkan jika ingin menggunakan pengaturan email global dari API Settings (jika notif global aktif).{AnsiColors.ENDC}")
-    email_enable_input = input(f"Aktifkan Notifikasi Email? (true/false) [{new_config.get('enable_email_notifications',False)}]: ").lower().strip()
+    print(f"{AnsiColors.ORANGE}Jika dikosongkan, akan menggunakan setting email global jika ada & notif global aktif.{AnsiColors.ENDC}")
+    email_enable_input = input(f"Aktifkan Notifikasi Email untuk pair ini? (true/false) [{new_config.get('enable_email_notifications',False)}]: ").lower().strip()
     new_config["enable_email_notifications"] = True if email_enable_input == 'true' else (False if email_enable_input == 'false' else new_config.get('enable_email_notifications',False))
 
-    new_config["email_sender_address"] = (input(f"{AnsiColors.BLUE}Email Pengirim (Gmail) [{new_config.get('email_sender_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_address','')).strip()
-    new_config["email_sender_app_password"] = (input(f"{AnsiColors.BLUE}App Password Email Pengirim [{new_config.get('email_sender_app_password','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_app_password','')).strip()
-    new_config["email_receiver_address"] = (input(f"{AnsiColors.BLUE}Email Penerima [{new_config.get('email_receiver_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_receiver_address','')).strip()
+    new_config["email_sender_address"] = (input(f"{AnsiColors.BLUE}Email Pengirim (Gmail) [Pair Specific - Default: Global Setting]: {AnsiColors.ENDC}") or new_config.get('email_sender_address','')).strip()
+    new_config["email_sender_app_password"] = (input(f"{AnsiColors.BLUE}App Password Pengirim [Pair Specific - Default: Global Setting]: {AnsiColors.ENDC}") or new_config.get('email_sender_app_password','')).strip()
+    new_config["email_receiver_address"] = (input(f"{AnsiColors.BLUE}Email Penerima [Pair Specific - Default: Global Setting]: {AnsiColors.ENDC}") or new_config.get('email_receiver_address','')).strip()
 
     return new_config
 
@@ -775,7 +841,6 @@ def settings_menu(current_settings):
         recovery_keys = api_s.get('recovery_keys', [])
         num_recovery_keys = len([k for k in recovery_keys if k])
         termux_notif_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
-        # BARU: Status Server Localhost
         localhost_server_status = "Aktif" if api_s.get("enable_localhost_server", False) else "Nonaktif"
         localhost_port = api_s.get("localhost_server_port", 5000)
 
@@ -784,7 +849,7 @@ def settings_menu(current_settings):
         pick_title_settings += f"Primary API Key: {primary_key_display}\n"
         pick_title_settings += f"Recovery API Keys: {num_recovery_keys} tersimpan\n"
         pick_title_settings += f"Notifikasi Termux: {termux_notif_status}\n"
-        pick_title_settings += f"Server Localhost: {localhost_server_status} (Port: {localhost_port})\n" # BARU
+        pick_title_settings += f"Server Localhost: {localhost_server_status} (Port: {localhost_port})\n" 
         pick_title_settings += "------------------------------------\n"
         pick_title_settings += "Daftar Konfigurasi Crypto:\n"
 
@@ -801,9 +866,9 @@ def settings_menu(current_settings):
             ("header", "--- Pengaturan API & Global ---"),
             ("option", "Atur Primary API Key"),
             ("option", "Kelola Recovery API Keys"),
-            ("option", "Atur Email Global untuk Notifikasi Sistem"),
+            ("option", "Atur Email Global (Notif Sistem & Default Pair)"),
             ("option", "Aktifkan/Nonaktifkan Notifikasi Termux Realtime"),
-            ("option", "Aktifkan/Nonaktifkan Server Localhost & Atur Port"), # BARU
+            ("option", "Aktifkan/Nonaktifkan Server Localhost & Atur Port"), 
             ("header", "--- Pengaturan Crypto Pair ---"),
             ("option", "Tambah Konfigurasi Crypto Baru"),
             ("option", "Ubah Konfigurasi Crypto"),
@@ -923,16 +988,20 @@ def settings_menu(current_settings):
                     elif rec_index == 2: # Kembali
                         break
             elif action_choice == 2: # Atur Email Global
-                animated_text_display("-- Pengaturan Email Global Notifikasi Sistem --", color=AnsiColors.HEADER)
-                enable_g_email = input(f"Aktifkan notifikasi email global (API Key switch, dll)? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip()
-                api_s['enable_global_email_notifications_for_key_switch'] = True if enable_g_email == 'true' else (False if enable_g_email == 'false' else api_s.get('enable_global_email_notifications_for_key_switch',False))
+                animated_text_display("-- Pengaturan Email Global --", color=AnsiColors.HEADER)
+                print(f"{AnsiColors.CYAN}Email ini akan digunakan untuk notifikasi sistem (pergantian API key, dll) dan sebagai default jika setting email per-pair kosong.{AnsiColors.ENDC}")
+                
+                enable_g_email_sys = input(f"Aktifkan notifikasi email untuk SISTEM (API Key switch, error global)? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip()
+                api_s['enable_global_email_notifications_for_key_switch'] = True if enable_g_email_sys == 'true' else (False if enable_g_email_sys == 'false' else api_s.get('enable_global_email_notifications_for_key_switch',False))
 
-                api_s['email_sender_address'] = (input(f"Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
+                api_s['email_sender_address'] = (input(f"Email Pengirim Global (Default untuk semua notif) [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
                 api_s['email_sender_app_password'] = (input(f"App Password Pengirim Global [{api_s.get('email_sender_app_password','')}]: ").strip() or api_s.get('email_sender_app_password',''))
-                api_s['email_receiver_address_admin'] = (input(f"Email Penerima Notifikasi Sistem (Admin) [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
+                api_s['email_receiver_address_admin'] = (input(f"Email Penerima Notifikasi SISTEM (Admin) [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
+                api_s['email_receiver_address'] = (input(f"Email Penerima Default untuk PAIR (jika pair tidak diset spesifik) [{api_s.get('email_receiver_address','')}]: ").strip() or api_s.get('email_receiver_address',''))
+                
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
-                show_spinner(1, "Menyimpan & Kembali...")
+                show_spinner(1.5, "Menyimpan & Kembali...")
 
             elif action_choice == 3: # Notifikasi Termux
                 animated_text_display("-- Pengaturan Notifikasi Termux Realtime --", color=AnsiColors.HEADER)
@@ -952,8 +1021,7 @@ def settings_menu(current_settings):
                 save_settings(current_settings)
                 show_spinner(2, "Menyimpan & Kembali...")
             
-            # BARU: Pengaturan Server Localhost
-            elif action_choice == 4:
+            elif action_choice == 4: # Server Localhost
                 animated_text_display("-- Pengaturan Server Localhost --", color=AnsiColors.HEADER)
                 current_server_status = api_s.get('enable_localhost_server', False)
                 new_server_status_input = input(f"Aktifkan Server Localhost untuk Chart Realtime? (true/false) [{current_server_status}]: ").lower().strip()
@@ -1201,11 +1269,11 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
 # --- LOGIKA STRATEGI ---
 def get_initial_strategy_state():
     return {
-        "last_signal_type": 0, # 1 for high, -1 for low
-        "final_pivot_high_info": None, # BARU: {"price": float, "timestamp": datetime}
-        "final_pivot_low_info": None,  # BARU: {"price": float, "timestamp": datetime}
-        "pivots_high_confirmed_history": [], # BARU: List of {"price": float, "timestamp": datetime}
-        "pivots_low_confirmed_history": [],  # BARU: List of {"price": float, "timestamp": datetime}
+        "last_signal_type": 0, 
+        "final_pivot_high_info": None, 
+        "final_pivot_low_info": None,  
+        "pivots_high_confirmed_history": [], 
+        "pivots_low_confirmed_history": [],  
         "high_price_for_fib": None,
         "high_bar_index_for_fib": None,
         "active_fib_level": None,
@@ -1248,10 +1316,6 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
 
 def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
-    # Reset temporary pivot flags, info objects will persist or be updated
-    # strategy_state["final_pivot_high_price_confirmed"] = None
-    # strategy_state["final_pivot_low_price_confirmed"] = None
-    # Note: final_pivot_high_info and final_pivot_low_info are updated upon new pivot detection
 
     left_strength = crypto_config['left_strength']
     right_strength = crypto_config['right_strength']
@@ -1270,35 +1334,29 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
     current_bar_index_in_list = len(candles_history) - 1
     if current_bar_index_in_list < 0 : return strategy_state
 
-    # Pivot detection occurs when a candle at index `i` is confirmed by `right_strength` candles after it.
-    # So, for the latest data, we check the pivot at `current_bar_index_in_list - right_strength`.
     idx_pivot_event_high = current_bar_index_in_list - right_strength
     idx_pivot_event_low = current_bar_index_in_list - right_strength
 
     raw_pivot_high_price_at_event = raw_pivot_highs[idx_pivot_event_high] if 0 <= idx_pivot_event_high < len(raw_pivot_highs) else None
     raw_pivot_low_price_at_event = raw_pivot_lows[idx_pivot_event_low] if 0 <= idx_pivot_event_low < len(raw_pivot_lows) else None
 
-    # --- Pivot High Logic ---
     if raw_pivot_high_price_at_event is not None and strategy_state["last_signal_type"] != 1:
         pivot_timestamp = candles_history[idx_pivot_event_high]['timestamp']
         strategy_state["final_pivot_high_info"] = {"price": raw_pivot_high_price_at_event, "timestamp": pivot_timestamp}
         strategy_state["pivots_high_confirmed_history"].append(strategy_state["final_pivot_high_info"])
-        strategy_state["pivots_high_confirmed_history"] = strategy_state["pivots_high_confirmed_history"][-10:] # Keep last 10
+        strategy_state["pivots_high_confirmed_history"] = strategy_state["pivots_high_confirmed_history"][-10:] 
 
         strategy_state["last_signal_type"] = 1
         log_info(f"{AnsiColors.CYAN}PIVOT HIGH: {raw_pivot_high_price_at_event:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
 
-        # This pivot high becomes the high for subsequent FIB calculation if a low follows
         strategy_state["high_price_for_fib"] = raw_pivot_high_price_at_event
         strategy_state["high_bar_index_for_fib"] = idx_pivot_event_high
 
-        # If a new high pivot is confirmed, any active FIB from a previous high-low pair is invalidated.
         if strategy_state["active_fib_level"] is not None:
             log_debug("Resetting active FIB due to new High Pivot.", pair_name=pair_name)
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
-    # --- Pivot Low Logic & FIB Calculation ---
     if raw_pivot_low_price_at_event is not None and strategy_state["last_signal_type"] != -1:
         pivot_timestamp = candles_history[idx_pivot_event_low]['timestamp']
         strategy_state["final_pivot_low_info"] = {"price": raw_pivot_low_price_at_event, "timestamp": pivot_timestamp}
@@ -1308,17 +1366,15 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
         strategy_state["last_signal_type"] = -1
         log_info(f"{AnsiColors.CYAN}PIVOT LOW:  {raw_pivot_low_price_at_event:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
 
-        # Check if we have a preceding high_price_for_fib to calculate FIB
         if strategy_state["high_price_for_fib"] is not None and strategy_state["high_bar_index_for_fib"] is not None:
             current_low_bar_index = idx_pivot_event_low
 
-            # Ensure Low Pivot is after High Pivot for valid FIB
             if current_low_bar_index > strategy_state["high_bar_index_for_fib"]:
                 if raw_pivot_low_price_at_event is None:
                      log_warning("Harga Pivot Low tidak valid (None) untuk kalkulasi FIB.", pair_name=pair_name)
                 else:
                     calculated_fib_level = (strategy_state["high_price_for_fib"] + raw_pivot_low_price_at_event) / 2.0
-                    current_candle_for_fib_check = candles_history[current_bar_index_in_list] # Check against current candle
+                    current_candle_for_fib_check = candles_history[current_bar_index_in_list] 
 
                     is_fib_late = False
                     if crypto_config["enable_secure_fib"]:
@@ -1333,33 +1389,24 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                     elif calculated_fib_level is not None :
                         log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {raw_pivot_low_price_at_event:.2f})", pair_name=pair_name)
                         strategy_state["active_fib_level"] = calculated_fib_level
-                        # Start index for FIB line visualization might be the low pivot's bar index
                         strategy_state["active_fib_line_start_index"] = current_low_bar_index
-
-            # Reset high_price_for_fib after attempting to use it, so it requires a new Pivot High.
+            
             strategy_state["high_price_for_fib"] = None
             strategy_state["high_bar_index_for_fib"] = None
 
-
-    # --- Entry Logic (based on active FIB) ---
-    current_candle = candles_history[current_bar_index_in_list] # Latest, possibly incomplete candle
+    current_candle = candles_history[current_bar_index_in_list] 
     if any(current_candle.get(k) is None for k in ['open', 'high', 'low', 'close']):
         log_warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp', 'N/A')}. Skip evaluasi entry/exit.", pair_name=pair_name)
         return strategy_state
 
 
     if strategy_state["active_fib_level"] is not None and strategy_state["active_fib_line_start_index"] is not None:
-        # Check if the bar where FIB was confirmed (low pivot bar) is not the current bar to avoid premature entry.
-        # Entry should be on a candle closing *after* the FIB level is established and crossed.
-        # The current logic implies entry can happen on the candle that *confirms* the low pivot if it also crosses FIB.
-        # This might be okay, depends on desired strategy.
-
         is_bullish_candle = current_candle['close'] > current_candle['open']
         is_closed_above_fib = current_candle['close'] > strategy_state["active_fib_level"]
 
         if is_bullish_candle and is_closed_above_fib:
-            if strategy_state["position_size"] == 0: # No existing position
-                strategy_state["position_size"] = 1 # Indicate long position
+            if strategy_state["position_size"] == 0: 
+                strategy_state["position_size"] = 1 
                 entry_px = current_candle['close']
                 strategy_state["entry_price_custom"] = entry_px
                 strategy_state["highest_price_for_trailing"] = entry_px
@@ -1377,7 +1424,6 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                 termux_content = f"Entry @ {entry_px:.5f}. SL: {emerg_sl:.5f}"
                 send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
                 
-                # Pass api_settings reference for email fallback
                 email_cfg_with_fallback = crypto_config.copy()
                 email_cfg_with_fallback['api_settings_ref'] = global_settings.get("api_settings")
                 send_email_notification(f"BUY Signal: {pair_name}",
@@ -1385,20 +1431,17 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                                        f"Entry Price: {entry_px:.5f}\nFIB Level: {strategy_state['active_fib_level']:.5f}\n"
                                        f"Emergency SL: {emerg_sl:.5f}\nTime: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"),
                                       email_cfg_with_fallback)
-
-            # Once entry is made, deactivate this specific FIB level to prevent multiple entries on the same signal
+            
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
-    # --- Exit Logic (SL, Trailing TP) ---
-    if strategy_state["position_size"] > 0: # If in a long position
+    if strategy_state["position_size"] > 0: 
         current_high_for_trailing = strategy_state.get("highest_price_for_trailing", current_candle.get('high'))
         if current_high_for_trailing is None or current_candle.get('high') is None:
             log_warning("Harga tertinggi untuk trailing atau high candle tidak valid (None).", pair_name=pair_name)
         else:
              strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
 
-        # Activate Trailing TP
         if not strategy_state["trailing_tp_active_custom"] and strategy_state["entry_price_custom"] is not None:
             if strategy_state["entry_price_custom"] == 0: profit_percent = 0.0
             elif strategy_state.get("highest_price_for_trailing") is None: profit_percent = 0.0
@@ -1408,14 +1451,12 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                 strategy_state["trailing_tp_active_custom"] = True
                 log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High: {strategy_state.get('highest_price_for_trailing',0):.5f}{AnsiColors.ENDC}", pair_name=pair_name)
 
-        # Update Trailing Stop Level
         if strategy_state["trailing_tp_active_custom"] and strategy_state.get("highest_price_for_trailing") is not None:
             potential_new_stop_price = strategy_state["highest_price_for_trailing"] * (1 - (crypto_config["trailing_stop_gap_percent"] / 100.0))
             if strategy_state["current_trailing_stop_level"] is None or potential_new_stop_price > strategy_state["current_trailing_stop_level"]:
                 strategy_state["current_trailing_stop_level"] = potential_new_stop_price
                 log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
 
-        # Determine final stop loss for this bar (Emergency SL or Trailing SL)
         final_stop_for_exit = strategy_state["emergency_sl_level_custom"]
         exit_comment = "Emergency SL"
         exit_color = AnsiColors.RED
@@ -1426,7 +1467,6 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                 exit_comment = "Trailing Stop"
                 exit_color = AnsiColors.BLUE
 
-        # Check for Exit
         if final_stop_for_exit is not None and current_candle.get('low') is not None and current_candle['low'] <= final_stop_for_exit:
             exit_price_open = current_candle.get('open')
             exit_price = min(exit_price_open, final_stop_for_exit) if exit_price_open is not None else final_stop_for_exit
@@ -1435,7 +1475,7 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
             if strategy_state["entry_price_custom"] is not None and strategy_state["entry_price_custom"] != 0:
                 pnl = ((exit_price - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
 
-            if exit_comment == "Trailing Stop" and pnl < 0: exit_color = AnsiColors.RED # Trailing stop hit at a loss
+            if exit_comment == "Trailing Stop" and pnl < 0: exit_color = AnsiColors.RED 
 
             log_msg = f"EXIT ORDER @ {exit_price:.5f} by {exit_comment}. PnL: {pnl:.2f}%"
             log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
@@ -1453,17 +1493,13 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                                    f"Entry Price: {strategy_state.get('entry_price_custom', 0):.5f}\nPnL: {pnl:.2f}%\n"
                                    f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"),
                                   email_cfg_with_fallback)
-
-            # Reset position state
+            
             strategy_state["position_size"] = 0
             strategy_state["entry_price_custom"] = None
             strategy_state["highest_price_for_trailing"] = None
             strategy_state["trailing_tp_active_custom"] = False
             strategy_state["current_trailing_stop_level"] = None
             strategy_state["emergency_sl_level_custom"] = None
-            # strategy_state["final_pivot_high_info"] = None # Keep pivot info for chart
-            # strategy_state["final_pivot_low_info"] = None
-            # strategy_state["active_fib_level"] = None # Already reset upon entry or new pivot
 
     if strategy_state["position_size"] > 0:
         plot_stop_level = strategy_state.get("emergency_sl_level_custom")
@@ -1476,7 +1512,7 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
         entry_price_display = strategy_state.get('entry_price_custom', 0)
         sl_display_str = f'{plot_stop_level:.5f} ({stop_type_info})' if plot_stop_level is not None else 'N/A'
         log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
-
+        
     return strategy_state
 
 # --- FUNGSI UTAMA TRADING LOOP ---
@@ -1486,7 +1522,7 @@ def start_trading(global_settings_dict):
     api_key_manager = APIKeyManager(
         api_settings.get("primary_key"),
         api_settings.get("recovery_keys", []),
-        api_settings
+        api_settings # Pass global api_settings for email fallback in APIKeyManager
     )
 
     if not api_key_manager.has_valid_keys():
@@ -1502,18 +1538,16 @@ def start_trading(global_settings_dict):
         input()
         return
 
-    # --- BARU: Start Flask server if enabled ---
     global FLASK_THREAD
-    if api_settings.get("enable_localhost_server", False) and FLASK_THREAD is None:
+    if api_settings.get("enable_localhost_server", False) and (FLASK_THREAD is None or not FLASK_THREAD.is_alive()):
         server_port = api_settings.get("localhost_server_port", 5000)
         FLASK_THREAD = threading.Thread(target=run_flask_app, args=('0.0.0.0', server_port), daemon=True)
         FLASK_THREAD.start()
         log_info(f"Memulai server localhost di background pada port {server_port}...", pair_name="SYSTEM")
-    elif not api_settings.get("enable_localhost_server", False) and FLASK_THREAD is not None:
-        # Note: Stopping a Flask thread gracefully is complex. Daemon=True handles abrupt exit.
-        # For a clean stop, Flask would need an endpoint like /shutdown and main thread signalling it.
-        log_info("Server localhost tidak diaktifkan atau sudah berjalan (tidak akan distart ulang).", pair_name="SYSTEM")
-
+    elif not api_settings.get("enable_localhost_server", False) and FLASK_THREAD is not None and FLASK_THREAD.is_alive():
+        log_info("Server localhost dinonaktifkan. Jika sebelumnya berjalan, mungkin perlu restart skrip untuk mematikannya sepenuhnya.", pair_name="SYSTEM")
+        # Stopping Flask thread cleanly from another thread is non-trivial without special setup (e.g. shutdown endpoint)
+        # Daemon=True ensures it exits when main program exits.
 
     animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
     current_key_display_val = api_key_manager.get_current_key()
@@ -1524,14 +1558,33 @@ def start_trading(global_settings_dict):
     log_info(f"Menggunakan API Key Index: {api_key_manager.get_current_key_index()} ({current_key_display}). Total keys: {api_key_manager.total_keys()}", pair_name="SYSTEM")
 
     crypto_data_manager = {}
+    # Clear and initialize GLOBAL_WEB_DATA for active pairs
+    with LOCK_WEB_DATA:
+        GLOBAL_WEB_DATA.clear() # Clear any old data
+        for config_init in all_crypto_configs:
+            pair_id_init = f"{config_init.get('symbol','DEF')}-{config_init.get('currency','DEF')}_{config_init.get('timeframe','DEF')}"
+            GLOBAL_WEB_DATA[pair_id_init] = {
+                "pair_id": pair_id_init,
+                "config_symbol": config_init['symbol'],
+                "config_currency": config_init['currency'],
+                "config_timeframe": config_init['timeframe'],
+                "candles": [],
+                "is_loading_big_data": True,
+                "candles_loaded": 0,
+                "candles_target": TARGET_BIG_DATA_CANDLES,
+                "currency_precision": 5, 
+                "last_update": datetime.now().isoformat()
+            }
+
+
     for config in all_crypto_configs:
-        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}" # Unique ID for web
-        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" # For logging
+        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}" 
+        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" 
 
         animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
 
         crypto_data_manager[pair_id] = {
-            "config": config, # Store config for reference
+            "config": config, 
             "all_candles_list": [],
             "strategy_state": get_initial_strategy_state(),
             "big_data_collection_phase_active": True,
@@ -1540,22 +1593,6 @@ def start_trading(global_settings_dict):
             "data_fetch_failed_consecutively": 0
         }
         
-        # BARU: Initialize data for this pair in GLOBAL_WEB_DATA
-        with LOCK_WEB_DATA:
-            GLOBAL_WEB_DATA[pair_id] = {
-                "pair_id": pair_id, # Self-reference for UI
-                "config_symbol": config['symbol'],
-                "config_currency": config['currency'],
-                "config_timeframe": config['timeframe'],
-                "candles": [],
-                "is_loading_big_data": True,
-                "candles_loaded": 0,
-                "candles_target": TARGET_BIG_DATA_CANDLES,
-                "currency_precision": 5, # Default, will be updated
-                "last_update": datetime.now().isoformat()
-            }
-
-
         initial_candles_target = TARGET_BIG_DATA_CANDLES
         initial_candles = []
         max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
@@ -1592,7 +1629,7 @@ def start_trading(global_settings_dict):
             log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
             crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
             crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now()
-            with LOCK_WEB_DATA: # Update web data status
+            with LOCK_WEB_DATA: 
                  if pair_id in GLOBAL_WEB_DATA:
                     GLOBAL_WEB_DATA[pair_id]["is_loading_big_data"] = False
                     GLOBAL_WEB_DATA[pair_id]["last_update"] = datetime.now().isoformat()
@@ -1601,7 +1638,6 @@ def start_trading(global_settings_dict):
         crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
         log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
         
-        # BARU: Update web data after initial fetch
         with LOCK_WEB_DATA:
             if pair_id in GLOBAL_WEB_DATA:
                 web_candles = [
@@ -1618,26 +1654,32 @@ def start_trading(global_settings_dict):
             if len(initial_candles) >= min_len_for_pivots:
                 log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
 
-                for i in range(min_len_for_pivots -1, len(initial_candles) - 1): # Iterate up to the second to last candle for warm-up
+                for i in range(min_len_for_pivots -1, len(initial_candles) - 1): 
                     historical_slice = initial_candles[:i+1]
                     if len(historical_slice) < min_len_for_pivots: continue
 
-                    temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy() # Use a fresh copy
-                    # Ensure warm-up doesn't actually place trades or keep state from them
-                    temp_state_for_warmup["position_size"] = 0
-                    temp_state_for_warmup["entry_price_custom"] = None
-                    # ... reset other position-specific fields if necessary
+                    temp_state_for_warmup = get_initial_strategy_state() # Fresh state for each step of warmup
+                    
+                    # Run logic on historical slice, but discard any trade signals
+                    warmed_up_state = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
+                    
+                    # Only carry over non-positional elements of state from warmup (like pivots, last_signal_type)
+                    # Reset any potential position that might have been simulated
+                    crypto_data_manager[pair_id]["strategy_state"]["last_signal_type"] = warmed_up_state["last_signal_type"]
+                    crypto_data_manager[pair_id]["strategy_state"]["final_pivot_high_info"] = warmed_up_state["final_pivot_high_info"]
+                    crypto_data_manager[pair_id]["strategy_state"]["final_pivot_low_info"] = warmed_up_state["final_pivot_low_info"]
+                    crypto_data_manager[pair_id]["strategy_state"]["pivots_high_confirmed_history"] = warmed_up_state["pivots_high_confirmed_history"]
+                    crypto_data_manager[pair_id]["strategy_state"]["pivots_low_confirmed_history"] = warmed_up_state["pivots_low_confirmed_history"]
+                    # Ensure other position related states are reset to initial
+                    crypto_data_manager[pair_id]["strategy_state"]["position_size"] = 0
+                    crypto_data_manager[pair_id]["strategy_state"]["entry_price_custom"] = None
+                    crypto_data_manager[pair_id]["strategy_state"]["emergency_sl_level_custom"] = None
+                    crypto_data_manager[pair_id]["strategy_state"]["highest_price_for_trailing"] = None
+                    crypto_data_manager[pair_id]["strategy_state"]["trailing_tp_active_custom"] = False
+                    crypto_data_manager[pair_id]["strategy_state"]["current_trailing_stop_level"] = None
+                    crypto_data_manager[pair_id]["strategy_state"]["active_fib_level"] = None # FIB is dynamic, should be fine
 
-                    crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
 
-                    # Crucially, reset any position that might have been opened during this historical simulation
-                    if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0:
-                        crypto_data_manager[pair_id]["strategy_state"] = {
-                            **crypto_data_manager[pair_id]["strategy_state"],
-                            **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None,
-                               "highest_price_for_trailing":None, "trailing_tp_active_custom":False,
-                               "current_trailing_stop_level":None}
-                        }
                 log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
             else:
                 log_warning(f"Data awal ({len(initial_candles)}) tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}).", pair_name=config['pair_name'])
@@ -1653,7 +1695,7 @@ def start_trading(global_settings_dict):
                 send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", email_cfg_with_fallback)
                 crypto_data_manager[pair_id]["big_data_email_sent"] = True
             log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[pair_id]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            with LOCK_WEB_DATA: # Update web status
+            with LOCK_WEB_DATA: 
                  if pair_id in GLOBAL_WEB_DATA: GLOBAL_WEB_DATA[pair_id]["is_loading_big_data"] = False
 
 
@@ -1715,15 +1757,15 @@ def start_trading(global_settings_dict):
                         log_error(f"Semua API key habis secara global saat mencoba mengambil update untuk {pair_name}.", pair_name=pair_name)
                         break
 
-                    limit_fetch = 3 # Fetch a few recent candles if not in big data mode
+                    limit_fetch = 3 
                     if data["big_data_collection_phase_active"]:
                         limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data["all_candles_list"])
                         if limit_fetch_needed <=0 :
                              fetch_update_successful_for_this_pair = True
-                             new_candles_batch = [] # No new candles needed
+                             new_candles_batch = [] 
                              break
-                        limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT) # Fetch up to max limit towards target
-                        limit_fetch = max(limit_fetch, 1) # Always fetch at least 1 if needed
+                        limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT) 
+                        limit_fetch = max(limit_fetch, 1) 
 
                     log_info(f"Mengambil {limit_fetch} candle (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name)
                     try:
@@ -1765,11 +1807,9 @@ def start_trading(global_settings_dict):
                     elif not fetch_update_successful_for_this_pair:
                          log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name)
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-                    # Update web data even if fetch failed, to show loading status or error
                     with LOCK_WEB_DATA:
                         if pair_id in GLOBAL_WEB_DATA:
                             GLOBAL_WEB_DATA[pair_id]["last_update"] = datetime.now().isoformat()
-                            # Potentially add an error message field here for the UI
                     continue
 
                 merged_candles_dict = {c['timestamp']: c for c in data["all_candles_list"]}
@@ -1781,7 +1821,7 @@ def start_trading(global_settings_dict):
                     if ts not in merged_candles_dict:
                         merged_candles_dict[ts] = candle
                         newly_added_count_this_batch +=1
-                    elif merged_candles_dict[ts] != candle : # Compare content if timestamp exists
+                    elif merged_candles_dict[ts] != candle : 
                         merged_candles_dict[ts] = candle
                         updated_count_this_batch +=1
 
@@ -1791,7 +1831,7 @@ def start_trading(global_settings_dict):
 
                 if actual_new_or_updated_count > 0:
                      log_info(f"{actual_new_or_updated_count} candle baru/diupdate. Total: {len(data['all_candles_list'])}.", pair_name=pair_name)
-                elif new_candles_batch : # new_candles_batch was not empty but no new timestamps or content changes
+                elif new_candles_batch : 
                      log_info("Tidak ada candle dengan timestamp baru atau update konten. Data terakhir mungkin identik.", pair_name=pair_name)
 
 
@@ -1799,7 +1839,7 @@ def start_trading(global_settings_dict):
                     if len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
                         log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name}!{AnsiColors.ENDC}", pair_name=pair_name)
                         if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES:
-                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] # Trim
+                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] 
 
                         if not data["big_data_email_sent"]:
                             email_cfg_with_fallback = config.copy()
@@ -1810,21 +1850,19 @@ def start_trading(global_settings_dict):
                         data["big_data_collection_phase_active"] = False
                         active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1)
                         log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data['all_candles_list'])} candles) untuk {pair_name} ----------{AnsiColors.ENDC}", pair_name=pair_name)
-                        with LOCK_WEB_DATA: # Update web status
+                        with LOCK_WEB_DATA: 
                             if pair_id in GLOBAL_WEB_DATA: GLOBAL_WEB_DATA[pair_id]["is_loading_big_data"] = False
-                    else: # Still loading big data
+                    else: 
                          with LOCK_WEB_DATA:
                             if pair_id in GLOBAL_WEB_DATA:
                                 GLOBAL_WEB_DATA[pair_id]["candles_loaded"] = len(data["all_candles_list"])
 
-
-                else: # Not in big data collection phase, normal operation
-                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: # Keep candle list to max size
+                else: 
+                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
                         data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
 
                 min_len_for_pivots = config.get('left_strength',50) + config.get('right_strength',150) + 1
                 if len(data["all_candles_list"]) >= min_len_for_pivots:
-                    # Process logic if new data, or if big data phase just ended, or if in big data phase and new candles added
                     process_logic_now = (actual_new_or_updated_count > 0 or
                                          (not data["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or
                                          (data["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) )
@@ -1838,12 +1876,11 @@ def start_trading(global_settings_dict):
                 else:
                     log_info(f"Data ({len(data['all_candles_list'])}) untuk {pair_name} belum cukup utk analisa (min: {min_len_for_pivots}).", pair_name=pair_name)
 
-                # --- BARU: Update GLOBAL_WEB_DATA for this pair ---
                 with LOCK_WEB_DATA:
-                    if pair_id not in GLOBAL_WEB_DATA: # Should be initialized, but as a safe guard
-                        GLOBAL_WEB_DATA[pair_id] = {}
+                    if pair_id not in GLOBAL_WEB_DATA: 
+                        GLOBAL_WEB_DATA[pair_id] = {} # Should be init, but safeguard
                     
-                    web_pair_data = GLOBAL_WEB_DATA[pair_id] # Get existing or new dict
+                    web_pair_data = GLOBAL_WEB_DATA[pair_id] 
                     web_pair_data["pair_id"] = pair_id
                     web_pair_data["config_symbol"]= config['symbol']
                     web_pair_data["config_currency"]= config['currency']
@@ -1870,8 +1907,10 @@ def start_trading(global_settings_dict):
 
                     cur = config['currency'].upper()
                     if cur in ["USD", "EUR", "GBP", "JPY"]: web_pair_data["currency_precision"] = 2
-                    elif cur in ["USDT", "USDC", "BUSD"]: web_pair_data["currency_precision"] = 4
-                    else: web_pair_data["currency_precision"] = 5 if cur != "SHIB" else 8 # Example for SHIB
+                    elif cur in ["USDT", "USDC", "BUSD", "DAI", "TUSD"]: web_pair_data["currency_precision"] = 4
+                    elif cur in ["BTC", "ETH"]: web_pair_data["currency_precision"] = 8
+                    elif "SHIB" in cur or "PEPE" in cur or "BONK" in cur: web_pair_data["currency_precision"] = 9 # Memecoins
+                    else: web_pair_data["currency_precision"] = 5 
 
                     web_pair_data["entry_price_custom"] = ss.get("entry_price_custom")
                     web_pair_data["emergency_sl_level_custom"] = ss.get("emergency_sl_level_custom")
@@ -1884,16 +1923,15 @@ def start_trading(global_settings_dict):
                     web_pair_data["candles_target"] = TARGET_BIG_DATA_CANDLES
 
                     web_pair_data["last_update"] = datetime.now().isoformat()
-                    GLOBAL_WEB_DATA[pair_id] = web_pair_data # Ensure it's set back
+                    GLOBAL_WEB_DATA[pair_id] = web_pair_data 
 
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-
-
-            sleep_duration = 15
+            
+            sleep_duration = 15 
 
             if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None:
                 log_error("Semua API key gagal secara global dan tidak ada data berhasil di-fetch. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
-                sleep_duration = 3600
+                sleep_duration = 3600 
             elif active_cryptos_still_in_big_data_collection > 0:
                 min_big_data_interval = float('inf')
                 for pid_loop, pdata_loop in crypto_data_manager.items():
@@ -1901,14 +1939,14 @@ def start_trading(global_settings_dict):
                         pconfig_loop = pdata_loop["config"]
                         interval_bd = 55 if pconfig_loop.get('timeframe') == "minute" else (3600 * 23.8 if pconfig_loop.get('timeframe') == "day" else 3580)
                         min_big_data_interval = min(min_big_data_interval, interval_bd)
-
-                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30)
+                
+                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30) 
                 log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
-            else:
+            else: 
                 if min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0 :
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
                     log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
-                else:
+                else: 
                     default_refresh_from_config = 60
                     if all_crypto_configs :
                         default_refresh_from_config = all_crypto_configs[0].get('refresh_interval_seconds', 60)
@@ -1929,10 +1967,14 @@ def start_trading(global_settings_dict):
         log_exception("Traceback Error:", pair_name="SYSTEM")
     finally:
         animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
-        # Clear web data when stopping or on error to reflect on UI
         with LOCK_WEB_DATA:
-            GLOBAL_WEB_DATA.clear()
-            # Could add a "stopped" message: GLOBAL_WEB_DATA["system_status"] = "stopped"
+            for pair_id_key in list(GLOBAL_WEB_DATA.keys()): # Iterate over a copy of keys
+                if pair_id_key in GLOBAL_WEB_DATA:
+                    GLOBAL_WEB_DATA[pair_id_key]["is_loading_big_data"] = False # Mark as not loading
+                    GLOBAL_WEB_DATA[pair_id_key]["last_update"] = datetime.now().isoformat()
+                    # You could add a specific "status_message": "Trading stopped" field here
+            # GLOBAL_WEB_DATA["system_status_message"] = "Trading loop stopped by user or error."
+
         animated_text_display("Tekan Enter untuk kembali ke menu utama...", color=AnsiColors.ORANGE, delay=0.01)
         input()
 
@@ -1959,7 +2001,6 @@ def main_menu():
              primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
         num_recovery_keys = len([k for k in api_s.get('recovery_keys',[]) if k])
         termux_notif_main_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
-        # BARU: Status server localhost di menu utama
         localhost_server_main_status = "Aktif" if api_s.get("enable_localhost_server", False) else "Nonaktif"
         localhost_port_main = api_s.get("localhost_server_port", 5000)
 
@@ -1968,7 +2009,7 @@ def main_menu():
         pick_title_main += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
         pick_title_main += f"Primary API Key: {primary_key_display} | Recovery Keys: {num_recovery_keys}\n"
         pick_title_main += f"Notifikasi Termux: {termux_notif_main_status}\n"
-        pick_title_main += f"Server Localhost: {localhost_server_main_status} (Port: {localhost_port_main})\n" # BARU
+        pick_title_main += f"Server Localhost: {localhost_server_main_status} (Port: {localhost_port_main})\n" 
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += "Pilih Opsi:"
 
@@ -2008,16 +2049,13 @@ def main_menu():
             clear_screen_animated()
             animated_text_display("Terima kasih telah menggunakan skrip ini! Sampai jumpa!", color=AnsiColors.MAGENTA)
             show_spinner(0.5, "Exiting")
-            # BARU: Pastikan Flask thread (jika ada) juga berhenti. Daemon=True seharusnya menangani ini saat main exit.
             global FLASK_THREAD
             if FLASK_THREAD and FLASK_THREAD.is_alive():
-                log_info("Flask thread masih berjalan, akan berhenti saat program utama exit (daemon).", pair_name="SYSTEM")
+                log_info("Flask thread is daemon; will exit with main program.", pair_name="SYSTEM_EXIT")
             break
 
 if __name__ == "__main__":
     try:
-        # Pastikan Flask hanya diimpor jika akan digunakan atau ada di __main__
-        # Import sudah di atas, jadi ini hanya catatan.
         main_menu()
     except KeyboardInterrupt:
         clear_screen_animated()
@@ -2029,5 +2067,4 @@ if __name__ == "__main__":
         animated_text_display("Tekan Enter untuk keluar...", color=AnsiColors.RED, delay=0.01)
         input()
     finally:
-        log_info("Program selesai.", pair_name="SYSTEM_EXIT")
-
+        log_info("Program execution finished.", pair_name="SYSTEM_EXIT")
