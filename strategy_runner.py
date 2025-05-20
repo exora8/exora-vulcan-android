@@ -1,4 +1,3 @@
-
 import requests
 import time
 import json
@@ -11,21 +10,15 @@ import sys
 import uuid
 from pick import pick
 import subprocess # Ditambahkan untuk termux-notification
+import threading # BARU: Untuk Flask server
 
-# --- CHARTING AND KEYBOARD INPUT (NEW) ---
-TERMUX_CHART_ENABLED = True # Set to False if plotext is not available or causing issues
+# --- BARU: Import Flask ---
 try:
-    import plotext as ptx
-    import select
-    import tty
-    import termios
+    from flask import Flask, jsonify, render_template_string
 except ImportError:
-    TERMUX_CHART_ENABLED = False
-    print("WARNING: plotext, select, tty, or termios not found. Charting feature will be disabled.")
+    print("Flask tidak terinstal. Silakan install dengan: pip install Flask")
+    sys.exit(1)
 
-current_view_mode = "log"  # "log" or "chart"
-original_terminal_settings = None
-# --- END CHARTING AND KEYBOARD INPUT ---
 
 # --- ANSI COLOR CODES ---
 class AnsiColors:
@@ -43,13 +36,6 @@ class AnsiColors:
 
 # --- ANIMATION HELPER FUNCTIONS ---
 def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True):
-    # In chart mode, avoid too many animated texts unless crucial
-    if TERMUX_CHART_ENABLED and current_view_mode == "chart" and "menu" not in text.lower() and "settings" not in text.lower():
-        # Only print crucial things or nothing
-        if "error" in text.lower() or "kritis" in text.lower() or "signal" in text.lower() or "penting" in text.lower():
-            print(color + text + AnsiColors.ENDC if color else text)
-        return
-
     for char in text:
         sys.stdout.write(color + char + AnsiColors.ENDC if color else char)
         sys.stdout.flush()
@@ -58,15 +44,6 @@ def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True
         print()
 
 def show_spinner(duration_seconds, message="Processing..."):
-    # Disable spinner in chart mode to avoid overwriting the chart
-    if TERMUX_CHART_ENABLED and current_view_mode == "chart":
-        # print(f"\r{AnsiColors.MAGENTA}{message} (Chart Mode - No Spinner). Waiting {duration_seconds}s...{AnsiColors.ENDC}{' '*20}", end="")
-        # sys.stdout.flush()
-        time.sleep(duration_seconds)
-        # print(f"\r{' ' * (len(message) + 40)}\r", end="") # Clear the line
-        # sys.stdout.flush()
-        return
-
     spinner_chars = ['-', '\\', '|', '/']
     start_time = time.time()
     idx = 0
@@ -89,9 +66,6 @@ def show_spinner(duration_seconds, message="Processing..."):
     sys.stdout.flush()
 
 def simple_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
-    if TERMUX_CHART_ENABLED and current_view_mode == "chart": # Avoid progress bar in chart mode
-        return
-
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
@@ -115,9 +89,7 @@ class APIKeyError(Exception):
 
 # --- KONFIGURASI LOGGING ---
 logger = logging.getLogger()
-logger.setLevel(logging.INFO) # Default INFO, can be changed
-# logger.setLevel(logging.DEBUG) # For more verbose logging
-
+logger.setLevel(logging.INFO)
 if logger.hasHandlers():
     logger.handlers.clear()
 
@@ -126,24 +98,12 @@ file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pair_name)s 
 fh.setFormatter(file_formatter)
 logger.addHandler(fh)
 
-# --- Modified StreamHandler to respect chart mode ---
-class ChartAwareStreamHandler(logging.StreamHandler):
-    def emit(self, record):
-        if TERMUX_CHART_ENABLED and current_view_mode == "chart":
-            # In chart mode, only print ERROR/CRITICAL logs to console, or if it's a system message not tied to a pair
-            if record.levelno >= logging.ERROR or getattr(record, 'pair_name', 'SYSTEM') == 'SYSTEM':
-                super().emit(record)
-            # else: suppress other logs like INFO, WARNING for pairs when chart is active
-        else:
-            super().emit(record)
-
-ch = ChartAwareStreamHandler()
+ch = logging.StreamHandler()
 console_formatter_template = '%(asctime)s - {bold}%(levelname)s{endc} - {cyan}[%(pair_name)s]{endc} - %(message)s'
 ch.setFormatter(logging.Formatter(
     console_formatter_template.format(bold=AnsiColors.BOLD, endc=AnsiColors.ENDC, cyan=AnsiColors.CYAN)
 ))
 logger.addHandler(ch)
-
 
 class AddPairNameFilter(logging.Filter):
     def filter(self, record):
@@ -158,20 +118,395 @@ def log_error(message, pair_name="SYSTEM"): logger.error(message, extra={'pair_n
 def log_debug(message, pair_name="SYSTEM"): logger.debug(message, extra={'pair_name': pair_name})
 def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra={'pair_name': pair_name})
 
-
 SETTINGS_FILE = "settings_multiple_recovery.json"
 CRYPTOCOMPARE_MAX_LIMIT = 1999
-TARGET_BIG_DATA_CANDLES = 2500 # Keep this reasonable for terminal chart performance
+TARGET_BIG_DATA_CANDLES = 2500 # Jumlah candle untuk analisa awal dan history di chart
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
+MAX_CANDLES_FOR_WEB = 500 # Jumlah candle maksimum yang dikirim ke web UI
+
+# --- BARU: Variabel Global untuk Web Server ---
+GLOBAL_WEB_DATA = {}
+LOCK_WEB_DATA = threading.Lock()
+FLASK_THREAD = None
+flask_app = Flask(__name__)
+
+# Menonaktifkan logging standar Werkzeug untuk menjaga konsol tetap bersih
+werkzeug_logger = logging.getLogger('werkzeug')
+werkzeug_logger.setLevel(logging.ERROR)
+
+
+# --- BARU: HTML Template untuk Web UI ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Realtime Trading Analysis</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif; margin: 0; background-color: #1e1e1e; color: #d4d4d4; display: flex; flex-direction: column; min-height: 100vh; }
+        #appContainer { display: flex; flex: 1; }
+        #sidebar { width: 300px; background-color: #252526; padding: 15px; overflow-y: auto; border-right: 1px solid #333; }
+        #mainContent { flex: 1; display: flex; flex-direction: column; padding:10px; }
+        #chartContainerOuter { display: flex; flex-direction: column; align-items: center; width: 100%; }
+        #controls { margin-bottom: 10px; background-color: #2D2D2D; padding: 10px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); display: flex; align-items: center; }
+        #pairSelectorLabel { margin-right: 10px; font-size: 0.9em; }
+        #pairSelector { padding: 8px; border-radius: 3px; border: 1px solid #3c3c3c; background-color: #3c3c3c; color: #d4d4d4; font-size: 0.9em;}
+        #chartContainer { width: 100%; height: 60vh; min-height: 400px; background-color: #1e1e1e; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); margin-top:10px;}
+        #analysisInfo { margin-top: 15px; padding: 15px; background-color: #252526; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); width: 100%; font-size:0.9em; }
+        h1 { text-align: center; color: #007acc; margin-top:0; margin-bottom:15px; font-size: 1.5em;}
+        h3 { color: #007acc; border-bottom: 1px solid #333; padding-bottom: 5px; font-size: 1.1em;}
+        p { margin: 8px 0; line-height: 1.6; }
+        .loader { border: 5px solid #f3f3f3; border-radius: 50%; border-top: 5px solid #3498db; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .status-dot { height: 10px; width: 10px; background-color: #bbb; border-radius: 50%; display: inline-block; margin-right: 5px; }
+        .status-dot.active { background-color: #28a745; }
+        .status-dot.inactive { background-color: #dc3545; }
+        .status-dot.loading { background-color: #ffc107; }
+    </style>
+</head>
+<body>
+    <div id="appContainer">
+        <div id="sidebar">
+            <h3>Pairs</h3>
+            <div id="pairList">
+                <!-- Pair list will be populated by JS -->
+            </div>
+             <div id="systemInfo" style="margin-top: 20px; font-size: 0.8em; color: #888;">
+                <p>Last Synced: <span id="lastSyncedTime">-</span></p>
+                <p>Status: <span id="serverStatus">Connecting...</span></p>
+            </div>
+        </div>
+        <div id="mainContent">
+            <div id="chartContainerOuter">
+                <div id="controls">
+                    <span id="pairSelectorLabel">Selected Pair:</span>
+                    <h1 id="selectedPairTitle">Select a pair</h1>
+                </div>
+                <div id="chartContainer"><div class="loader" id="chartLoader"></div></div>
+            </div>
+            <div id="analysisInfo"><p>Select a pair from the sidebar to view analysis.</p></div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let candlestickSeries = null;
+        let priceLines = {}; // { fib: lineObj, entry: lineObj, sl: lineObj }
+        let currentPairIdGlobal = null;
+        let lastDataTimestamp = null; // To check if data is new
+
+        const chartContainer = document.getElementById('chartContainer');
+        const pairListDiv = document.getElementById('pairList');
+        const selectedPairTitle = document.getElementById('selectedPairTitle');
+        const analysisInfoDiv = document.getElementById('analysisInfo');
+        const chartLoader = document.getElementById('chartLoader');
+        const lastSyncedTimeSpan = document.getElementById('lastSyncedTime');
+        const serverStatusSpan = document.getElementById('serverStatus');
+
+
+        function initChart(pairId) {
+            if (chart) { chart.remove(); chart = null; }
+            chartLoader.style.display = 'block'; // Show loader
+
+            chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: chartContainer.clientHeight,
+                layout: { backgroundColor: '#1e1e1e', textColor: '#d4d4d4' },
+                grid: { vertLines: { color: '#252526' }, horzLines: { color: '#252526' } },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                rightPriceScale: { borderColor: '#333333' },
+                timeScale: { borderColor: '#333333', timeVisible: true, secondsVisible: false },
+            });
+            candlestickSeries = chart.addCandlestickSeries({
+                upColor: 'rgba(0, 180, 136, 1)', downColor: 'rgba(255, 82, 82, 1)',
+                wickUpColor: 'rgba(0, 180, 136, 1)', wickDownColor: 'rgba(255, 82, 82, 1)',
+                borderVisible: false,
+            });
+            selectedPairTitle.textContent = pairId.replace("_", " TF: ");
+            chartLoader.style.display = 'none'; // Hide loader
+        }
+
+        function clearPriceLines() {
+            Object.values(priceLines).forEach(line => {
+                if (line) candlestickSeries.removePriceLine(line);
+            });
+            priceLines = {};
+        }
+
+        async function fetchAllPairsData() {
+            try {
+                const response = await fetch('/data/all');
+                 if (!response.ok) {
+                    serverStatusSpan.textContent = `Error: ${response.status}`;
+                    serverStatusSpan.style.color = 'red';
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const allData = await response.json();
+                serverStatusSpan.textContent = 'Connected';
+                serverStatusSpan.style.color = 'lightgreen';
+                lastSyncedTimeSpan.textContent = new Date().toLocaleTimeString();
+                updatePairList(allData);
+
+                if (currentPairIdGlobal && allData[currentPairIdGlobal]) {
+                    const pairData = allData[currentPairIdGlobal];
+                     // Only update chart if data is newer
+                    if (pairData.last_update && pairData.last_update !== lastDataTimestamp) {
+                        lastDataTimestamp = pairData.last_update;
+                        updateChart(pairData);
+                        updateAnalysisInfo(pairData);
+                    } else if (!pairData.last_update && candlestickSeries) { // Data might have been cleared
+                        candlestickSeries.setData([]);
+                        analysisInfoDiv.innerHTML = "<p>No data available for this pair currently.</p>";
+                    }
+                } else if (currentPairIdGlobal && !allData[currentPairIdGlobal]) {
+                    // Current pair is no longer in data, clear it
+                    selectedPairTitle.textContent = "Pair data not found";
+                    if (candlestickSeries) candlestickSeries.setData([]);
+                    analysisInfoDiv.innerHTML = "<p>Data for the selected pair is no longer available. It might have been disabled or removed.</p>";
+                }
+
+
+            } catch (error) {
+                console.error('Error fetching all pairs data:', error);
+                serverStatusSpan.textContent = 'Connection Error';
+                serverStatusSpan.style.color = 'red';
+            }
+        }
+        
+        function updatePairList(allData) {
+            pairListDiv.innerHTML = ''; // Clear old list
+            const pairIds = Object.keys(allData);
+
+            if (pairIds.length === 0) {
+                const p = document.createElement('p');
+                p.textContent = "No active pairs.";
+                p.style.color = "#888";
+                pairListDiv.appendChild(p);
+                if (candlestickSeries) candlestickSeries.setData([]); // Clear chart if no pairs
+                selectedPairTitle.textContent = "No Active Pairs";
+                analysisInfoDiv.innerHTML = "<p>No crypto pairs are currently being analyzed or the backend is not providing data.</p>";
+                chartLoader.style.display = 'none';
+                return;
+            }
+
+            pairIds.forEach(pairId => {
+                const pairData = allData[pairId];
+                const button = document.createElement('button');
+                button.style.cssText = "display: block; width: 100%; text-align: left; padding: 10px; margin-bottom: 5px; background-color: #3c3c3c; color: #d4d4d4; border: none; border-radius: 3px; cursor: pointer;";
+                
+                let statusText = "Analyzing";
+                let dotClass = "active";
+                if (pairData.is_loading_big_data) {
+                    statusText = `Loading (${pairData.candles_loaded || 0}/${pairData.candles_target || 'N/A'})`;
+                    dotClass = "loading";
+                } else if (!pairData.candles || pairData.candles.length === 0) {
+                    statusText = "No Data";
+                    dotClass = "inactive";
+                }
+
+                button.innerHTML = `<span class="status-dot ${dotClass}"></span> ${pairId.replace("_", " TF: ")} <small style='color:#888;float:right;'>${statusText}</small>`;
+                button.onclick = () => {
+                    currentPairIdGlobal = pairId;
+                    lastDataTimestamp = null; // Reset last timestamp to force update
+                    if (!candlestickSeries || (chart && chartContainer.clientWidth === 0)) { // If chart not init or not visible
+                        initChart(pairId);
+                    } else {
+                         selectedPairTitle.textContent = pairId.replace("_", " TF: ");
+                    }
+                    fetchDataForCurrentPair(pairData); // Use already fetched data first for responsiveness
+                };
+                 if (pairId === currentPairIdGlobal) {
+                    button.style.backgroundColor = "#007acc"; // Highlight selected
+                }
+                pairListDiv.appendChild(button);
+            });
+
+            // If no current pair is selected, or selected pair disappeared, pick the first one
+            if (!currentPairIdGlobal && pairIds.length > 0) {
+                currentPairIdGlobal = pairIds[0];
+                initChart(currentPairIdGlobal);
+                fetchDataForCurrentPair(allData[currentPairIdGlobal]);
+            } else if (currentPairIdGlobal && !pairIds.includes(currentPairIdGlobal) && pairIds.length > 0) {
+                // current selected pair is gone, select the first available
+                currentPairIdGlobal = pairIds[0];
+                initChart(currentPairIdGlobal);
+                fetchDataForCurrentPair(allData[currentPairIdGlobal]);
+            } else if (pairIds.length === 0) {
+                currentPairIdGlobal = null;
+                 if (candlestickSeries) candlestickSeries.setData([]);
+                 selectedPairTitle.textContent = "No Active Pairs";
+                 analysisInfoDiv.innerHTML = "<p>No crypto pairs configured.</p>";
+            }
+        }
+
+        function fetchDataForCurrentPair(pairData) {
+            if (!pairData) { // If pairData is not directly passed, means we need a full refresh
+                if(currentPairIdGlobal) fetchAllPairsData(); // This will find and update the current pair
+                return;
+            }
+            if (!candlestickSeries) initChart(currentPairIdGlobal);
+            updateChart(pairData);
+            updateAnalysisInfo(pairData);
+        }
+
+
+        function formatCandleData(candles) {
+            return candles.map(c => ({
+                time: new Date(c.timestamp).getTime() / 1000, // UTC timestamp in seconds
+                open: c.open, high: c.high, low: c.low, close: c.close
+            })).sort((a, b) => a.time - b.time);
+        }
+
+        function updateChart(data) {
+            if (!candlestickSeries) return;
+            chartLoader.style.display = 'none';
+
+            clearPriceLines();
+
+            if (!data.candles || data.candles.length === 0) {
+                candlestickSeries.setData([]);
+                return;
+            }
+
+            const formattedCandles = formatCandleData(data.candles);
+            candlestickSeries.setData(formattedCandles);
+            
+            const precision = data.currency_precision !== undefined ? data.currency_precision : 5;
+
+            if (data.fib_level && data.fib_level.value !== null) {
+                priceLines.fib = candlestickSeries.createPriceLine({
+                    price: data.fib_level.value, color: 'orange', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed,
+                    axisLabelVisible: true, title: `FIB ${data.fib_level.value.toFixed(precision)}`,
+                });
+            }
+            if (data.entry_price_custom !== null) {
+                priceLines.entry = candlestickSeries.createPriceLine({
+                    price: data.entry_price_custom, color: '#28a745', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
+                    axisLabelVisible: true, title: `Entry ${data.entry_price_custom.toFixed(precision)}`,
+                });
+            }
+
+            let slPrice = data.emergency_sl_level_custom;
+            let slTitle = "Emerg SL";
+            if (data.current_trailing_stop_level !== null && data.trailing_tp_active_custom) {
+                 if (data.entry_price_custom !== null && data.current_trailing_stop_level > data.emergency_sl_level_custom) { // Assuming long
+                    slPrice = data.current_trailing_stop_level;
+                    slTitle = "Trail SL";
+                 } else if (data.entry_price_custom === null) { // No entry, could be from prev state
+                     slPrice = data.current_trailing_stop_level;
+                     slTitle = "Trail SL";
+                 }
+            }
+            if (slPrice !== null) {
+                priceLines.sl = candlestickSeries.createPriceLine({
+                    price: slPrice, color: '#dc3545', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dotted,
+                    axisLabelVisible: true, title: `${slTitle} ${slPrice.toFixed(precision)}`,
+                });
+            }
+
+            const markers = [];
+            (data.pivots_high_confirmed_history || []).forEach(ph => {
+                markers.push({
+                    time: new Date(ph.timestamp).getTime() / 1000, position: 'aboveBar', color: '#ff5252', shape: 'arrowDown', text: `PH ${ph.price.toFixed(precision)}`
+                });
+            });
+            (data.pivots_low_confirmed_history || []).forEach(pl => {
+                markers.push({
+                    time: new Date(pl.timestamp).getTime() / 1000, position: 'belowBar', color: '#00bfa5', shape: 'arrowUp', text: `PL ${pl.price.toFixed(precision)}`
+                });
+            });
+            if (markers.length > 0) candlestickSeries.setMarkers(markers.sort((a,b) => a.time - b.time));
+            else candlestickSeries.setMarkers([]);
+
+
+            if (formattedCandles.length > 1) {
+                // chart.timeScale().fitContent(); // This can be jumpy
+                 const lastTime = formattedCandles[formattedCandles.length - 1].time;
+                 const firstTime = formattedCandles[0].time;
+                 chart.timeScale().setVisibleRange({ from: firstTime, to: lastTime + (lastTime-firstTime)*0.05 }); // Add some padding to the right
+            }
+        }
+
+        function updateAnalysisInfo(data) {
+            let html = `<h3>Analysis for ${currentPairIdGlobal.replace("_", " TF: ")}</h3>`;
+            const precision = data.currency_precision !== undefined ? data.currency_precision : 5;
+
+            if (data.last_update) html += `<p>Last Update: ${new Date(data.last_update).toLocaleString()}</p>`;
+            
+            if (data.is_loading_big_data){
+                html += `<p style="color:#ffc107;">Status: Loading initial data (${data.candles_loaded || 0}/${data.candles_target || 'N/A'})...</p>`;
+            } else if (!data.candles || data.candles.length === 0) {
+                 html += `<p style="color:#ffc107;">Status: No candle data available.</p>`;
+            } else {
+                 html += `<p style="color:lightgreen;">Status: Live Analysis</p>`;
+            }
+
+
+            if (data.final_pivot_high_info) html += `<p>Last Confirmed Pivot High: ${data.final_pivot_high_info.price.toFixed(precision)} @ ${new Date(data.final_pivot_high_info.timestamp).toLocaleTimeString()}</p>`;
+            if (data.final_pivot_low_info) html += `<p>Last Confirmed Pivot Low: ${data.final_pivot_low_info.price.toFixed(precision)} @ ${new Date(data.final_pivot_low_info.timestamp).toLocaleTimeString()}</p>`;
+            if (data.fib_level && data.fib_level.value !== null) html += `<p>Active FIB 0.5 Level: ${data.fib_level.value.toFixed(precision)}</p>`;
+
+            if (data.entry_price_custom !== null) {
+                html += `<p style="color:#28a745;">Current Entry: ${data.entry_price_custom.toFixed(precision)}</p>`;
+                if (data.emergency_sl_level_custom !== null) html += `<p style="color:#dc3545;">Emergency SL: ${data.emergency_sl_level_custom.toFixed(precision)}</p>`;
+                if (data.current_trailing_stop_level !== null && data.trailing_tp_active_custom) html += `<p style="color:#ff8c00;">Trailing SL: ${data.current_trailing_stop_level.toFixed(precision)} (Active)</p>`;
+                if (data.highest_price_for_trailing !== null) html += `<p>Highest Price Since Entry: ${data.highest_price_for_trailing.toFixed(precision)}</p>`;
+            } else {
+                html += "<p>No active position.</p>"
+            }
+            analysisInfoDiv.innerHTML = html;
+        }
+
+        // Initial load and polling
+        fetchAllPairsData(); // Fetch all pair data initially to populate sidebar
+        setInterval(() => {
+            if (document.visibilityState === 'visible') {
+                 fetchAllPairsData();
+            }
+        }, 3000); // Poll every 3 seconds
+
+        window.addEventListener('resize', () => {
+            if (chart) chart.resize(chartContainer.clientWidth, chartContainer.clientHeight);
+        });
+    </script>
+</body>
+</html>
+"""
+
+# --- BARU: Flask Routes ---
+@flask_app.route('/')
+def index_page():
+    # Pair IDs will be fetched by JS from /data/all
+    return render_template_string(HTML_TEMPLATE)
+
+@flask_app.route('/data/all')
+def get_all_chart_data():
+    with LOCK_WEB_DATA:
+        # Make a deep copy if complex objects are involved, though for dicts of primitives/lists it's often fine
+        data_copy = json.loads(json.dumps(GLOBAL_WEB_DATA)) # Simple way to deepcopy JSON-serializable
+    return jsonify(data_copy)
+
+# This specific pair data endpoint might not be strictly needed if /data/all is used by JS and JS handles selection
+@flask_app.route('/data/<pair_id>')
+def get_specific_chart_data(pair_id):
+    with LOCK_WEB_DATA:
+        data = GLOBAL_WEB_DATA.get(pair_id, {})
+    return jsonify(data)
+
+def run_flask_app(host='0.0.0.0', port=5000):
+    log_info(f"Starting localhost server on http://{host}:{port}", pair_name="WEB_SERVER")
+    try:
+        flask_app.run(host=host, port=port, debug=False, use_reloader=False)
+    except Exception as e:
+        log_error(f"Flask server failed: {e}. Mungkin port sudah digunakan?", pair_name="WEB_SERVER")
+
 
 # --- FUNGSI CLEAR SCREEN ---
 def clear_screen_animated():
-    # If in chart mode and TERMUX_CHART_ENABLED, ptx.clt() is preferred for chart area
-    # but this is a general screen clear, so it's fine.
-    show_spinner(0.1, "Clearing screen") # This spinner will be skipped in chart mode
+    show_spinner(0.1, "Clearing screen")
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- API KEY MANAGER (no changes needed for charting) ---
+# --- API KEY MANAGER ---
 class APIKeyManager:
     def __init__(self, primary_key, recovery_keys_list, global_settings_for_email=None): #init diubah ke __init__
         self.keys = []
@@ -246,14 +581,14 @@ class APIKeyManager:
     def get_current_key_index(self):
         return self.current_index
 
-# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION (no changes needed) ---
+# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION ---
 def play_notification_sound():
     try:
         if sys.platform == "win32":
             import winsound
             winsound.Beep(1000, 500)
         else:
-            print('\a', end='', flush=True) # Beep for Linux/macOS/Termux
+            print('\a', end='', flush=True) # Standard beep for other systems
     except Exception as e:
         log_warning(f"Tidak bisa memainkan suara notifikasi: {e}")
 
@@ -264,6 +599,17 @@ def send_email_notification(subject, body_text, settings_for_email):
     sender_email = settings_for_email.get("email_sender_address")
     sender_password = settings_for_email.get("email_sender_app_password")
     receiver_email = settings_for_email.get("email_receiver_address")
+
+    # Cek juga dari global settings jika individual pair tidak diset
+    if not sender_email and settings_for_email.get('api_settings_ref'):
+        sender_email = settings_for_email['api_settings_ref'].get("email_sender_address")
+    if not sender_password and settings_for_email.get('api_settings_ref'):
+        sender_password = settings_for_email['api_settings_ref'].get("email_sender_app_password")
+    # Receiver untuk pair-specific tetap pair-specific, atau admin jika itu notif sistem
+    is_system_notification_context = 'symbol' not in settings_for_email # Heuristic
+    if not receiver_email and is_system_notification_context and settings_for_email.get('api_settings_ref'):
+         receiver_email = settings_for_email['api_settings_ref'].get("email_receiver_address_admin")
+
 
     if not all([sender_email, sender_password, receiver_email]):
         pair_name_ctx = settings_for_email.get('pair_name',
@@ -286,7 +632,9 @@ def send_email_notification(subject, body_text, settings_for_email):
         pair_name_ctx = settings_for_email.get('pair_name', settings_for_email.get('symbol', 'GLOBAL_EMAIL'))
         log_error(f"{AnsiColors.RED}Gagal mengirim email notifikasi: {e}{AnsiColors.ENDC}", pair_name=pair_name_ctx)
 
+# --- BARU: Fungsi untuk Notifikasi Termux ---
 def send_termux_notification(title, content_msg, global_settings, pair_name_for_log="SYSTEM"):
+    """Mengirim notifikasi menggunakan termux-notification jika diaktifkan."""
     api_settings = global_settings.get("api_settings", {})
     if not api_settings.get("enable_termux_notifications", False):
         return
@@ -301,7 +649,7 @@ def send_termux_notification(title, content_msg, global_settings, pair_name_for_
     except Exception as e:
         log_error(f"{AnsiColors.RED}Gagal mengirim notifikasi Termux: {e}{AnsiColors.ENDC}", pair_name=pair_name_for_log)
 
-# --- FUNGSI PENGATURAN (no direct changes for charting logic, but menus won't show chart) ---
+# --- FUNGSI PENGATURAN ---
 def get_default_crypto_config():
     return {
         "id": str(uuid.uuid4()), "enabled": True,
@@ -322,7 +670,9 @@ def load_settings():
         "email_sender_address": "pengirim.global@gmail.com",
         "email_sender_app_password": "xxxx xxxx xxxx xxxx",
         "email_receiver_address_admin": "admin.penerima@example.com",
-        "enable_termux_notifications": False
+        "enable_termux_notifications": False,
+        "enable_localhost_server": False, # BARU
+        "localhost_server_port": 5000     # BARU
     }
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -425,11 +775,16 @@ def settings_menu(current_settings):
         recovery_keys = api_s.get('recovery_keys', [])
         num_recovery_keys = len([k for k in recovery_keys if k])
         termux_notif_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
+        # BARU: Status Server Localhost
+        localhost_server_status = "Aktif" if api_s.get("enable_localhost_server", False) else "Nonaktif"
+        localhost_port = api_s.get("localhost_server_port", 5000)
+
 
         pick_title_settings = "--- Menu Pengaturan Utama ---\n"
         pick_title_settings += f"Primary API Key: {primary_key_display}\n"
         pick_title_settings += f"Recovery API Keys: {num_recovery_keys} tersimpan\n"
         pick_title_settings += f"Notifikasi Termux: {termux_notif_status}\n"
+        pick_title_settings += f"Server Localhost: {localhost_server_status} (Port: {localhost_port})\n" # BARU
         pick_title_settings += "------------------------------------\n"
         pick_title_settings += "Daftar Konfigurasi Crypto:\n"
 
@@ -448,6 +803,7 @@ def settings_menu(current_settings):
             ("option", "Kelola Recovery API Keys"),
             ("option", "Atur Email Global untuk Notifikasi Sistem"),
             ("option", "Aktifkan/Nonaktifkan Notifikasi Termux Realtime"),
+            ("option", "Aktifkan/Nonaktifkan Server Localhost & Atur Port"), # BARU
             ("header", "--- Pengaturan Crypto Pair ---"),
             ("option", "Tambah Konfigurasi Crypto Baru"),
             ("option", "Ubah Konfigurasi Crypto"),
@@ -482,13 +838,13 @@ def settings_menu(current_settings):
 
         try:
             clear_screen_animated()
-            if action_choice == 0:
+            if action_choice == 0: # Atur Primary API Key
                 animated_text_display("--- Atur Primary API Key ---", color=AnsiColors.HEADER)
                 api_s["primary_key"] = (input(f"Masukkan Primary API Key CryptoCompare baru [{api_s.get('primary_key','')}]: ").strip() or api_s.get('primary_key',''))
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
-            elif action_choice == 1:
+            elif action_choice == 1: # Kelola Recovery API Keys
                 while True:
                     clear_screen_animated()
                     recovery_pick_title = "\n-- Kelola Recovery API Keys --\n"
@@ -527,7 +883,7 @@ def settings_menu(current_settings):
 
                     clear_screen_animated()
 
-                    if rec_index == 0:
+                    if rec_index == 0: # Tambah Recovery Key
                         animated_text_display("-- Tambah Recovery Key --", color=AnsiColors.HEADER)
                         new_r_key = input("Masukkan Recovery API Key baru: ").strip()
                         if new_r_key:
@@ -538,7 +894,7 @@ def settings_menu(current_settings):
                         else:
                             print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
-                    elif rec_index == 1:
+                    elif rec_index == 1: # Hapus Recovery Key
                         animated_text_display("-- Hapus Recovery Key --", color=AnsiColors.HEADER)
                         if not current_recovery:
                             print(f"{AnsiColors.ORANGE}Tidak ada recovery key untuk dihapus.{AnsiColors.ENDC}")
@@ -564,9 +920,9 @@ def settings_menu(current_settings):
                         except ValueError:
                             print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
-                    elif rec_index == 2:
+                    elif rec_index == 2: # Kembali
                         break
-            elif action_choice == 2:
+            elif action_choice == 2: # Atur Email Global
                 animated_text_display("-- Pengaturan Email Global Notifikasi Sistem --", color=AnsiColors.HEADER)
                 enable_g_email = input(f"Aktifkan notifikasi email global (API Key switch, dll)? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip()
                 api_s['enable_global_email_notifications_for_key_switch'] = True if enable_g_email == 'true' else (False if enable_g_email == 'false' else api_s.get('enable_global_email_notifications_for_key_switch',False))
@@ -578,7 +934,7 @@ def settings_menu(current_settings):
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
 
-            elif action_choice == 3:
+            elif action_choice == 3: # Notifikasi Termux
                 animated_text_display("-- Pengaturan Notifikasi Termux Realtime --", color=AnsiColors.HEADER)
                 current_status = api_s.get('enable_termux_notifications', False)
                 new_status_input = input(f"Aktifkan Notifikasi Termux? (true/false) [{current_status}]: ").lower().strip()
@@ -595,14 +951,50 @@ def settings_menu(current_settings):
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(2, "Menyimpan & Kembali...")
+            
+            # BARU: Pengaturan Server Localhost
             elif action_choice == 4:
+                animated_text_display("-- Pengaturan Server Localhost --", color=AnsiColors.HEADER)
+                current_server_status = api_s.get('enable_localhost_server', False)
+                new_server_status_input = input(f"Aktifkan Server Localhost untuk Chart Realtime? (true/false) [{current_server_status}]: ").lower().strip()
+                if new_server_status_input == 'true':
+                    api_s['enable_localhost_server'] = True
+                    print(f"{AnsiColors.GREEN}Server Localhost diaktifkan.{AnsiColors.ENDC}")
+                elif new_server_status_input == 'false':
+                    api_s['enable_localhost_server'] = False
+                    print(f"{AnsiColors.GREEN}Server Localhost dinonaktifkan.{AnsiColors.ENDC}")
+                else:
+                    print(f"{AnsiColors.ORANGE}Input tidak valid. Status Server Localhost tidak berubah: {current_server_status}.{AnsiColors.ENDC}")
+
+                if api_s['enable_localhost_server']:
+                    current_port = api_s.get('localhost_server_port', 5000)
+                    port_input_str = input(f"Masukkan Port untuk Server Localhost (default {current_port}): ").strip()
+                    if port_input_str:
+                        try:
+                            new_port = int(port_input_str)
+                            if 1024 <= new_port <= 65535:
+                                api_s['localhost_server_port'] = new_port
+                                print(f"{AnsiColors.GREEN}Port Server Localhost diatur ke {new_port}.{AnsiColors.ENDC}")
+                            else:
+                                print(f"{AnsiColors.RED}Nomor port tidak valid (harus antara 1024-65535). Menggunakan port sebelumnya: {current_port}.{AnsiColors.ENDC}")
+                        except ValueError:
+                            print(f"{AnsiColors.RED}Input port tidak valid. Menggunakan port sebelumnya: {current_port}.{AnsiColors.ENDC}")
+                    else:
+                         print(f"{AnsiColors.BLUE}Menggunakan port default/sebelumnya: {current_port}.{AnsiColors.ENDC}")
+
+
+                current_settings["api_settings"] = api_s
+                save_settings(current_settings)
+                show_spinner(2, "Menyimpan & Kembali...")
+
+            elif action_choice == 5: # Tambah Konfigurasi Crypto
                 new_crypto_conf = get_default_crypto_config()
                 new_crypto_conf = _prompt_crypto_config(new_crypto_conf)
                 current_settings.setdefault("cryptos", []).append(new_crypto_conf)
                 save_settings(current_settings)
                 log_info(f"Konfigurasi untuk {new_crypto_conf['symbol']}-{new_crypto_conf['currency']} ditambahkan.")
                 show_spinner(1, "Menyimpan & Kembali...")
-            elif action_choice == 5:
+            elif action_choice == 6: # Ubah Konfigurasi Crypto
                 if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk diubah.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali...");
@@ -625,7 +1017,7 @@ def settings_menu(current_settings):
                 except ValueError:
                      print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                 show_spinner(1, "Kembali...")
-            elif action_choice == 6:
+            elif action_choice == 7: # Hapus Konfigurasi Crypto
                 if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk dihapus.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali...");
@@ -649,7 +1041,7 @@ def settings_menu(current_settings):
                 except ValueError:
                     print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                 show_spinner(1, "Kembali...")
-            elif action_choice == 7:
+            elif action_choice == 8: # Kembali ke Menu Utama
                 break
         except ValueError:
             print(f"{AnsiColors.RED}Input angka tidak valid.{AnsiColors.ENDC}")
@@ -675,10 +1067,10 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     url = f"https://min-api.cryptocompare.com/data/v2/{api_endpoint}"
     is_large_fetch = total_limit_desired > 10
 
-    if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): # Avoid log spam in chart mode
+    if is_large_fetch:
         log_info(f"Memulai pengambilan data: target {total_limit_desired} TF {timeframe}.", pair_name=pair_name)
 
-    if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
+    if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT :
         simple_progress_bar(0, total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
 
     fetch_loop_count = 0
@@ -702,10 +1094,7 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         try:
             if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT:
                 key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
-                # log_debug avoids ChartAwareStreamHandler filter if debug is not enabled for console
-                if logger.isEnabledFor(logging.DEBUG):
-                     log_debug(f"Fetching batch (Key: ...{key_display}, Limit: {limit_for_this_api_call})", pair_name=pair_name)
-
+                log_debug(f"Fetching batch (Key: ...{key_display}, Limit: {limit_for_this_api_call})", pair_name=pair_name)
 
             response = requests.get(url, params=params, timeout=20)
 
@@ -740,13 +1129,13 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                     break
 
             if 'Data' not in data or 'Data' not in data['Data'] or not data['Data']['Data']:
-                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
+                if is_large_fetch: log_info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
                 break
 
             raw_candles_from_api = data['Data']['Data']
 
             if not raw_candles_from_api:
-                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info(f"API mengembalikan list candle kosong. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
+                if is_large_fetch: log_info(f"API mengembalikan list candle kosong. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
                 break
 
             batch_candles_list = []
@@ -761,11 +1150,11 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
 
             if current_to_ts is not None and all_accumulated_candles and batch_candles_list:
                 if batch_candles_list[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']:
-                    if is_large_fetch and logger.isEnabledFor(logging.DEBUG): log_debug(f"Menghapus candle tumpang tindih: {batch_candles_list[-1]['timestamp']}", pair_name=pair_name)
+                    if is_large_fetch: log_debug(f"Menghapus candle tumpang tindih: {batch_candles_list[-1]['timestamp']}", pair_name=pair_name)
                     batch_candles_list.pop()
 
             if not batch_candles_list and current_to_ts is not None :
-                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info("Batch menjadi kosong setelah overlap removal. Kemungkinan akhir data.", pair_name=pair_name)
+                if is_large_fetch: log_info("Batch menjadi kosong setelah overlap removal. Kemungkinan akhir data.", pair_name=pair_name)
                 break
 
             all_accumulated_candles = batch_candles_list + all_accumulated_candles
@@ -777,18 +1166,16 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
 
             fetch_loop_count +=1
             if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and (fetch_loop_count % 2 == 0 or len(all_accumulated_candles) >= total_limit_desired):
-                 if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
-                    simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
-
+                simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
 
             if len(raw_candles_from_api) < limit_for_this_api_call:
-                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info(f"API mengembalikan < limit ({len(raw_candles_from_api)} vs {limit_for_this_api_call}). Akhir histori tercapai.", pair_name=pair_name)
+                if is_large_fetch: log_info(f"API mengembalikan < limit ({len(raw_candles_from_api)} vs {limit_for_this_api_call}). Akhir histori tercapai.", pair_name=pair_name)
                 break
 
             if len(all_accumulated_candles) >= total_limit_desired: break
 
             if len(all_accumulated_candles) < total_limit_desired and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and is_large_fetch:
-                if logger.isEnabledFor(logging.DEBUG): log_debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...", pair_name=pair_name)
+                log_debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...", pair_name=pair_name)
                 time.sleep(0.3)
 
         except APIKeyError:
@@ -804,20 +1191,21 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     if len(all_accumulated_candles) > total_limit_desired:
         all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
 
-    if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
+    if is_large_fetch:
         if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT:
             simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles Complete', length=40)
         log_info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} (target: {total_limit_desired}).", pair_name=pair_name)
 
     return all_accumulated_candles
 
-
-# --- LOGIKA STRATEGI (no direct changes for charting, but its output is used by chart) ---
+# --- LOGIKA STRATEGI ---
 def get_initial_strategy_state():
     return {
-        "last_signal_type": 0,
-        "final_pivot_high_price_confirmed": None,
-        "final_pivot_low_price_confirmed": None,
+        "last_signal_type": 0, # 1 for high, -1 for low
+        "final_pivot_high_info": None, # BARU: {"price": float, "timestamp": datetime}
+        "final_pivot_low_info": None,  # BARU: {"price": float, "timestamp": datetime}
+        "pivots_high_confirmed_history": [], # BARU: List of {"price": float, "timestamp": datetime}
+        "pivots_low_confirmed_history": [],  # BARU: List of {"price": float, "timestamp": datetime}
         "high_price_for_fib": None,
         "high_bar_index_for_fib": None,
         "active_fib_level": None,
@@ -860,8 +1248,10 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
 
 def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
-    strategy_state["final_pivot_high_price_confirmed"] = None
-    strategy_state["final_pivot_low_price_confirmed"] = None
+    # Reset temporary pivot flags, info objects will persist or be updated
+    # strategy_state["final_pivot_high_price_confirmed"] = None
+    # strategy_state["final_pivot_low_price_confirmed"] = None
+    # Note: final_pivot_high_info and final_pivot_low_info are updated upon new pivot detection
 
     left_strength = crypto_config['left_strength']
     right_strength = crypto_config['right_strength']
@@ -880,54 +1270,60 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
     current_bar_index_in_list = len(candles_history) - 1
     if current_bar_index_in_list < 0 : return strategy_state
 
+    # Pivot detection occurs when a candle at index `i` is confirmed by `right_strength` candles after it.
+    # So, for the latest data, we check the pivot at `current_bar_index_in_list - right_strength`.
     idx_pivot_event_high = current_bar_index_in_list - right_strength
     idx_pivot_event_low = current_bar_index_in_list - right_strength
 
     raw_pivot_high_price_at_event = raw_pivot_highs[idx_pivot_event_high] if 0 <= idx_pivot_event_high < len(raw_pivot_highs) else None
     raw_pivot_low_price_at_event = raw_pivot_lows[idx_pivot_event_low] if 0 <= idx_pivot_event_low < len(raw_pivot_lows) else None
 
+    # --- Pivot High Logic ---
     if raw_pivot_high_price_at_event is not None and strategy_state["last_signal_type"] != 1:
-        strategy_state["final_pivot_high_price_confirmed"] = raw_pivot_high_price_at_event
-        strategy_state["last_signal_type"] = 1
         pivot_timestamp = candles_history[idx_pivot_event_high]['timestamp']
-        log_info(f"{AnsiColors.CYAN}PIVOT HIGH: {strategy_state['final_pivot_high_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
+        strategy_state["final_pivot_high_info"] = {"price": raw_pivot_high_price_at_event, "timestamp": pivot_timestamp}
+        strategy_state["pivots_high_confirmed_history"].append(strategy_state["final_pivot_high_info"])
+        strategy_state["pivots_high_confirmed_history"] = strategy_state["pivots_high_confirmed_history"][-10:] # Keep last 10
 
-    if raw_pivot_low_price_at_event is not None and strategy_state["last_signal_type"] != -1:
-        strategy_state["final_pivot_low_price_confirmed"] = raw_pivot_low_price_at_event
-        strategy_state["last_signal_type"] = -1
-        pivot_timestamp = candles_history[idx_pivot_event_low]['timestamp']
-        log_info(f"{AnsiColors.CYAN}PIVOT LOW:  {strategy_state['final_pivot_low_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
+        strategy_state["last_signal_type"] = 1
+        log_info(f"{AnsiColors.CYAN}PIVOT HIGH: {raw_pivot_high_price_at_event:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
 
-    current_candle = candles_history[current_bar_index_in_list]
-
-    if any(current_candle.get(k) is None for k in ['open', 'high', 'low', 'close']):
-        log_warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp', 'N/A')}. Skip evaluasi.", pair_name=pair_name)
-        return strategy_state
-
-    if strategy_state["final_pivot_high_price_confirmed"] is not None:
-        strategy_state["high_price_for_fib"] = strategy_state["final_pivot_high_price_confirmed"]
+        # This pivot high becomes the high for subsequent FIB calculation if a low follows
+        strategy_state["high_price_for_fib"] = raw_pivot_high_price_at_event
         strategy_state["high_bar_index_for_fib"] = idx_pivot_event_high
 
+        # If a new high pivot is confirmed, any active FIB from a previous high-low pair is invalidated.
         if strategy_state["active_fib_level"] is not None:
-            if logger.isEnabledFor(logging.DEBUG): log_debug("Resetting active FIB due to new High.", pair_name=pair_name)
+            log_debug("Resetting active FIB due to new High Pivot.", pair_name=pair_name)
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
-    if strategy_state["final_pivot_low_price_confirmed"] is not None:
+    # --- Pivot Low Logic & FIB Calculation ---
+    if raw_pivot_low_price_at_event is not None and strategy_state["last_signal_type"] != -1:
+        pivot_timestamp = candles_history[idx_pivot_event_low]['timestamp']
+        strategy_state["final_pivot_low_info"] = {"price": raw_pivot_low_price_at_event, "timestamp": pivot_timestamp}
+        strategy_state["pivots_low_confirmed_history"].append(strategy_state["final_pivot_low_info"])
+        strategy_state["pivots_low_confirmed_history"] = strategy_state["pivots_low_confirmed_history"][-10:]
+
+        strategy_state["last_signal_type"] = -1
+        log_info(f"{AnsiColors.CYAN}PIVOT LOW:  {raw_pivot_low_price_at_event:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
+
+        # Check if we have a preceding high_price_for_fib to calculate FIB
         if strategy_state["high_price_for_fib"] is not None and strategy_state["high_bar_index_for_fib"] is not None:
-            current_low_price = strategy_state["final_pivot_low_price_confirmed"]
             current_low_bar_index = idx_pivot_event_low
 
+            # Ensure Low Pivot is after High Pivot for valid FIB
             if current_low_bar_index > strategy_state["high_bar_index_for_fib"]:
-                if strategy_state["high_price_for_fib"] is None or current_low_price is None:
-                     log_warning("Harga untuk kalkulasi FIB tidak valid (None).", pair_name=pair_name)
+                if raw_pivot_low_price_at_event is None:
+                     log_warning("Harga Pivot Low tidak valid (None) untuk kalkulasi FIB.", pair_name=pair_name)
                 else:
-                    calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price) / 2.0
+                    calculated_fib_level = (strategy_state["high_price_for_fib"] + raw_pivot_low_price_at_event) / 2.0
+                    current_candle_for_fib_check = candles_history[current_bar_index_in_list] # Check against current candle
 
                     is_fib_late = False
                     if crypto_config["enable_secure_fib"]:
-                        price_val_current_candle = current_candle.get(crypto_config["secure_fib_check_price"].lower(), current_candle.get('close'))
-                        if price_val_current_candle is not None and calculated_fib_level is not None and price_val_current_candle > calculated_fib_level:
+                        price_val_current_candle = current_candle_for_fib_check.get(crypto_config["secure_fib_check_price"].lower(), current_candle_for_fib_check.get('close'))
+                        if price_val_current_candle is not None and price_val_current_candle > calculated_fib_level:
                             is_fib_late = True
 
                     if is_fib_late:
@@ -935,24 +1331,35 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                         strategy_state["active_fib_level"] = None
                         strategy_state["active_fib_line_start_index"] = None
                     elif calculated_fib_level is not None :
-                        log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {current_low_price:.2f})", pair_name=pair_name)
+                        log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {raw_pivot_low_price_at_event:.2f})", pair_name=pair_name)
                         strategy_state["active_fib_level"] = calculated_fib_level
+                        # Start index for FIB line visualization might be the low pivot's bar index
                         strategy_state["active_fib_line_start_index"] = current_low_bar_index
 
+            # Reset high_price_for_fib after attempting to use it, so it requires a new Pivot High.
             strategy_state["high_price_for_fib"] = None
             strategy_state["high_bar_index_for_fib"] = None
 
+
+    # --- Entry Logic (based on active FIB) ---
+    current_candle = candles_history[current_bar_index_in_list] # Latest, possibly incomplete candle
+    if any(current_candle.get(k) is None for k in ['open', 'high', 'low', 'close']):
+        log_warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp', 'N/A')}. Skip evaluasi entry/exit.", pair_name=pair_name)
+        return strategy_state
+
+
     if strategy_state["active_fib_level"] is not None and strategy_state["active_fib_line_start_index"] is not None:
-        if current_candle.get('close') is None or current_candle.get('open') is None:
-            log_warning("Nilai close atau open tidak ada di candle saat ini. Skip entry check.", pair_name=pair_name)
-            return strategy_state
+        # Check if the bar where FIB was confirmed (low pivot bar) is not the current bar to avoid premature entry.
+        # Entry should be on a candle closing *after* the FIB level is established and crossed.
+        # The current logic implies entry can happen on the candle that *confirms* the low pivot if it also crosses FIB.
+        # This might be okay, depends on desired strategy.
 
         is_bullish_candle = current_candle['close'] > current_candle['open']
         is_closed_above_fib = current_candle['close'] > strategy_state["active_fib_level"]
 
         if is_bullish_candle and is_closed_above_fib:
-            if strategy_state["position_size"] == 0:
-                strategy_state["position_size"] = 1
+            if strategy_state["position_size"] == 0: # No existing position
+                strategy_state["position_size"] = 1 # Indicate long position
                 entry_px = current_candle['close']
                 strategy_state["entry_price_custom"] = entry_px
                 strategy_state["highest_price_for_trailing"] = entry_px
@@ -963,51 +1370,52 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                 strategy_state["emergency_sl_level_custom"] = emerg_sl
 
                 log_msg = f"BUY ENTRY @ {entry_px:.5f} (FIB {strategy_state['active_fib_level']:.5f} dilewati). Emerg SL: {emerg_sl:.5f}"
-                log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name) # This log will be shown by ChartAwareStreamHandler
+                log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
                 play_notification_sound()
 
                 termux_title = f"BUY Signal: {pair_name}"
                 termux_content = f"Entry @ {entry_px:.5f}. SL: {emerg_sl:.5f}"
                 send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
+                
+                # Pass api_settings reference for email fallback
+                email_cfg_with_fallback = crypto_config.copy()
+                email_cfg_with_fallback['api_settings_ref'] = global_settings.get("api_settings")
+                send_email_notification(f"BUY Signal: {pair_name}",
+                                      (f"New BUY signal for {pair_name} on {crypto_config['exchange']}.\n\n"
+                                       f"Entry Price: {entry_px:.5f}\nFIB Level: {strategy_state['active_fib_level']:.5f}\n"
+                                       f"Emergency SL: {emerg_sl:.5f}\nTime: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"),
+                                      email_cfg_with_fallback)
 
-                email_subject = f"BUY Signal: {pair_name}"
-                email_body = (f"New BUY signal for {pair_name} on {crypto_config['exchange']}.\n\n"
-                              f"Entry Price: {entry_px:.5f}\n"
-                              f"FIB Level: {strategy_state['active_fib_level']:.5f}\n"
-                              f"Emergency SL: {emerg_sl:.5f}\n"
-                              f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-                send_email_notification(email_subject, email_body, crypto_config)
-
+            # Once entry is made, deactivate this specific FIB level to prevent multiple entries on the same signal
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
-    if strategy_state["position_size"] > 0:
+    # --- Exit Logic (SL, Trailing TP) ---
+    if strategy_state["position_size"] > 0: # If in a long position
         current_high_for_trailing = strategy_state.get("highest_price_for_trailing", current_candle.get('high'))
         if current_high_for_trailing is None or current_candle.get('high') is None:
             log_warning("Harga tertinggi untuk trailing atau high candle tidak valid (None).", pair_name=pair_name)
         else:
              strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
 
+        # Activate Trailing TP
         if not strategy_state["trailing_tp_active_custom"] and strategy_state["entry_price_custom"] is not None:
-            if strategy_state["entry_price_custom"] == 0:
-                profit_percent = 0.0
-            elif strategy_state.get("highest_price_for_trailing") is None:
-                profit_percent = 0.0
-                log_warning("highest_price_for_trailing is None saat kalkulasi profit.", pair_name=pair_name)
-            else:
-                profit_percent = ((strategy_state["highest_price_for_trailing"] - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
+            if strategy_state["entry_price_custom"] == 0: profit_percent = 0.0
+            elif strategy_state.get("highest_price_for_trailing") is None: profit_percent = 0.0
+            else: profit_percent = ((strategy_state["highest_price_for_trailing"] - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
 
             if profit_percent >= crypto_config["profit_target_percent_activation"]:
                 strategy_state["trailing_tp_active_custom"] = True
                 log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High: {strategy_state.get('highest_price_for_trailing',0):.5f}{AnsiColors.ENDC}", pair_name=pair_name)
 
+        # Update Trailing Stop Level
         if strategy_state["trailing_tp_active_custom"] and strategy_state.get("highest_price_for_trailing") is not None:
             potential_new_stop_price = strategy_state["highest_price_for_trailing"] * (1 - (crypto_config["trailing_stop_gap_percent"] / 100.0))
             if strategy_state["current_trailing_stop_level"] is None or potential_new_stop_price > strategy_state["current_trailing_stop_level"]:
                 strategy_state["current_trailing_stop_level"] = potential_new_stop_price
-                if logger.isEnabledFor(logging.DEBUG): log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
+                log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
 
-
+        # Determine final stop loss for this bar (Emergency SL or Trailing SL)
         final_stop_for_exit = strategy_state["emergency_sl_level_custom"]
         exit_comment = "Emergency SL"
         exit_color = AnsiColors.RED
@@ -1018,44 +1426,44 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                 exit_comment = "Trailing Stop"
                 exit_color = AnsiColors.BLUE
 
+        # Check for Exit
         if final_stop_for_exit is not None and current_candle.get('low') is not None and current_candle['low'] <= final_stop_for_exit:
             exit_price_open = current_candle.get('open')
-            if exit_price_open is None:
-                log_warning("Harga open candle tidak ada untuk exit. Menggunakan SL sebagai harga exit.", pair_name=pair_name)
-                exit_price = final_stop_for_exit
-            else:
-                exit_price = min(exit_price_open, final_stop_for_exit)
+            exit_price = min(exit_price_open, final_stop_for_exit) if exit_price_open is not None else final_stop_for_exit
 
             pnl = 0.0
             if strategy_state["entry_price_custom"] is not None and strategy_state["entry_price_custom"] != 0:
                 pnl = ((exit_price - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
 
-            if exit_comment == "Trailing Stop" and pnl < 0:
-                exit_color = AnsiColors.RED
+            if exit_comment == "Trailing Stop" and pnl < 0: exit_color = AnsiColors.RED # Trailing stop hit at a loss
 
             log_msg = f"EXIT ORDER @ {exit_price:.5f} by {exit_comment}. PnL: {pnl:.2f}%"
-            log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name) # This log will be shown
+            log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
             play_notification_sound()
 
             termux_title_exit = f"EXIT Signal: {pair_name}"
             termux_content_exit = f"{exit_comment} @ {exit_price:.5f}. PnL: {pnl:.2f}%"
             send_termux_notification(termux_title_exit, termux_content_exit, global_settings, pair_name_for_log=pair_name)
+            
+            email_cfg_with_fallback = crypto_config.copy()
+            email_cfg_with_fallback['api_settings_ref'] = global_settings.get("api_settings")
+            send_email_notification(f"Trade Closed: {pair_name} ({exit_comment})",
+                                  (f"Trade closed for {pair_name} on {crypto_config['exchange']}.\n\n"
+                                   f"Exit Price: {exit_price:.5f}\nReason: {exit_comment}\n"
+                                   f"Entry Price: {strategy_state.get('entry_price_custom', 0):.5f}\nPnL: {pnl:.2f}%\n"
+                                   f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"),
+                                  email_cfg_with_fallback)
 
-            email_subject = f"Trade Closed: {pair_name} ({exit_comment})"
-            email_body = (f"Trade closed for {pair_name} on {crypto_config['exchange']}.\n\n"
-                          f"Exit Price: {exit_price:.5f}\n"
-                          f"Reason: {exit_comment}\n"
-                          f"Entry Price: {strategy_state.get('entry_price_custom', 0):.5f}\n"
-                          f"PnL: {pnl:.2f}%\n"
-                          f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-            send_email_notification(email_subject, email_body, crypto_config)
-
+            # Reset position state
             strategy_state["position_size"] = 0
             strategy_state["entry_price_custom"] = None
             strategy_state["highest_price_for_trailing"] = None
             strategy_state["trailing_tp_active_custom"] = False
             strategy_state["current_trailing_stop_level"] = None
             strategy_state["emergency_sl_level_custom"] = None
+            # strategy_state["final_pivot_high_info"] = None # Keep pivot info for chart
+            # strategy_state["final_pivot_low_info"] = None
+            # strategy_state["active_fib_level"] = None # Already reset upon entry or new pivot
 
     if strategy_state["position_size"] > 0:
         plot_stop_level = strategy_state.get("emergency_sl_level_custom")
@@ -1067,281 +1475,192 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
 
         entry_price_display = strategy_state.get('entry_price_custom', 0)
         sl_display_str = f'{plot_stop_level:.5f} ({stop_type_info})' if plot_stop_level is not None else 'N/A'
-        if logger.isEnabledFor(logging.DEBUG): log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
+        log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
 
     return strategy_state
 
+# --- FUNGSI UTAMA TRADING LOOP ---
+def start_trading(global_settings_dict):
+    clear_screen_animated()
+    api_settings = global_settings_dict.get("api_settings", {})
+    api_key_manager = APIKeyManager(
+        api_settings.get("primary_key"),
+        api_settings.get("recovery_keys", []),
+        api_settings
+    )
 
-# --- NEW: Terminal setup for raw input (non-blocking key press) ---
-def setup_terminal_for_raw_input():
-    global original_terminal_settings
-    if not TERMUX_CHART_ENABLED: return
-    if sys.stdin.isatty(): # Check if running in a real terminal with tty
-        try:
-            original_terminal_settings = termios.tcgetattr(sys.stdin)
-            tty.setraw(sys.stdin.fileno())
-        except termios.error as e:
-            log_warning(f"Could not set terminal to raw mode (is this a full TTY?): {e}", "SYSTEM")
-            # This might happen if not run in a proper terminal (e.g. output piped)
-            # TERMUX_CHART_ENABLED = False # Disable charting if raw mode fails critically
-
-
-def restore_terminal_settings():
-    global original_terminal_settings
-    if not TERMUX_CHART_ENABLED: return
-    if original_terminal_settings and sys.stdin.isatty():
-        try:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, original_terminal_settings)
-        except termios.error as e:
-            log_warning(f"Could not restore terminal settings: {e}", "SYSTEM")
-
-
-def check_for_toggle_keypress():
-    global current_view_mode
-    if not TERMUX_CHART_ENABLED: return False
-    key_pressed_handled = False
-    if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
-        key = sys.stdin.read(1)
-        if key.lower() == 't':  # Toggle with 't' key
-            current_view_mode = "chart" if current_view_mode == "log" else "log"
-            key_pressed_handled = True
-            # Provide feedback about the mode switch
-            # This print needs to be careful not to mess up logs or charts
-            # A temporary message that gets overwritten is usually fine.
-            mode_message = f"MODE SWITCHED TO: {current_view_mode.upper()}"
-            # print(f"\r{AnsiColors.YELLOW_BG}{AnsiColors.RED}{AnsiColors.BOLD}{mode_message}{AnsiColors.ENDC}{' ' * (os.get_terminal_size().columns - len(mode_message))}\r", end="")
-            # sys.stdout.flush() # Print immediately
-            # time.sleep(0.5) # Display for a short time
-            log_info(f"Tampilan diubah ke mode: {current_view_mode.upper()}", "SYSTEM")
-
-            if current_view_mode == "chart":
-                clear_screen_animated() # Clear screen when switching TO chart for a clean slate
-            else: # Switching to log
-                clear_screen_animated() # Clear chart remnants
-                log_info("Menampilkan log detail...", "SYSTEM")
-    return key_pressed_handled
-
-
-# --- NEW: Chart Display Function using plotext ---
-def display_chart_plotext(candles_history, config, strategy_state, max_candles_to_plot=75):
-    if not TERMUX_CHART_ENABLED or not candles_history:
-        # print("Charting disabled or no candle data to plot.") # Debug
+    if not api_key_manager.has_valid_keys():
+        log_error(f"{AnsiColors.RED}Tidak ada API key (primary/recovery) yang valid dikonfigurasi. Tidak dapat memulai.{AnsiColors.ENDC}")
+        animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
+        input()
         return
 
-    pair_name = config.get('pair_name', 'CHART')
-    ptx.clt()  # Clear terminal plot space
-    ptx.cld()  # Clear plot data from previous plots
+    all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
+    if not all_crypto_configs:
+        log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
+        animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
+        input()
+        return
 
-    term_width, term_height = ptx.terminal_size()
-    ptx.plotsize(term_width -2 , term_height - 5) # Adjust plot size to fit terminal, leave room for title/status
-
-    plot_candles = candles_history[-max_candles_to_plot:]
-    if not plot_candles: return
-
-    # Ensure all candles have close price for plotting
-    valid_candles = [c for c in plot_candles if c.get('close') is not None and c.get('timestamp') is not None]
-    if not valid_candles: return
-
-    dates_idx = list(range(len(valid_candles))) # Use index for x-axis if dates are too complex
-    close_prices = [c['close'] for c in valid_candles]
-
-    if not close_prices: return
-
-    ptx.title(f"{pair_name} [{config['timeframe']}] (Candles: {len(valid_candles)}) - Press 'T' to toggle Logs")
-    ptx.plot(dates_idx, close_prices, label="Close", color="blue")
-
-    # Plot active FIB level
-    active_fib = strategy_state.get("active_fib_level")
-    if active_fib is not None:
-        ptx.horizontal_line(active_fib, label=f"FIB: {active_fib:.4f}", color="magenta")
-
-    # Plot entry, TP (conceptual), SL if in position
-    if strategy_state.get("position_size", 0) > 0:
-        entry_price = strategy_state.get("entry_price_custom")
-        sl_level = strategy_state.get("emergency_sl_level_custom")
-        trailing_sl = strategy_state.get("current_trailing_stop_level")
-
-        if entry_price is not None:
-            ptx.horizontal_line(entry_price, label=f"Entry: {entry_price:.4f}", color="green")
-
-        final_sl_to_plot = sl_level
-        sl_label_prefix = "EmergSL"
-        if trailing_sl is not None and (sl_level is None or trailing_sl > sl_level) :
-            final_sl_to_plot = trailing_sl
-            sl_label_prefix = "TrailSL"
-
-        if final_sl_to_plot is not None:
-            ptx.horizontal_line(final_sl_to_plot, label=f"{sl_label_prefix}: {final_sl_to_plot:.4f}", color="red")
-    
-    # X-axis labels (timestamps) - keep it simple for terminal
-    num_x_ticks = 5 # Desired number of x-axis ticks
-    if len(valid_candles) >= num_x_ticks :
-        tick_indices = [int(i * (len(valid_candles)-1) / (num_x_ticks-1)) for i in range(num_x_ticks)]
-        tick_labels = [valid_candles[i]['timestamp'].strftime('%H:%M') for i in tick_indices]
-        ptx.xticks(tick_indices, tick_labels)
-    elif len(valid_candles) > 0: # Handle fewer candles
-        tick_indices = [0, len(valid_candles)-1] if len(valid_candles) > 1 else [0]
-        tick_labels = [valid_candles[i]['timestamp'].strftime('%H:%M') for i in tick_indices]
-        ptx.xticks(tick_indices, tick_labels)
+    # --- BARU: Start Flask server if enabled ---
+    global FLASK_THREAD
+    if api_settings.get("enable_localhost_server", False) and FLASK_THREAD is None:
+        server_port = api_settings.get("localhost_server_port", 5000)
+        FLASK_THREAD = threading.Thread(target=run_flask_app, args=('0.0.0.0', server_port), daemon=True)
+        FLASK_THREAD.start()
+        log_info(f"Memulai server localhost di background pada port {server_port}...", pair_name="SYSTEM")
+    elif not api_settings.get("enable_localhost_server", False) and FLASK_THREAD is not None:
+        # Note: Stopping a Flask thread gracefully is complex. Daemon=True handles abrupt exit.
+        # For a clean stop, Flask would need an endpoint like /shutdown and main thread signalling it.
+        log_info("Server localhost tidak diaktifkan atau sudah berjalan (tidak akan distart ulang).", pair_name="SYSTEM")
 
 
-    ptx.show() # This prints the chart to stdout
-    # Status line after chart (optional, might get overwritten by next log from other pair)
-    # last_close = valid_candles[-1]['close']
-    # print(f"Last Close: {last_close:.4f} at {valid_candles[-1]['timestamp'].strftime('%Y-%m-%d %H:%M')}{' '*10}")
+    animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
+    current_key_display_val = api_key_manager.get_current_key()
+    current_key_display = "N/A"
+    if current_key_display_val:
+        current_key_display = current_key_display_val[:5] + "..." + current_key_display_val[-3:] if len(current_key_display_val) > 8 else current_key_display_val
 
+    log_info(f"Menggunakan API Key Index: {api_key_manager.get_current_key_index()} ({current_key_display}). Total keys: {api_key_manager.total_keys()}", pair_name="SYSTEM")
 
-# --- FUNGSI UTAMA TRADING LOOP (MODIFIED FOR CHARTING) ---
-def start_trading(global_settings_dict):
-    global current_view_mode # Allow modification
-    # Reset to log mode at the start of trading session
-    # current_view_mode = "log" # Or remember last state if preferred
+    crypto_data_manager = {}
+    for config in all_crypto_configs:
+        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}" # Unique ID for web
+        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" # For logging
 
-    if TERMUX_CHART_ENABLED:
-        setup_terminal_for_raw_input()
+        animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
 
-    try:
-        # clear_screen_animated() # Initial clear done by menu or here
-        api_settings = global_settings_dict.get("api_settings", {})
-        api_key_manager = APIKeyManager(
-            api_settings.get("primary_key"),
-            api_settings.get("recovery_keys", []),
-            api_settings
-        )
-
-        if not api_key_manager.has_valid_keys():
-            log_error(f"{AnsiColors.RED}Tidak ada API key (primary/recovery) yang valid dikonfigurasi. Tidak dapat memulai.{AnsiColors.ENDC}")
-            animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
-            input()
-            return
-
-        all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
-        if not all_crypto_configs:
-            log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
-            animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
-            input()
-            return
-
-        # Initial animated text display, respecting chart mode
-        if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
-             animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
-        else: # In chart mode, just a simple print
-            print(f"{AnsiColors.HEADER}================ MULTI-CRYPTO STRATEGY START (Chart Mode) ================{AnsiColors.ENDC}")
-
-
-        current_key_display_val = api_key_manager.get_current_key()
-        current_key_display = "N/A"
-        if current_key_display_val:
-            current_key_display = current_key_display_val[:5] + "..." + current_key_display_val[-3:] if len(current_key_display_val) > 8 else current_key_display_val
-        log_info(f"Menggunakan API Key Index: {api_key_manager.get_current_key_index()} ({current_key_display}). Total keys: {api_key_manager.total_keys()}", pair_name="SYSTEM")
-
-        crypto_data_manager = {}
-        for config in all_crypto_configs:
-            pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}"
-            config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}"
-
-            # Animated display respects chart mode
-            animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
-
-            crypto_data_manager[pair_id] = {
-                "config": config,
-                "all_candles_list": [],
-                "strategy_state": get_initial_strategy_state(),
-                "big_data_collection_phase_active": True,
-                "big_data_email_sent": False,
-                "last_candle_fetch_time": datetime.min,
-                "data_fetch_failed_consecutively": 0
+        crypto_data_manager[pair_id] = {
+            "config": config, # Store config for reference
+            "all_candles_list": [],
+            "strategy_state": get_initial_strategy_state(),
+            "big_data_collection_phase_active": True,
+            "big_data_email_sent": False,
+            "last_candle_fetch_time": datetime.min,
+            "data_fetch_failed_consecutively": 0
+        }
+        
+        # BARU: Initialize data for this pair in GLOBAL_WEB_DATA
+        with LOCK_WEB_DATA:
+            GLOBAL_WEB_DATA[pair_id] = {
+                "pair_id": pair_id, # Self-reference for UI
+                "config_symbol": config['symbol'],
+                "config_currency": config['currency'],
+                "config_timeframe": config['timeframe'],
+                "candles": [],
+                "is_loading_big_data": True,
+                "candles_loaded": 0,
+                "candles_target": TARGET_BIG_DATA_CANDLES,
+                "currency_precision": 5, # Default, will be updated
+                "last_update": datetime.now().isoformat()
             }
 
-            initial_candles_target = TARGET_BIG_DATA_CANDLES
-            initial_candles = []
-            max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
-            retries_done_initial = 0
-            initial_fetch_successful = False
 
-            while retries_done_initial < max_retries_initial and not initial_fetch_successful:
-                current_api_key = api_key_manager.get_current_key()
-                if not current_api_key:
-                    log_error(f"BIG DATA: Semua API key habis saat mencoba mengambil data awal untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                    break
+        initial_candles_target = TARGET_BIG_DATA_CANDLES
+        initial_candles = []
+        max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
+        retries_done_initial = 0
+        initial_fetch_successful = False
 
-                try:
-                    log_info(f"BIG DATA: Mengambil data awal (target {initial_candles_target} candle) dengan key index {api_key_manager.get_current_key_index()}...", pair_name=config['pair_name'])
-                    initial_candles = fetch_candles(
-                        config['symbol'], config['currency'], initial_candles_target,
-                        config['exchange'], current_api_key, config['timeframe'],
-                        pair_name=config['pair_name']
-                    )
-                    initial_fetch_successful = True
-                except APIKeyError:
-                    log_warning(f"BIG DATA: API Key gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
-                    if not api_key_manager.switch_to_next_key(): break
-                    retries_done_initial +=1
-                except requests.exceptions.RequestException as e:
-                    log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
-                    break
-                except Exception as e_gen:
-                    log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
-                    log_exception("Traceback Error Initial Fetch:", pair_name=config['pair_name'])
-                    break
+        while retries_done_initial < max_retries_initial and not initial_fetch_successful:
+            current_api_key = api_key_manager.get_current_key()
+            if not current_api_key:
+                log_error(f"BIG DATA: Semua API key habis saat mencoba mengambil data awal untuk {config['pair_name']}.", pair_name=config['pair_name'])
+                break
 
-            if not initial_candles:
-                log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-                crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-                crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now()
-                continue
+            try:
+                log_info(f"BIG DATA: Mengambil data awal (target {initial_candles_target} candle) dengan key index {api_key_manager.get_current_key_index()}...", pair_name=config['pair_name'])
+                initial_candles = fetch_candles(
+                    config['symbol'], config['currency'], initial_candles_target,
+                    config['exchange'], current_api_key, config['timeframe'],
+                    pair_name=config['pair_name']
+                )
+                initial_fetch_successful = True
+            except APIKeyError:
+                log_warning(f"BIG DATA: API Key gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
+                if not api_key_manager.switch_to_next_key(): break
+                retries_done_initial +=1
+            except requests.exceptions.RequestException as e:
+                log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
+                break
+            except Exception as e_gen:
+                log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
+                log_exception("Traceback Error Initial Fetch:", pair_name=config['pair_name'])
+                break
 
-            crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
-            log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
+        if not initial_candles:
+            log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
+            crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now()
+            with LOCK_WEB_DATA: # Update web data status
+                 if pair_id in GLOBAL_WEB_DATA:
+                    GLOBAL_WEB_DATA[pair_id]["is_loading_big_data"] = False
+                    GLOBAL_WEB_DATA[pair_id]["last_update"] = datetime.now().isoformat()
+            continue
 
-            if initial_candles:
-                min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1
-                if len(initial_candles) >= min_len_for_pivots:
-                    log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
-
-                    for i in range(min_len_for_pivots -1, len(initial_candles) - 1):
-                        historical_slice = initial_candles[:i+1]
-                        if len(historical_slice) < min_len_for_pivots: continue
-
-                        temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy()
-                        temp_state_for_warmup["position_size"] = 0
-
-                        crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
-
-                        if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0:
-                            crypto_data_manager[pair_id]["strategy_state"] = {
-                                **crypto_data_manager[pair_id]["strategy_state"],
-                                **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None,
-                                   "highest_price_for_trailing":None, "trailing_tp_active_custom":False,
-                                   "current_trailing_stop_level":None}
-                            }
-                    log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-                else:
-                    log_warning(f"Data awal ({len(initial_candles)}) tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}).", pair_name=config['pair_name'])
-            else:
-                log_warning("Tidak ada data awal untuk warm-up.", pair_name=config['pair_name'])
-
-            if len(crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-                crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-                log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
-                if not crypto_data_manager[pair_id]["big_data_email_sent"]:
-                    send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", config)
-                    crypto_data_manager[pair_id]["big_data_email_sent"] = True
-                log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[pair_id]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
+        log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
         
-        if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
-            animated_text_display(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+        # BARU: Update web data after initial fetch
+        with LOCK_WEB_DATA:
+            if pair_id in GLOBAL_WEB_DATA:
+                web_candles = [
+                    {"timestamp": c['timestamp'].isoformat(), "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close']}
+                    for c in initial_candles[-MAX_CANDLES_FOR_WEB:] if all(k in c and c[k] is not None for k in ['timestamp', 'open', 'high', 'low', 'close'])
+                ]
+                GLOBAL_WEB_DATA[pair_id]["candles"] = web_candles
+                GLOBAL_WEB_DATA[pair_id]["candles_loaded"] = len(initial_candles)
+                GLOBAL_WEB_DATA[pair_id]["last_update"] = datetime.now().isoformat()
+
+
+        if initial_candles:
+            min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1
+            if len(initial_candles) >= min_len_for_pivots:
+                log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
+
+                for i in range(min_len_for_pivots -1, len(initial_candles) - 1): # Iterate up to the second to last candle for warm-up
+                    historical_slice = initial_candles[:i+1]
+                    if len(historical_slice) < min_len_for_pivots: continue
+
+                    temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy() # Use a fresh copy
+                    # Ensure warm-up doesn't actually place trades or keep state from them
+                    temp_state_for_warmup["position_size"] = 0
+                    temp_state_for_warmup["entry_price_custom"] = None
+                    # ... reset other position-specific fields if necessary
+
+                    crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
+
+                    # Crucially, reset any position that might have been opened during this historical simulation
+                    if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0:
+                        crypto_data_manager[pair_id]["strategy_state"] = {
+                            **crypto_data_manager[pair_id]["strategy_state"],
+                            **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None,
+                               "highest_price_for_trailing":None, "trailing_tp_active_custom":False,
+                               "current_trailing_stop_level":None}
+                        }
+                log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            else:
+                log_warning(f"Data awal ({len(initial_candles)}) tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}).", pair_name=config['pair_name'])
         else:
-             print(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}")
+            log_warning("Tidak ada data awal untuk warm-up.", pair_name=config['pair_name'])
+
+        if len(crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
+            crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
+            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            if not crypto_data_manager[pair_id]["big_data_email_sent"]:
+                email_cfg_with_fallback = config.copy()
+                email_cfg_with_fallback['api_settings_ref'] = api_settings
+                send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", email_cfg_with_fallback)
+                crypto_data_manager[pair_id]["big_data_email_sent"] = True
+            log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[pair_id]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            with LOCK_WEB_DATA: # Update web status
+                 if pair_id in GLOBAL_WEB_DATA: GLOBAL_WEB_DATA[pair_id]["is_loading_big_data"] = False
 
 
-        # Main Trading Loop
+    animated_text_display(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+
+    try:
         while True:
-            if TERMUX_CHART_ENABLED:
-                user_toggled_view = check_for_toggle_keypress()
-                # if user_toggled_view: # Handled inside check_for_toggle_keypress with clear screen
-                #     pass
-
             active_cryptos_still_in_big_data_collection = 0
             min_overall_next_refresh_seconds = float('inf')
             any_data_fetched_this_cycle = False
@@ -1350,15 +1669,13 @@ def start_trading(global_settings_dict):
                 config = data["config"]
                 pair_name = config['pair_name']
 
-                # Cooldown logic (unchanged)
                 if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 :
-                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # 1 hour cooldown
-                        if logger.isEnabledFor(logging.DEBUG): log_debug(f"Pair {pair_name} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name)
+                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600:
+                        log_debug(f"Pair {pair_name} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name)
                         continue
                     else:
                         data["data_fetch_failed_consecutively"] = 0
                         log_info(f"Cooldown 1 jam untuk {pair_name} selesai. Mencoba fetch lagi.", pair_name=pair_name)
-
 
                 current_loop_time = datetime.now()
                 time_since_last_fetch_seconds = (current_loop_time - data["last_candle_fetch_time"]).total_seconds()
@@ -1377,23 +1694,18 @@ def start_trading(global_settings_dict):
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, remaining_time_for_this_pair)
                     continue
 
-                log_info(f"Memproses {pair_name}...", pair_name=pair_name) # This log will respect chart mode
+                log_info(f"Memproses {pair_name}...", pair_name=pair_name)
                 data["last_candle_fetch_time"] = current_loop_time
                 num_candles_before_fetch = len(data["all_candles_list"])
 
-                # Display current phase, respecting chart mode
-                current_phase_message = ""
                 if data["big_data_collection_phase_active"]:
-                    current_phase_message = f"\n--- PENGUMPULAN BIG DATA ({len(data['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---"
-                    animated_text_display(current_phase_message, color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005)
-                else: # Live Analysis
-                    if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): # Don't print this if chart is showing
-                        current_phase_message = f"\n--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(data['all_candles_list'])} candles ---"
-                        animated_text_display(current_phase_message, color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005)
-
+                    animated_text_display(f"\n--- PENGUMPULAN BIG DATA ({len(data['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005)
+                else:
+                    animated_text_display(f"\n--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(data['all_candles_list'])} candles ---", color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005)
 
                 new_candles_batch = []
                 fetch_update_successful_for_this_pair = False
+
                 max_retries_for_this_pair_update = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                 retries_done_for_this_pair_update = 0
 
@@ -1403,15 +1715,15 @@ def start_trading(global_settings_dict):
                         log_error(f"Semua API key habis secara global saat mencoba mengambil update untuk {pair_name}.", pair_name=pair_name)
                         break
 
-                    limit_fetch = 3
+                    limit_fetch = 3 # Fetch a few recent candles if not in big data mode
                     if data["big_data_collection_phase_active"]:
                         limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data["all_candles_list"])
                         if limit_fetch_needed <=0 :
                              fetch_update_successful_for_this_pair = True
-                             new_candles_batch = []
+                             new_candles_batch = [] # No new candles needed
                              break
-                        limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT)
-                        limit_fetch = max(limit_fetch, 1)
+                        limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT) # Fetch up to max limit towards target
+                        limit_fetch = max(limit_fetch, 1) # Always fetch at least 1 if needed
 
                     log_info(f"Mengambil {limit_fetch} candle (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name)
                     try:
@@ -1427,10 +1739,12 @@ def start_trading(global_settings_dict):
                     except APIKeyError:
                         log_warning(f"API Key (Idx: {api_key_manager.get_current_key_index()}) gagal untuk update {pair_name}. Mencoba key berikutnya.", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
+
                         if not api_key_manager.switch_to_next_key():
                             log_error(f"Tidak ada lagi API key tersedia secara global setelah kegagalan pada {pair_name}.", pair_name=pair_name)
                             break
                         retries_done_for_this_pair_update += 1
+
                     except requests.exceptions.RequestException as e:
                         log_error(f"Error jaringan saat mengambil update {pair_name}: {e}. Tidak mengganti key.", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
@@ -1440,11 +1754,10 @@ def start_trading(global_settings_dict):
                         log_exception("Traceback Error Update Fetch:", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
                         break
-                
+
                 if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) +1 :
                     data["last_attempt_after_all_keys_failed"] = datetime.now()
                     log_warning(f"Semua API key telah dicoba dan gagal untuk {pair_name}. Akan masuk cooldown.", pair_name=pair_name)
-
 
                 if not fetch_update_successful_for_this_pair or not new_candles_batch:
                     if fetch_update_successful_for_this_pair and not new_candles_batch and not data["big_data_collection_phase_active"]:
@@ -1452,12 +1765,12 @@ def start_trading(global_settings_dict):
                     elif not fetch_update_successful_for_this_pair:
                          log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name)
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-                    # If in chart mode and fetch failed, current chart for this pair remains until next successful fetch
-                    if TERMUX_CHART_ENABLED and current_view_mode == "chart":
-                        display_chart_plotext(data["all_candles_list"], config, data["strategy_state"])
-                        log_warning(f"Chart for {pair_name} not updated due to fetch issue.", pair_name=pair_name)
+                    # Update web data even if fetch failed, to show loading status or error
+                    with LOCK_WEB_DATA:
+                        if pair_id in GLOBAL_WEB_DATA:
+                            GLOBAL_WEB_DATA[pair_id]["last_update"] = datetime.now().isoformat()
+                            # Potentially add an error message field here for the UI
                     continue
-
 
                 merged_candles_dict = {c['timestamp']: c for c in data["all_candles_list"]}
                 newly_added_count_this_batch = 0
@@ -1468,7 +1781,7 @@ def start_trading(global_settings_dict):
                     if ts not in merged_candles_dict:
                         merged_candles_dict[ts] = candle
                         newly_added_count_this_batch +=1
-                    elif merged_candles_dict[ts] != candle :
+                    elif merged_candles_dict[ts] != candle : # Compare content if timestamp exists
                         merged_candles_dict[ts] = candle
                         updated_count_this_batch +=1
 
@@ -1478,7 +1791,7 @@ def start_trading(global_settings_dict):
 
                 if actual_new_or_updated_count > 0:
                      log_info(f"{actual_new_or_updated_count} candle baru/diupdate. Total: {len(data['all_candles_list'])}.", pair_name=pair_name)
-                elif new_candles_batch :
+                elif new_candles_batch : # new_candles_batch was not empty but no new timestamps or content changes
                      log_info("Tidak ada candle dengan timestamp baru atau update konten. Data terakhir mungkin identik.", pair_name=pair_name)
 
 
@@ -1486,22 +1799,32 @@ def start_trading(global_settings_dict):
                     if len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
                         log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name}!{AnsiColors.ENDC}", pair_name=pair_name)
                         if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES:
-                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] # Trim
 
                         if not data["big_data_email_sent"]:
-                            send_email_notification(f"Data Downloading Complete: {pair_name}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_name}.", config)
+                            email_cfg_with_fallback = config.copy()
+                            email_cfg_with_fallback['api_settings_ref'] = api_settings
+                            send_email_notification(f"Data Downloading Complete: {pair_name}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_name}.", email_cfg_with_fallback)
                             data["big_data_email_sent"] = True
 
                         data["big_data_collection_phase_active"] = False
                         active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1)
                         log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data['all_candles_list'])} candles) untuk {pair_name} ----------{AnsiColors.ENDC}", pair_name=pair_name)
-                else: # Not in big data collection (live analysis)
-                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES:
-                        data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+                        with LOCK_WEB_DATA: # Update web status
+                            if pair_id in GLOBAL_WEB_DATA: GLOBAL_WEB_DATA[pair_id]["is_loading_big_data"] = False
+                    else: # Still loading big data
+                         with LOCK_WEB_DATA:
+                            if pair_id in GLOBAL_WEB_DATA:
+                                GLOBAL_WEB_DATA[pair_id]["candles_loaded"] = len(data["all_candles_list"])
 
+
+                else: # Not in big data collection phase, normal operation
+                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: # Keep candle list to max size
+                        data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
 
                 min_len_for_pivots = config.get('left_strength',50) + config.get('right_strength',150) + 1
                 if len(data["all_candles_list"]) >= min_len_for_pivots:
+                    # Process logic if new data, or if big data phase just ended, or if in big data phase and new candles added
                     process_logic_now = (actual_new_or_updated_count > 0 or
                                          (not data["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or
                                          (data["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) )
@@ -1512,24 +1835,65 @@ def start_trading(global_settings_dict):
                     elif not data["big_data_collection_phase_active"]:
                          last_c_time_str = data["all_candles_list"][-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if data["all_candles_list"] else "N/A"
                          log_info(f"Tidak ada candle baru untuk diproses untuk {pair_name}. Data terakhir @ {last_c_time_str}.", pair_name=pair_name)
-
-                    # --- DISPLAY CHART OR LOGS ---
-                    if TERMUX_CHART_ENABLED and current_view_mode == "chart":
-                        # os.system('cls' if os.name == 'nt' else 'clear') # Option: clear before each pair's chart
-                        display_chart_plotext(data["all_candles_list"], config, data["strategy_state"])
-                    # Logs will be printed if current_view_mode == "log" due to ChartAwareStreamHandler
                 else:
                     log_info(f"Data ({len(data['all_candles_list'])}) untuk {pair_name} belum cukup utk analisa (min: {min_len_for_pivots}).", pair_name=pair_name)
 
-                min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-            # --- End of loop for crypto_data_manager.items() ---
+                # --- BARU: Update GLOBAL_WEB_DATA for this pair ---
+                with LOCK_WEB_DATA:
+                    if pair_id not in GLOBAL_WEB_DATA: # Should be initialized, but as a safe guard
+                        GLOBAL_WEB_DATA[pair_id] = {}
+                    
+                    web_pair_data = GLOBAL_WEB_DATA[pair_id] # Get existing or new dict
+                    web_pair_data["pair_id"] = pair_id
+                    web_pair_data["config_symbol"]= config['symbol']
+                    web_pair_data["config_currency"]= config['currency']
+                    web_pair_data["config_timeframe"]= config['timeframe']
 
-            sleep_duration = 15 # Default sleep
-            sleep_message_prefix = "Menunggu"
+                    web_pair_data["candles"] = [
+                        {"timestamp": c['timestamp'].isoformat(), "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close']}
+                        for c in data["all_candles_list"][-MAX_CANDLES_FOR_WEB:] if all(k in c and c[k] is not None for k in ['timestamp', 'open', 'high', 'low', 'close'])
+                    ]
+                    
+                    ss = data["strategy_state"]
+                    web_pair_data["fib_level"] = {"value": ss.get("active_fib_level")} if ss.get("active_fib_level") is not None else None
+                    
+                    web_pair_data["final_pivot_high_info"] = None
+                    if ss.get("final_pivot_high_info"):
+                         web_pair_data["final_pivot_high_info"] = {"price": ss["final_pivot_high_info"]["price"], "timestamp": ss["final_pivot_high_info"]["timestamp"].isoformat()}
+                    
+                    web_pair_data["final_pivot_low_info"] = None
+                    if ss.get("final_pivot_low_info"):
+                         web_pair_data["final_pivot_low_info"] = {"price": ss["final_pivot_low_info"]["price"], "timestamp": ss["final_pivot_low_info"]["timestamp"].isoformat()}
+
+                    web_pair_data["pivots_high_confirmed_history"] = [{"price": p["price"], "timestamp": p["timestamp"].isoformat()} for p in ss.get("pivots_high_confirmed_history", [])]
+                    web_pair_data["pivots_low_confirmed_history"] = [{"price": p["price"], "timestamp": p["timestamp"].isoformat()} for p in ss.get("pivots_low_confirmed_history", [])]
+
+                    cur = config['currency'].upper()
+                    if cur in ["USD", "EUR", "GBP", "JPY"]: web_pair_data["currency_precision"] = 2
+                    elif cur in ["USDT", "USDC", "BUSD"]: web_pair_data["currency_precision"] = 4
+                    else: web_pair_data["currency_precision"] = 5 if cur != "SHIB" else 8 # Example for SHIB
+
+                    web_pair_data["entry_price_custom"] = ss.get("entry_price_custom")
+                    web_pair_data["emergency_sl_level_custom"] = ss.get("emergency_sl_level_custom")
+                    web_pair_data["current_trailing_stop_level"] = ss.get("current_trailing_stop_level")
+                    web_pair_data["trailing_tp_active_custom"] = ss.get("trailing_tp_active_custom")
+                    web_pair_data["highest_price_for_trailing"] = ss.get("highest_price_for_trailing")
+                    
+                    web_pair_data["is_loading_big_data"] = data["big_data_collection_phase_active"]
+                    web_pair_data["candles_loaded"] = len(data["all_candles_list"])
+                    web_pair_data["candles_target"] = TARGET_BIG_DATA_CANDLES
+
+                    web_pair_data["last_update"] = datetime.now().isoformat()
+                    GLOBAL_WEB_DATA[pair_id] = web_pair_data # Ensure it's set back
+
+                min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
+
+
+            sleep_duration = 15
 
             if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None:
                 log_error("Semua API key gagal secara global dan tidak ada data berhasil di-fetch. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
-                sleep_duration = 3600 # 1 hour
+                sleep_duration = 3600
             elif active_cryptos_still_in_big_data_collection > 0:
                 min_big_data_interval = float('inf')
                 for pid_loop, pdata_loop in crypto_data_manager.items():
@@ -1539,28 +1903,23 @@ def start_trading(global_settings_dict):
                         min_big_data_interval = min(min_big_data_interval, interval_bd)
 
                 sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30)
-                if logger.isEnabledFor(logging.DEBUG): log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
-                sleep_message_prefix = f"BIG DATA ({active_cryptos_still_in_big_data_collection} pairs)"
-
-            else: # All pairs are live
+                log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
+            else:
                 if min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0 :
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-                    if logger.isEnabledFor(logging.DEBUG): log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
-                    sleep_message_prefix = "Live Mode"
+                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
                 else:
                     default_refresh_from_config = 60
                     if all_crypto_configs :
                         default_refresh_from_config = all_crypto_configs[0].get('refresh_interval_seconds', 60)
-                    sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_config)
-                    if logger.isEnabledFor(logging.DEBUG): log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama).", pair_name="SYSTEM")
-                    sleep_message_prefix = "Live Mode (default)"
 
+                    sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_config)
+                    log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama).", pair_name="SYSTEM")
 
             if sleep_duration > 0:
-                # show_spinner handles chart mode internally now
-                show_spinner(sleep_duration, f"{sleep_message_prefix}, {int(sleep_duration)}s...")
-            else: # Should not happen often
-                if logger.isEnabledFor(logging.DEBUG): log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
+                show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s...")
+            else:
+                log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
                 time.sleep(1)
 
     except KeyboardInterrupt:
@@ -1569,22 +1928,21 @@ def start_trading(global_settings_dict):
         log_error(f"{AnsiColors.RED}Error tak terduga di loop trading utama: {e}{AnsiColors.ENDC}", pair_name="SYSTEM")
         log_exception("Traceback Error:", pair_name="SYSTEM")
     finally:
-        if TERMUX_CHART_ENABLED:
-            restore_terminal_settings() # IMPORTANT: Restore terminal
-        
-        # Final animated text, respects chart mode
         animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+        # Clear web data when stopping or on error to reflect on UI
+        with LOCK_WEB_DATA:
+            GLOBAL_WEB_DATA.clear()
+            # Could add a "stopped" message: GLOBAL_WEB_DATA["system_status"] = "stopped"
         animated_text_display("Tekan Enter untuk kembali ke menu utama...", color=AnsiColors.ORANGE, delay=0.01)
-        input() # Normal input is fine here, terminal settings restored
+        input()
 
-
-# --- MENU UTAMA (no changes needed for charting logic) ---
+# --- MENU UTAMA ---
 def main_menu():
     settings = load_settings()
 
     while True:
         clear_screen_animated()
-        animated_text_display("========= Crypto Strategy Runner (Multi + Key Recovery) =========", color=AnsiColors.HEADER, delay=0.005)
+        animated_text_display("========= Crypto Strategy Runner (Multi + Key Recovery + Web UI) =========", color=AnsiColors.HEADER, delay=0.005)
 
         pick_title_main = ""
         active_configs = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
@@ -1601,14 +1959,16 @@ def main_menu():
              primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
         num_recovery_keys = len([k for k in api_s.get('recovery_keys',[]) if k])
         termux_notif_main_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
-        chart_status_main = "Aktif" if TERMUX_CHART_ENABLED else "Nonaktif (Dependencies Missing)"
+        # BARU: Status server localhost di menu utama
+        localhost_server_main_status = "Aktif" if api_s.get("enable_localhost_server", False) else "Nonaktif"
+        localhost_port_main = api_s.get("localhost_server_port", 5000)
 
 
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
         pick_title_main += f"Primary API Key: {primary_key_display} | Recovery Keys: {num_recovery_keys}\n"
         pick_title_main += f"Notifikasi Termux: {termux_notif_main_status}\n"
-        pick_title_main += f"Fitur Chart Teks: {AnsiColors.CYAN}{chart_status_main}{AnsiColors.ENDC} (Toggle dengan 't' saat analisa)\n" # Info Chart
+        pick_title_main += f"Server Localhost: {localhost_server_main_status} (Port: {localhost_port_main})\n" # BARU
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += "Pilih Opsi:"
 
@@ -1640,11 +2000,6 @@ def main_menu():
                 continue
 
         if selected_index == 0:
-            # Pastikan current_view_mode kembali ke log jika pengguna keluar dari trading loop
-            # dan masuk lagi, agar tidak terjebak di mode chart dari sesi sebelumnya.
-            global current_view_mode
-            current_view_mode = "log" # Default to log mode when starting new session
-            clear_screen_animated() # Clear menu before starting trading
             start_trading(settings)
         elif selected_index == 1:
             settings = settings_menu(settings)
@@ -1653,19 +2008,37 @@ def main_menu():
             clear_screen_animated()
             animated_text_display("Terima kasih telah menggunakan skrip ini! Sampai jumpa!", color=AnsiColors.MAGENTA)
             show_spinner(0.5, "Exiting")
+            # BARU: Pastikan Flask thread (jika ada) juga berhenti. Daemon=True seharusnya menangani ini saat main exit.
+            global FLASK_THREAD
+            if FLASK_THREAD and FLASK_THREAD.is_alive():
+                log_info("Flask thread masih berjalan, akan berhenti saat program utama exit (daemon).", pair_name="SYSTEM")
             break
 
 if __name__ == "__main__":
     try:
+        # Pastikan Flask hanya diimpor jika akan digunakan atau ada di __main__
+        # Import sudah di atas, jadi ini hanya catatan.
         main_menu()
     except KeyboardInterrupt:
-        if TERMUX_CHART_ENABLED: restore_terminal_settings() # Ensure terminal is restored on Ctrl+C
         clear_screen_animated()
         animated_text_display(f"{AnsiColors.ORANGE}Aplikasi dihentikan paksa. Bye!{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01)
     except Exception as e:
-        if TERMUX_CHART_ENABLED: restore_terminal_settings() # Ensure terminal is restored on any crash
         clear_screen_animated()
         print(f"{AnsiColors.RED}Terjadi error tak terduga di level utama: {e}{AnsiColors.ENDC}")
         log_exception("MAIN LEVEL UNHANDLED EXCEPTION:", pair_name="SYSTEM_CRITICAL")
         animated_text_display("Tekan Enter untuk keluar...", color=AnsiColors.RED, delay=0.01)
         input()
+    finally:
+        log_info("Program selesai.", pair_name="SYSTEM_EXIT")
+
+```
+
+**Penting Sebelum Menjalankan:**
+1.  **Install Flask**: Jika belum, jalankan `pip install Flask` di Termux.
+2.  **Port**: Server akan berjalan di port `5000` secara default (bisa diubah di pengaturan). Pastikan port ini tidak digunakan oleh aplikasi lain.
+3.  **Akses**: Kamu bisa mengaksesnya dari browser di HP Termux-mu dengan alamat `http://localhost:5000` atau `http://127.0.0.1:5000`. Jika HP dan PC/laptopmu ada di jaringan WiFi yang sama, kamu bisa mengaksesnya dari PC dengan `http://IP_HP_TERMUX:5000` (ganti `IP_HP_TERMUX` dengan alamat IP HP-mu di jaringan WiFi).
+4.  **Histori Pivot**: Saya sudah menambahkan penyimpanan histori untuk 10 pivot high/low terakhir yang terkonfirmasi agar bisa ditampilkan di chart.
+5.  **Data di Web**: Data candle yang dikirim ke web dibatasi `MAX_CANDLES_FOR_WEB` (default 500) agar tidak terlalu berat.
+6.  **Update UI**: UI web akan polling data setiap 3 detik.
+
+Ini adalah implementasi yang cukup komprehensif. Semoga sesuai dengan yang kamu inginkan, bro! Jika ada masalah atau mau ada penyesuaian lagi, kasih tau aja.
