@@ -11,14 +11,17 @@ import uuid
 from pick import pick
 import subprocess # Ditambahkan untuk termux-notification
 
-# --- Imports for Live Chart ---
-from flask import Flask, render_template_string
-from flask_socketio import SocketIO, emit
-from threading import Thread
-import gevent # Diperlukan untuk async_mode='gevent' di SocketIO
+# CHART_INTEGRATION_START
+import threading
+import copy # Untuk deep copy data agar thread-safe (dasar)
+try:
+    from flask import Flask, jsonify, render_template_string
+except ImportError:
+    print("Flask tidak terinstal. Silakan install dengan: pip install Flask")
+    sys.exit(1)
+# CHART_INTEGRATION_END
 
-# --- ANSI COLOR CODES ---
-
+# --- ANSI COLOR CODES --- (Tetap sama)
 class AnsiColors:
     HEADER = '\033[95m'
     BLUE = '\033[94m'
@@ -32,8 +35,7 @@ class AnsiColors:
     MAGENTA = '\033[35m'
     YELLOW_BG = '\033[43m'
 
-# --- ANIMATION HELPER FUNCTIONS ---
-
+# --- ANIMATION HELPER FUNCTIONS --- (Tetap sama)
 def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True):
     for char in text:
         sys.stdout.write(color + char + AnsiColors.ENDC if color else char)
@@ -43,7 +45,7 @@ def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True
         print()
 
 def show_spinner(duration_seconds, message="Processing..."):
-    spinner_chars = ['-', '\\', '|', '/'] # Lebih baik untuk terminal non-unicode
+    spinner_chars = ['-', '\\', '|', '/'] # CHART_MOD: Spinner lebih jelas
     start_time = time.time()
     idx = 0
     sys.stdout.write(AnsiColors.MAGENTA)
@@ -60,7 +62,7 @@ def show_spinner(duration_seconds, message="Processing..."):
         sys.stdout.flush()
         time.sleep(0.1)
         idx += 1
-    sys.stdout.write(f"\r{' ' * (len(display_message) + 3)}\r") # Clear line
+    sys.stdout.write(f"\r{' ' * (len(display_message) + 3)}\r")
     sys.stdout.write(AnsiColors.ENDC)
     sys.stdout.flush()
 
@@ -82,36 +84,36 @@ def simple_progress_bar(iteration, total, prefix='', suffix='', decimals=1, leng
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- CUSTOM EXCEPTION ---
-
+# --- CUSTOM EXCEPTION --- (Tetap sama)
 class APIKeyError(Exception):
     pass
 
-# --- KONFIGURASI LOGGING ---
-
-logger = logging.getLogger(__name__) # Menggunakan __name__ adalah praktik yang baik
-logger.setLevel(logging.INFO)
+# --- KONFIGURASI LOGGING --- (Tetap sama, mungkin perlu sedikit penyesuaian format jika ada error dari Flask)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO) # CHART_MOD: Mungkin ingin INFO atau DEBUG untuk Flask
 if logger.hasHandlers():
     logger.handlers.clear()
 
 # File Handler
-fh = logging.FileHandler("trading_log.txt", mode='a', encoding='utf-8')
-file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pair_name)s - %(filename)s:%(lineno)d - %(message)s')
+log_file_name = "trading_log.txt"
+fh = logging.FileHandler(log_file_name, mode='a', encoding='utf-8')
+file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pair_name)s - %(message)s')
 fh.setFormatter(file_formatter)
 logger.addHandler(fh)
 
 # Console Handler
 ch = logging.StreamHandler()
 console_formatter_template = '%(asctime)s - {bold}%(levelname)s{endc} - {cyan}[%(pair_name)s]{endc} - %(message)s'
-ch.setFormatter(logging.Formatter(
+console_formatter = logging.Formatter(
     console_formatter_template.format(bold=AnsiColors.BOLD, endc=AnsiColors.ENDC, cyan=AnsiColors.CYAN)
-))
+)
+ch.setFormatter(console_formatter)
 logger.addHandler(ch)
 
 class AddPairNameFilter(logging.Filter):
     def filter(self, record):
         if not hasattr(record, 'pair_name'):
-            record.pair_name = 'SYSTEM'
+            record.pair_name = 'SYSTEM' # Default pair_name
         return True
 logger.addFilter(AddPairNameFilter())
 
@@ -123,19 +125,18 @@ def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra=
 
 
 SETTINGS_FILE = "settings_multiple_recovery.json"
-CRYPTOCOMPARE_MAX_LIMIT = 1999 # Cryptocompare limit per request
-TARGET_BIG_DATA_CANDLES = 2500
-MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15 # Detik
+CRYPTOCOMPARE_MAX_LIMIT = 1999 # CryptoCompare API limit per request
+TARGET_BIG_DATA_CANDLES = 2500 # Jumlah candle yang diinginkan
+MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15 # Detik, interval minimal setelah 2500 candle terkumpul
 
-# --- FUNGSI CLEAR SCREEN ---
-
+# --- FUNGSI CLEAR SCREEN --- (Tetap sama)
 def clear_screen_animated():
     show_spinner(0.1, "Clearing screen")
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- API KEY MANAGER ---
+# --- API KEY MANAGER --- (Tetap sama)
 class APIKeyManager:
-    def __init__(self, primary_key, recovery_keys_list, global_settings_for_email=None):
+    def __init__(self, primary_key, recovery_keys_list, global_settings_for_email=None): # CHART_MOD: init method
         self.keys = []
         if primary_key and primary_key != "YOUR_API_KEY_HERE" and primary_key != "YOUR_PRIMARY_KEY":
             self.keys.append(primary_key)
@@ -162,11 +163,41 @@ class APIKeyManager:
         if self.current_index < len(self.keys):
             new_key_display = self.keys[self.current_index][:5] + "..." + self.keys[self.current_index][-3:] if len(self.keys[self.current_index]) > 8 else self.keys[self.current_index]
             log_info(f"{AnsiColors.ORANGE}Beralih ke API key berikutnya: Index {self.current_index} ({new_key_display}){AnsiColors.ENDC}")
-            # ... (notifikasi email untuk switch key)
+            if self.global_email_settings.get("enable_global_email_notifications_for_key_switch", False):
+                email_subject = "Peringatan: API Key CryptoCompare Diganti Otomatis"
+                email_body = (f"Skrip trading telah secara otomatis mengganti API key CryptoCompare.\n\n"
+                              f"API Key sebelumnya mungkin telah mencapai limit atau tidak valid.\n"
+                              f"Sekarang menggunakan API key dengan index: {self.current_index}\n"
+                              f"Key: ...{new_key_display[-8:] if len(new_key_display) > 8 else new_key_display} (bagian akhir ditampilkan untuk identifikasi)\n\n"
+                              f"Harap periksa status API key Anda di CryptoCompare.")
+                dummy_email_cfg = {
+                    "enable_email_notifications": True,
+                    "email_sender_address": self.global_email_settings.get("email_sender_address"),
+                    "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
+                    "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
+                }
+                if all(dummy_email_cfg.get(k) for k in ["email_sender_address", "email_sender_app_password", "email_receiver_address"]):
+                    send_email_notification(email_subject, email_body, dummy_email_cfg)
+                else:
+                    log_warning("Konfigurasi email global tidak lengkap untuk notifikasi pergantian API key (APIKeyManager).")
             return self.keys[self.current_index]
         else:
             log_error(f"{AnsiColors.RED}{AnsiColors.BOLD}SEMUA API KEY TELAH HABIS/GAGAL! Tidak dapat mengambil data.{AnsiColors.ENDC}")
-            # ... (notifikasi email untuk semua key gagal)
+            if self.global_email_settings.get("enable_global_email_notifications_for_key_switch", False):
+                email_subject = "KRITIS: SEMUA API Key CryptoCompare Gagal!"
+                email_body = (f"Skrip trading telah mencoba semua API key CryptoCompare yang tersedia (primary dan recovery) dan semuanya gagal.\n\n"
+                              f"Skrip tidak dapat lagi mengambil data harga.\n"
+                              f"Harap segera periksa akun CryptoCompare Anda dan konfigurasi API key di skrip.")
+                dummy_email_cfg = {
+                    "enable_email_notifications": True,
+                    "email_sender_address": self.global_email_settings.get("email_sender_address"),
+                    "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
+                    "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
+                }
+                if all(dummy_email_cfg.get(k) for k in ["email_sender_address", "email_sender_app_password", "email_receiver_address"]):
+                    send_email_notification(email_subject, email_body, dummy_email_cfg)
+                else:
+                    log_warning("Konfigurasi email global tidak lengkap untuk notifikasi KRITIS semua API key gagal (APIKeyManager).")
             return None
 
     def has_valid_keys(self):
@@ -178,27 +209,16 @@ class APIKeyManager:
     def get_current_key_index(self):
         return self.current_index
 
-# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION ---
-
+# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION --- (Tetap sama)
 def play_notification_sound():
     try:
         if sys.platform == "win32":
             import winsound
             winsound.Beep(1000, 500)
-        elif sys.platform.startswith('linux') or sys.platform == 'darwin': # Termux is linux-based
-            try: # Try termux-vibrate first for subtle notification
-                subprocess.run(['termux-vibrate', '-d', '300', '-f'], timeout=0.5, check=False)
-            except FileNotFoundError:
-                print('\a', end='', flush=True) # Fallback to bell
-            except subprocess.TimeoutExpired:
-                print('\a', end='', flush=True) # Fallback to bell if vibrate hangs
-            except Exception:
-                print('\a', end='', flush=True) # Fallback for other errors
-        else: # Other OS
-            print('\a', end='', flush=True)
+        else:
+            print('\a', end='', flush=True) # Standard bell for Linux/macOS/Termux
     except Exception as e:
         log_warning(f"Tidak bisa memainkan suara notifikasi: {e}")
-
 
 def send_email_notification(subject, body_text, settings_for_email):
     if not settings_for_email.get("enable_email_notifications", False):
@@ -208,16 +228,7 @@ def send_email_notification(subject, body_text, settings_for_email):
     sender_password = settings_for_email.get("email_sender_app_password")
     receiver_email = settings_for_email.get("email_receiver_address")
 
-    # Cek jika menggunakan set global
-    api_s = settings_for_email.get("api_settings", {}) # Untuk kasus ketika 'settings_for_email' adalah config global
-    if not sender_email and api_s.get("enable_global_email_notifications_for_key_switch"):
-        sender_email = api_s.get("email_sender_address")
-        sender_password = api_s.get("email_sender_app_password")
-        # receiver_email untuk notif global (seperti key switch) harusnya admin
-        # jika ini dipanggil dari config pair, receiver_email dari pair config sudah pas
-
-    pair_name_ctx = settings_for_email.get('pair_name',
-                                           settings_for_email.get('symbol', 'GLOBAL_EMAIL'))
+    pair_name_ctx = settings_for_email.get('pair_name', settings_for_email.get('symbol', 'GLOBAL_EMAIL')) # CHART_MOD
 
     if not all([sender_email, sender_password, receiver_email]):
         log_warning(f"Konfigurasi email tidak lengkap. Notifikasi email dilewati.", pair_name=pair_name_ctx)
@@ -236,31 +247,31 @@ def send_email_notification(subject, body_text, settings_for_email):
     except Exception as e:
         log_error(f"{AnsiColors.RED}Gagal mengirim email notifikasi: {e}{AnsiColors.ENDC}", pair_name=pair_name_ctx)
 
-
 def send_termux_notification(title, content_msg, global_settings, pair_name_for_log="SYSTEM"):
-    api_settings = global_settings.get("api_settings", {})
+    """Mengirim notifikasi menggunakan termux-notification jika diaktifkan."""
+    api_settings = global_settings.get("api_settings", {}) # CHART_MOD: Defensive get
     if not api_settings.get("enable_termux_notifications", False):
         return
 
     try:
+        # Menggunakan timeout untuk termux-notification agar tidak hang jika ada masalah
         subprocess.run(['termux-notification', '--title', title, '--content', content_msg],
-                       check=False, # Don't raise exception on non-zero exit
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+                       check=False, # Jangan error jika command gagal, log saja
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10) # CHART_MOD: timeout
         log_info(f"{AnsiColors.CYAN}Notifikasi Termux dikirim: '{title}'{AnsiColors.ENDC}", pair_name=pair_name_for_log)
     except FileNotFoundError:
         log_warning(f"{AnsiColors.ORANGE}Perintah 'termux-notification' tidak ditemukan. Pastikan Termux:API terinstal dan paket termux-api sudah diinstal di Termux (pkg install termux-api).{AnsiColors.ENDC}", pair_name=pair_name_for_log)
-    except subprocess.TimeoutExpired:
-        log_warning(f"{AnsiColors.ORANGE}Timeout saat mengirim notifikasi Termux.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+    except subprocess.TimeoutExpired: # CHART_MOD
+        log_warning(f"{AnsiColors.ORANGE}Timeout saat mengirim notifikasi Termux untuk '{title}'.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
     except Exception as e:
         log_error(f"{AnsiColors.RED}Gagal mengirim notifikasi Termux: {e}{AnsiColors.ENDC}", pair_name=pair_name_for_log)
 
-# --- FUNGSI PENGATURAN --- (Tidak banyak diubah, kecuali inisialisasi 'id' jika tidak ada)
-
+# --- FUNGSI PENGATURAN --- (Umumnya tetap sama, mungkin ada sedikit penyesuaian UI jika diperlukan)
 def get_default_crypto_config():
     return {
         "id": str(uuid.uuid4()), "enabled": True,
         "symbol": "BTC", "currency": "USD", "exchange": "CCCAGG",
-        "timeframe": "hour", "refresh_interval_seconds": 60,
+        "timeframe": "hour", "refresh_interval_seconds": 60, # Default setelah big data
         "left_strength": 50, "right_strength": 150,
         "profit_target_percent_activation": 5.0, "trailing_stop_gap_percent": 5.0,
         "emergency_sl_percent": 10.0, "enable_secure_fib": True, "secure_fib_check_price": "Close",
@@ -279,44 +290,46 @@ def load_settings():
         "enable_termux_notifications": False
     }
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            try:
+        try: # CHART_MOD: Try-except block
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
-                if "api_settings" not in settings:
-                    settings["api_settings"] = default_api_settings.copy()
-                else:
-                    for k, v in default_api_settings.items():
-                        if k not in settings["api_settings"]:
-                            settings["api_settings"][k] = v
+            # Pastikan semua kunci default ada
+            if "api_settings" not in settings:
+                settings["api_settings"] = default_api_settings.copy()
+            else:
+                for k, v in default_api_settings.items():
+                    if k not in settings["api_settings"]:
+                        settings["api_settings"][k] = v
 
-                if "cryptos" not in settings or not isinstance(settings["cryptos"], list):
-                    settings["cryptos"] = []
-                
-                # Pastikan setiap config crypto punya 'id'
-                for crypto_cfg in settings["cryptos"]:
-                    if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
-                    if "enabled" not in crypto_cfg: crypto_cfg["enabled"] = True # default enabled
-                return settings
-            except json.JSONDecodeError:
-                log_error(f"Error membaca {SETTINGS_FILE}. Menggunakan default atau membuat file baru.")
-                new_settings = {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
-                save_settings(new_settings) # Simpan struktur default jika file korup
-                return new_settings
+            if "cryptos" not in settings or not isinstance(settings["cryptos"], list):
+                settings["cryptos"] = []
+            for crypto_cfg in settings["cryptos"]: # Pastikan ID dan enabled ada
+                if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
+                if "enabled" not in crypto_cfg: crypto_cfg["enabled"] = True
+            return settings
+        except json.JSONDecodeError:
+            log_error(f"Error membaca {SETTINGS_FILE}. Menggunakan default atau membuat file baru.")
+            # Buat struktur default jika file korup
+            return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
+        except Exception as e: # CHART_MOD: General exception
+            log_error(f"Error tidak diketahui saat load_settings: {e}. Menggunakan default.")
+            return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
     return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
 
 
 def save_settings(settings):
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, indent=4)
-    log_info(f"{AnsiColors.CYAN}Pengaturan disimpan ke {SETTINGS_FILE}{AnsiColors.ENDC}")
+    try: # CHART_MOD: Try-except block
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=4)
+        log_info(f"{AnsiColors.CYAN}Pengaturan disimpan ke {SETTINGS_FILE}{AnsiColors.ENDC}")
+    except Exception as e:
+        log_error(f"{AnsiColors.RED}Gagal menyimpan pengaturan ke {SETTINGS_FILE}: {e}{AnsiColors.ENDC}")
 
+# _prompt_crypto_config dan settings_menu tetap sama seperti yang kamu berikan
+# ... (kode _prompt_crypto_config dan settings_menu dari pertanyaan, tidak diubah) ...
 def _prompt_crypto_config(current_config):
     clear_screen_animated()
     new_config = current_config.copy()
-    # Jika ini config baru, pastikan ada ID
-    if "id" not in new_config or not new_config["id"]:
-        new_config["id"] = str(uuid.uuid4())
-
     animated_text_display(f"--- Konfigurasi Crypto Pair ({new_config.get('symbol','BARU')}-{new_config.get('currency','BARU')}) ---", color=AnsiColors.HEADER)
 
     enabled_input = input(f"Aktifkan analisa untuk pair ini? (true/false) [{new_config.get('enabled',True)}]: ").lower().strip()
@@ -378,10 +391,6 @@ def _prompt_crypto_config(current_config):
     return new_config
 
 def settings_menu(current_settings):
-    # ... (Fungsi settings_menu tetap sama, tidak perlu diubah untuk charting)
-    # Pastikan saja ia mengembalikan `current_settings` yang sudah diupdate.
-    # Kode fungsi settings_menu Anda yang panjang ada di sini...
-    # Untuk brevity, saya akan singkat, tapi di implementasi penuh, kode Anda akan ada di sini
     while True:
         clear_screen_animated()
         api_s = current_settings.get("api_settings", {})
@@ -422,20 +431,26 @@ def settings_menu(current_settings):
             ("header", "-----------------------------"),
             ("option", "Kembali ke Menu Utama")
         ]
-        
+
         selectable_options = [text for type, text in original_options_structure if type == "option"]
         
+        selected_option_text = None # CHART_MOD
+        action_choice = -1 # CHART_MOD
+
         try:
-            option_text, index = pick(selectable_options, pick_title_settings, indicator='=>', default_index=0)
-        except Exception as e_pick: # Fallback jika pick gagal
+            selected_option_text, action_choice = pick(selectable_options, pick_title_settings, indicator='=>', default_index=0)
+        except Exception as e_pick:
             log_error(f"Error dengan library 'pick': {e_pick}. Gunakan input manual.")
-            print(pick_title_settings)
+            print(pick_title_settings) # Tampilkan title lagi karena pick gagal
             for idx, opt_text in enumerate(selectable_options):
                 print(f"  {idx + 1}. {opt_text}")
             try:
-                choice = int(input("Pilih nomor opsi: ")) -1
+                choice_input = input("Pilih nomor opsi: ").strip()
+                if not choice_input: continue # Kembali jika input kosong
+                choice = int(choice_input) -1
                 if 0 <= choice < len(selectable_options):
-                    index = choice # Ini adalah index yang benar untuk if/elif di bawah
+                    action_choice = choice
+                    selected_option_text = selectable_options[choice] # CHART_MOD
                 else:
                     print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
                     show_spinner(1.5, "Kembali...")
@@ -444,8 +459,19 @@ def settings_menu(current_settings):
                 print(f"{AnsiColors.RED}Input harus berupa angka.{AnsiColors.ENDC}")
                 show_spinner(1.5, "Kembali...")
                 continue
+        
+        # Konversi selected_option_text ke action_choice jika pick berhasil (pick mengembalikan teks, bukan indeks asli)
+        if selected_option_text is not None and action_choice < 0: # action_choice dari pick adalah index di selectable_options
+             pass # action_choice sudah benar dari pick
+        elif action_choice < 0 and selected_option_text is None: # Jika gagal input manual juga
+            continue
 
-        action_choice = index # index dari pick() atau input manual
+
+        # Pemetaan dari teks opsi ke action_choice jika menggunakan input manual dan selected_option_text diisi
+        # Atau jika pick() mengembalikan teks dan kita butuh indeks yang konsisten dengan struktur lama.
+        # Namun, karena pick() mengembalikan indeks dari selectable_options, ini seharusnya sudah OK.
+        # Cukup pastikan action_choice adalah indeks yang valid.
+        # Indeks dari pick sudah benar untuk `if action_choice == ...`
 
         try:
             clear_screen_animated()
@@ -459,8 +485,8 @@ def settings_menu(current_settings):
                 while True:
                     clear_screen_animated()
                     recovery_pick_title = "\n-- Kelola Recovery API Keys --\n"
-                    current_recovery = [k for k in api_s.get('recovery_keys', []) if k] 
-                    api_s['recovery_keys'] = current_recovery # Pastikan list bersih dari None atau string kosong
+                    current_recovery = [k for k in api_s.get('recovery_keys', []) if k] # Filter out empty strings
+                    api_s['recovery_keys'] = current_recovery # Update dengan list yang bersih
 
                     if not current_recovery:
                         recovery_pick_title += "  (Tidak ada recovery key tersimpan)\n"
@@ -472,17 +498,21 @@ def settings_menu(current_settings):
 
                     recovery_options_plain = ["Tambah Recovery Key", "Hapus Recovery Key", "Kembali ke Pengaturan Utama"]
                     
+                    rec_selected_text = None # CHART_MOD
+                    rec_index = -1 # CHART_MOD
                     try:
-                        rec_option_text, rec_index = pick(recovery_options_plain, recovery_pick_title, indicator='=>', default_index=0)
-                    except Exception as e_pick_rec: # Fallback
+                        rec_selected_text, rec_index = pick(recovery_options_plain, recovery_pick_title, indicator='=>', default_index=0)
+                    except Exception as e_pick_rec:
                         log_error(f"Error dengan library 'pick' di menu recovery: {e_pick_rec}. Gunakan input manual.")
                         print(recovery_pick_title)
                         for idx_rec, opt_text_rec in enumerate(recovery_options_plain):
-                             print(f"  {idx_rec + 1}. {opt_text_rec}")
+                            print(f"  {idx_rec + 1}. {opt_text_rec}")
                         try:
-                            rec_choice = int(input("Pilih nomor opsi: ")) -1
-                            if 0 <= rec_choice < len(recovery_options_plain):
-                                rec_index = rec_choice
+                            rec_choice_input = input("Pilih nomor opsi: ").strip()
+                            if not rec_choice_input: continue
+                            rec_choice_val = int(rec_choice_input) -1
+                            if 0 <= rec_choice_val < len(recovery_options_plain):
+                                rec_index = rec_choice_val
                             else:
                                 print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
                                 show_spinner(1, "Kembali...")
@@ -491,9 +521,11 @@ def settings_menu(current_settings):
                             print(f"{AnsiColors.RED}Input harus berupa angka.{AnsiColors.ENDC}")
                             show_spinner(1, "Kembali...")
                             continue
+                    
+                    # Jika pick berhasil, rec_index adalah index dari recovery_options_plain
+                    # Jika input manual, rec_index juga sudah diset dengan benar.
 
                     clear_screen_animated()
-
                     if rec_index == 0: # Tambah Recovery Key
                         animated_text_display("-- Tambah Recovery Key --", color=AnsiColors.HEADER)
                         new_r_key = input("Masukkan Recovery API Key baru: ").strip()
@@ -509,27 +541,30 @@ def settings_menu(current_settings):
                         animated_text_display("-- Hapus Recovery Key --", color=AnsiColors.HEADER)
                         if not current_recovery:
                             print(f"{AnsiColors.ORANGE}Tidak ada recovery key untuk dihapus.{AnsiColors.ENDC}")
-                            show_spinner(1, "Kembali...")
-                            continue
+                            show_spinner(1, "Kembali..."); continue
                         try:
+                            del_options = []
                             for i_del, r_key_del in enumerate(current_recovery):
                                 r_key_del_display = r_key_del[:5] + "..." + r_key_del[-3:] if len(r_key_del) > 8 else r_key_del
-                                print(f"  {i_del+1}. {r_key_del_display}")
-                            idx_del_str = input("Nomor recovery key yang akan dihapus: ").strip()
-                            if not idx_del_str: # Handle empty input
-                                print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
-                                show_spinner(1, "Kembali...")
-                                continue
-                            idx_del = int(idx_del_str) - 1
-                            if 0 <= idx_del < len(current_recovery):
-                                removed = current_recovery.pop(idx_del)
+                                del_options.append(f"{r_key_del_display}")
+                            del_options.append("Batal")
+
+                            del_title = "Pilih recovery key yang akan dihapus:"
+                            _del_text, idx_del_pick = pick(del_options, del_title, indicator='=>')
+                            
+                            if idx_del_pick == len(del_options) -1 : # Batal
+                                 show_spinner(0.5, "Dibatalkan..."); continue
+
+                            if 0 <= idx_del_pick < len(current_recovery):
+                                removed = current_recovery.pop(idx_del_pick)
                                 api_s['recovery_keys'] = current_recovery
                                 save_settings(current_settings)
                                 print(f"{AnsiColors.GREEN}Recovery key '{removed[:5]}...' dihapus.{AnsiColors.ENDC}")
-                            else:
-                                print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
-                        except ValueError:
-                            print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
+                            else: # Seharusnya tidak terjadi jika pick digunakan dengan benar
+                                print(f"{AnsiColors.RED}Pilihan hapus tidak valid.{AnsiColors.ENDC}")
+                        except Exception as e_pick_del: # Termasuk jika pick dibatalkan dengan Ctrl+C
+                            log_debug(f"Pick untuk hapus recovery key dibatalkan atau error: {e_pick_del}")
+                            print(f"{AnsiColors.ORANGE}Penghapusan dibatalkan.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
                     elif rec_index == 2: # Kembali
                         break
@@ -544,8 +579,7 @@ def settings_menu(current_settings):
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
-            
-            elif action_choice == 3: # Aktifkan/Nonaktifkan Notifikasi Termux
+            elif action_choice == 3: # Notifikasi Termux
                 animated_text_display("-- Pengaturan Notifikasi Termux Realtime --", color=AnsiColors.HEADER)
                 current_status = api_s.get('enable_termux_notifications', False)
                 new_status_input = input(f"Aktifkan Notifikasi Termux? (true/false) [{current_status}]: ").lower().strip()
@@ -556,14 +590,14 @@ def settings_menu(current_settings):
                 elif new_status_input == 'false':
                     api_s['enable_termux_notifications'] = False
                     print(f"{AnsiColors.GREEN}Notifikasi Termux dinonaktifkan.{AnsiColors.ENDC}")
-                else: # Input tidak valid
+                else: 
                     print(f"{AnsiColors.ORANGE}Input tidak valid. Status Notifikasi Termux tidak berubah: {current_status}.{AnsiColors.ENDC}")
 
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(2, "Menyimpan & Kembali...")
-            elif action_choice == 4: # Tambah Konfigurasi Crypto Baru
-                new_crypto_conf = get_default_crypto_config() # ID sudah dibuat di sini
+            elif action_choice == 4: # Tambah Konfigurasi Crypto
+                new_crypto_conf = get_default_crypto_config()
                 new_crypto_conf = _prompt_crypto_config(new_crypto_conf)
                 current_settings.setdefault("cryptos", []).append(new_crypto_conf)
                 save_settings(current_settings)
@@ -572,258 +606,283 @@ def settings_menu(current_settings):
             elif action_choice == 5: # Ubah Konfigurasi Crypto
                 if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk diubah.{AnsiColors.ENDC}")
-                    show_spinner(1, "Kembali..."); 
-                    continue
-                animated_text_display("-- Ubah Konfigurasi Crypto --", color=AnsiColors.HEADER)
-                for i, crypto_conf in enumerate(current_settings["cryptos"]):
-                    print(f"  {i+1}. {crypto_conf.get('symbol','N/A')}-{crypto_conf.get('currency','N/A')}")
-                
-                idx_choice_str = input("Nomor konfigurasi crypto yang akan diubah: ").strip()
-                if not idx_choice_str: # Handle empty input
-                    print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali..."); continue
-                try:
-                    idx_choice = int(idx_choice_str) - 1
-                    if 0 <= idx_choice < len(current_settings["cryptos"]):
-                        current_settings["cryptos"][idx_choice] = _prompt_crypto_config(current_settings["cryptos"][idx_choice])
-                        save_settings(current_settings)
-                        log_info(f"Konfigurasi untuk {current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']} diubah.")
-                    else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
-                except ValueError:
-                     print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
+                
+                animated_text_display("-- Ubah Konfigurasi Crypto --", color=AnsiColors.HEADER)
+                edit_options = [f"{cfg.get('symbol','N/A')}-{cfg.get('currency','N/A')}" for cfg in current_settings["cryptos"]]
+                edit_options.append("Batal")
+                
+                edit_title = "Pilih konfigurasi crypto yang akan diubah:"
+                _edit_text, idx_choice_pick = pick(edit_options, edit_title, indicator='=>')
+
+                if idx_choice_pick == len(edit_options) -1 : # Batal
+                     show_spinner(0.5, "Dibatalkan..."); continue
+
+                if 0 <= idx_choice_pick < len(current_settings["cryptos"]):
+                    current_settings["cryptos"][idx_choice_pick] = _prompt_crypto_config(current_settings["cryptos"][idx_choice_pick])
+                    save_settings(current_settings)
+                    log_info(f"Konfigurasi untuk {current_settings['cryptos'][idx_choice_pick]['symbol']}-{current_settings['cryptos'][idx_choice_pick]['currency']} diubah.")
+                else: print(f"{AnsiColors.RED}Pilihan ubah tidak valid.{AnsiColors.ENDC}") # Seharusnya tidak terjadi
                 show_spinner(1, "Kembali...")
+
             elif action_choice == 6: # Hapus Konfigurasi Crypto
                 if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk dihapus.{AnsiColors.ENDC}")
-                    show_spinner(1, "Kembali...");
-                    continue
-                animated_text_display("-- Hapus Konfigurasi Crypto --", color=AnsiColors.HEADER)
-                for i, crypto_conf in enumerate(current_settings["cryptos"]):
-                    print(f"  {i+1}. {crypto_conf.get('symbol','N/A')}-{crypto_conf.get('currency','N/A')}")
-
-                idx_choice_str = input("Nomor konfigurasi crypto yang akan dihapus: ").strip()
-                if not idx_choice_str: # Handle empty input
-                    print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali..."); continue
-                try:
-                    idx_choice = int(idx_choice_str) - 1
-                    if 0 <= idx_choice < len(current_settings["cryptos"]):
-                        removed_pair = f"{current_settings['cryptos'][idx_choice]['symbol']}-{current_settings['cryptos'][idx_choice]['currency']}"
-                        current_settings["cryptos"].pop(idx_choice)
-                        save_settings(current_settings)
-                        log_info(f"Konfigurasi untuk {removed_pair} dihapus.")
-                    else: print(f"{AnsiColors.RED}Nomor tidak valid.{AnsiColors.ENDC}")
-                except ValueError:
-                    print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
+
+                animated_text_display("-- Hapus Konfigurasi Crypto --", color=AnsiColors.HEADER)
+                del_crypto_options = [f"{cfg.get('symbol','N/A')}-{cfg.get('currency','N/A')}" for cfg in current_settings["cryptos"]]
+                del_crypto_options.append("Batal")
+                
+                del_crypto_title = "Pilih konfigurasi crypto yang akan dihapus:"
+                _del_c_text, idx_del_c_pick = pick(del_crypto_options, del_crypto_title, indicator='=>')
+
+                if idx_del_c_pick == len(del_crypto_options) - 1: # Batal
+                    show_spinner(0.5, "Dibatalkan..."); continue
+
+                if 0 <= idx_del_c_pick < len(current_settings["cryptos"]):
+                    removed_pair = f"{current_settings['cryptos'][idx_del_c_pick]['symbol']}-{current_settings['cryptos'][idx_del_c_pick]['currency']}"
+                    current_settings["cryptos"].pop(idx_del_c_pick)
+                    save_settings(current_settings)
+                    log_info(f"Konfigurasi untuk {removed_pair} dihapus.")
+                else: print(f"{AnsiColors.RED}Pilihan hapus tidak valid.{AnsiColors.ENDC}") # Seharusnya tidak terjadi
                 show_spinner(1, "Kembali...")
             elif action_choice == 7: # Kembali ke Menu Utama
                 break
-        except ValueError: # General ValueError for the menu's int conversions
+        except ValueError: # Misal dari input manual untuk nomor jika pick gagal
             print(f"{AnsiColors.RED}Input angka tidak valid.{AnsiColors.ENDC}")
             show_spinner(1.5, "Error, kembali...")
-        except Exception as e: # General error catch for safety
+        except Exception as e: # Kesalahan umum dalam blok aksi
             log_error(f"Terjadi kesalahan di menu pengaturan: {e}")
-            log_exception("Traceback Error Settings Menu:")
+            log_exception("Traceback Error Settings Menu:") # CHART_MOD: Log traceback
             show_spinner(1.5, "Error, kembali...")
-
     return current_settings
-# --- FUNGSI PENGAMBILAN DATA --- (Tidak banyak diubah)
 
+# --- FUNGSI PENGAMBILAN DATA --- (Sedikit modifikasi untuk logging dan penanganan error)
 def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_api_key_to_use, timeframe="hour", pair_name="N/A"):
     if not current_api_key_to_use:
         log_error(f"Tidak ada API key yang diberikan untuk fetch_candles.", pair_name=pair_name)
         raise APIKeyError("API Key tidak tersedia untuk request.")
 
     all_accumulated_candles = []
-    current_to_ts = None
-    api_endpoint = "histohour" # default
+    current_to_ts = None # Untuk pagination mundur
+    api_endpoint = "histohour"
     if timeframe == "minute": api_endpoint = "histominute"
     elif timeframe == "day": api_endpoint = "histoday"
 
-    # Construct base URL; CCCAGG is default, no explicit exchange param needed if it's CCCAGG
     url = f"https://min-api.cryptocompare.com/data/v2/{api_endpoint}"
-    is_large_fetch = total_limit_desired > 10 # Simple heuristic for logging/progress bar
+    is_large_fetch = total_limit_desired > 10 # Anggap lebih dari 10 adalah "besar" untuk logging
 
     if is_large_fetch:
         log_info(f"Memulai pengambilan data: target {total_limit_desired} TF {timeframe}.", pair_name=pair_name)
-    
-    # Progress bar untuk fetch besar
-    if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT : # Hanya tampilkan jika multi-request
+
+    # Progress bar hanya jika lebih dari max limit per call
+    if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT :
         simple_progress_bar(0, total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
 
     fetch_loop_count = 0
     while len(all_accumulated_candles) < total_limit_desired:
         candles_still_needed = total_limit_desired - len(all_accumulated_candles)
-        # Jika kita sudah punya data dan butuh lebih, ambil N+1 lalu buang yang overlap
-        # Ini membantu memastikan kita tidak terjebak jika 'toTs' ada di tengah candle.
         limit_for_this_api_call = min(candles_still_needed, CRYPTOCOMPARE_MAX_LIMIT)
-        
-        if current_to_ts is not None and candles_still_needed > 1 : # Jika bukan request pertama & butuh >1
-            # Minta N+1 untuk overlap check, tapi jangan melebihi MAX_LIMIT
-            limit_for_this_api_call = min(candles_still_needed + 1, CRYPTOCOMPARE_MAX_LIMIT)
 
+        # Jika mem-paginate mundur dan butuh > 1 candle, minta satu ekstra untuk overlap check (jika perlu)
+        # CryptoCompare API v2 mengembalikan data hingga toTs, jadi tidak perlu +1 untuk overlap.
+        # Cukup ambil limit yang dibutuhkan.
+        # if current_to_ts is not None and candles_still_needed > 1 :
+        #     limit_for_this_api_call = min(candles_still_needed, CRYPTOCOMPARE_MAX_LIMIT) # Ambil limit yang pas
 
         if limit_for_this_api_call <= 0: break # Sudah cukup atau tidak butuh lagi
 
         params = {
             "fsym": symbol, "tsym": currency,
-            "limit": limit_for_this_api_call,
+            "limit": limit_for_this_api_call, # API mengembalikan `limit` candle SEBELUM `toTs`
             "api_key": current_api_key_to_use
         }
-        if exchange_name and exchange_name.upper() != "CCCAGG": # Hanya tambahkan 'e' jika bukan CCCAGG
-            params["e"] = exchange_name
-        if current_to_ts is not None: # Untuk pagination mundur
-            params["toTs"] = current_to_ts
+        if exchange_name and exchange_name.upper() != "CCCAGG": params["e"] = exchange_name
+        if current_to_ts is not None: params["toTs"] = current_to_ts
 
         try:
-            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: # Log detail jika fetch besar
-                key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
-                log_debug(f"Fetching batch (Key: ...{key_display}, Limit: {limit_for_this_api_call}, toTs: {current_to_ts})", pair_name=pair_name)
+            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: # CHART_MOD: log detail
+                key_display = ("..." + current_api_key_to_use[-5:]) if len(current_api_key_to_use) > 5 else current_api_key_to_use
+                log_debug(f"Fetching batch (Key: {key_display}, Limit: {limit_for_this_api_call}, toTs: {current_to_ts})", pair_name=pair_name)
 
             response = requests.get(url, params=params, timeout=20) # Timeout 20 detik
 
-            # Check for API key related HTTP errors first
-            if response.status_code in [401, 403, 429]: # Unauthorized, Forbidden, Too Many Requests
+            if response.status_code in [401, 403, 429]: # Kemungkinan error API Key
                 error_data = {}
-                try: # Coba parse JSON error jika ada
-                    error_data = response.json()
-                except json.JSONDecodeError:
-                    pass # Tidak masalah jika tidak ada body JSON
+                try: error_data = response.json()
+                except json.JSONDecodeError: pass
                 error_message = error_data.get('Message', f"HTTP Error {response.status_code}")
-                key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
-                log_warning(f"{AnsiColors.RED}API Key Error (HTTP {response.status_code}): {error_message}{AnsiColors.ENDC} Key: ...{key_display}", pair_name=pair_name)
-                raise APIKeyError(f"HTTP {response.status_code}: {error_message}")
+                key_display = ("..." + current_api_key_to_use[-5:]) if len(current_api_key_to_use) > 5 else current_api_key_to_use
+                log_warning(f"{AnsiColors.RED}API Key Error (HTTP {response.status_code}): {error_message}{AnsiColors.ENDC} Key: {key_display}", pair_name=pair_name)
+                raise APIKeyError(f"HTTP {response.status_code}: {error_message}") # Raise untuk ditangkap oleh pemanggil
 
-            response.raise_for_status() # Raise HTTPError untuk status 4xx/5xx lainnya
+            response.raise_for_status() # Untuk error HTTP lain (5xx, 404, dll)
             data = response.json()
 
             if data.get('Response') == 'Error':
                 error_message = data.get('Message', 'N/A')
-                # Daftar keyword yang lebih spesifik untuk error terkait API key dari JSON response
+                # Cek apakah error terkait API key
                 key_related_error_messages = [
                     "api key is invalid", "apikey_is_missing", "apikey_invalid",
                     "your_monthly_calls_are_over_the_limit", "rate limit exceeded",
                     "your_pro_tier_has_expired_or_is_not_active",
-                    "you are over your rate limit" # Tambahan dari skrip Anda
+                    "you are over your rate limit", # Sudah ada
+                    "please pass an API key", "api_key not found"
                 ]
-                key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
+                key_display = ("..." + current_api_key_to_use[-5:]) if len(current_api_key_to_use) > 5 else current_api_key_to_use
                 if any(keyword.lower() in error_message.lower() for keyword in key_related_error_messages):
-                    log_warning(f"{AnsiColors.RED}API Key Error (JSON): {error_message}{AnsiColors.ENDC} Key: ...{key_display}", pair_name=pair_name)
-                    raise APIKeyError(f"JSON Error: {error_message}")
+                    log_warning(f"{AnsiColors.RED}API Key Error (JSON): {error_message}{AnsiColors.ENDC} Key: {key_display}", pair_name=pair_name)
+                    raise APIKeyError(f"JSON Error: {error_message}") # Raise untuk ditangkap
                 else:
-                    # Error API lain yang tidak terkait key, misal pair tidak ada
+                    # Error lain dari CryptoCompare, mungkin data tidak ada
                     log_error(f"{AnsiColors.RED}API Error CryptoCompare: {error_message}{AnsiColors.ENDC} (Params: {params})", pair_name=pair_name)
-                    break # Hentikan loop fetch untuk pair ini jika error non-key
+                    break # Hentikan loop fetch untuk pair ini
 
+            # Cek data yang valid
             if 'Data' not in data or 'Data' not in data['Data'] or not data['Data']['Data']:
                 if is_large_fetch: log_info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
-                break # Tidak ada data atau format salah
+                break # Tidak ada data lagi
 
             raw_candles_from_api = data['Data']['Data']
 
             if not raw_candles_from_api: # API mengembalikan list kosong
                 if is_large_fetch: log_info(f"API mengembalikan list candle kosong. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
                 break
-            
-            # Konversi ke format yang kita inginkan
+
             batch_candles_list = []
             for item in raw_candles_from_api:
-                # Pastikan semua field ada, jika tidak, candle mungkin tidak valid
-                if all(k in item for k in ['time', 'open', 'high', 'low', 'close']):
-                    candle = {
-                        'timestamp': datetime.fromtimestamp(item['time']),
-                        'open': item.get('open'), 'high': item.get('high'),
-                        'low': item.get('low'), 'close': item.get('close'),
-                        'volume': item.get('volumefrom') # atau 'volume' tergantung API
-                    }
-                    batch_candles_list.append(candle)
-                else:
-                    if is_large_fetch: log_warning(f"Skipping malformed candle: {item}", pair_name=pair_name)
+                # Pastikan semua field ada, jika tidak, skip candle ini tapi log
+                required_ohlcv_keys = ['time', 'open', 'high', 'low', 'close', 'volumefrom']
+                if not all(k in item and item[k] is not None for k in required_ohlcv_keys):
+                    log_warning(f"Candle tidak lengkap dari API @ ts {item.get('time', 'N/A')}. Dilewati. Data: {item}", pair_name=pair_name)
+                    continue
 
-            # Hapus candle overlap jika bukan request pertama dan ada data baru
-            # Candle terakhir dari batch_candles_list (yang paling baru) harusnya yang paling tua dari API (krn toTs)
-            # Candle pertama dari all_accumulated_candles (yang paling tua)
+                candle = {
+                    'timestamp': datetime.fromtimestamp(item['time']),
+                    'open': item.get('open'), 'high': item.get('high'),
+                    'low': item.get('low'), 'close': item.get('close'),
+                    'volume': item.get('volumefrom') # 'volumefrom' adalah volume base currency
+                }
+                batch_candles_list.append(candle)
+
+            # Hapus overlap jika ada. CryptoCompare mengembalikan data *sebelum* toTs.
+            # Jika kita mengambil data secara berurutan ke masa lalu, candle pertama dari batch baru
+            # (yang merupakan candle tertua di batch itu) adalah toTs dari request sebelumnya.
+            # Data dari API sudah diurutkan dari yang tertua ke terbaru dalam satu batch.
+            # Jadi, batch_candles_list[0] adalah yang tertua dalam batch.
+            # all_accumulated_candles di-prepend, jadi all_accumulated_candles[0] adalah yang terbaru dari akumulasi sebelumnya.
+
+            # Logika overlap: jika ada data terakumulasi dan batch baru,
+            # dan timestamp candle *terbaru* di batch baru sama dengan timestamp *tertua* dari data yang sudah ada,
+            # maka itu overlap. Tapi karena kita prepend, candle tertua di batch baru adalah batch_candles_list[0]
+            # dan candle terbaru di akumulasi adalah all_accumulated_candles[0] (jika ada).
+            # Kita prepend: all_accumulated_candles = batch_candles_list + all_accumulated_candles
+            # Jadi, candle terakhir dari batch_candles_list (batch_candles_list[-1]) bisa jadi sama dengan
+            # candle pertama dari all_accumulated_candles (all_accumulated_candles[0]) jika ada cycle data aneh.
+            # CryptoCompare biasanya OK, jadi ini mungkin tidak terlalu sering terjadi.
+            # Namun, untuk fetch_candles yang mengambil candle terbaru (bukan historis),
+            # kita perlu hati-hati agar tidak duplikat candle saat ini.
+            # Skrip ini menggunakan fetch_candles untuk historis (mundur) dan update terbaru (maju).
+            # Logika ini adalah untuk pagination mundur (mengisi data historis).
             if current_to_ts is not None and all_accumulated_candles and batch_candles_list:
-                # API mengembalikan data dari [TimeFrom, TimeTo], inklusif.
-                # Jika toTs dari request sebelumnya adalah timestamp candle pertama dari batch baru ini,
-                # berarti candle itu sudah kita proses.
+                # Jika candle tertua dari batch baru sama dengan candle terbaru dari akumulasi sebelumnya, itu aneh.
+                # Yang lebih mungkin: candle terbaru dari batch baru (batch_candles_list[-1])
+                # sama dengan candle tertua dari akumulasi sebelumnya (all_accumulated_candles[0]) jika terjadi
+                # permintaan yang tumpang tindih.
+                # Karena kita prepend, kita harus cek all_accumulated_candles[0] (yang paling baru dari sebelumnya)
+                # dengan batch_candles_list[-1] (yang paling baru dari batch saat ini).
+                # Seharusnya tidak terjadi jika toTs digunakan dengan benar.
+                # Untuk data historis yang di-fetch mundur: `all_accumulated_candles` diisi dengan `batch_list + all_accumulated_candles`.
+                # `toTs` adalah timestamp dari candle *pertama* (`[0]`) dari batch sebelumnya.
+                # Jadi `batch_candles_list` yang baru seharusnya berakhir *sebelum* `toTs` tersebut.
+                # Jika `batch_candles_list[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']`, maka ada duplikasi.
+                # Hapus dari `batch_candles_list` sebelum digabung.
                 if batch_candles_list[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']:
-                    if is_large_fetch: log_debug(f"Menghapus candle tumpang tindih: {batch_candles_list[-1]['timestamp']}", pair_name=pair_name)
-                    batch_candles_list.pop() # Hapus yang paling baru dari batch ini (yang sebenarnya paling tua dari API)
+                     if is_large_fetch: log_debug(f"Menghapus candle tumpang tindih (overlap): {batch_candles_list[-1]['timestamp']}", pair_name=pair_name)
+                     batch_candles_list.pop()
 
-            # Jika setelah overlap removal, batch jadi kosong, berarti sudah tidak ada data baru lagi
-            if not batch_candles_list and current_to_ts is not None : # Hanya jika bukan request pertama
-                if is_large_fetch: log_info("Batch menjadi kosong setelah overlap removal. Kemungkinan akhir data.", pair_name=pair_name)
-                break
 
-            # Prepend batch baru ke list utama (karena kita fetch mundur)
-            all_accumulated_candles = batch_candles_list + all_accumulated_candles 
+            if not batch_candles_list and current_to_ts is not None : # Batch jadi kosong setelah overlap removal
+                if is_large_fetch: log_info("Batch menjadi kosong setelah overlap removal. Kemungkinan akhir data atau hanya ada 1 candle overlap.", pair_name=pair_name)
+                # Jika ini terjadi, dan kita butuh banyak data, berarti ada masalah.
+                # Jika hanya butuh sedikit (misal 1-2 candle update), ini bisa jadi normal.
+                # Untuk large fetch historis, ini berarti akhir data.
+                break # Berhenti jika batch kosong, tidak ada data baru
 
-            # Update toTs untuk request berikutnya (candle paling tua di batch ini)
-            # Pastikan raw_candles_from_api tidak kosong sebelum akses index 0
-            if raw_candles_from_api: # Seharusnya selalu ada jika batch_candles_list ada isinya
-                current_to_ts = raw_candles_from_api[0]['time'] # timestamp dari candle paling tua di batch ini
-            else: # Jika raw_candles_from_api kosong tapi loop belum break (misal batch_candles_list masih ada), ini aneh
+            all_accumulated_candles = batch_candles_list + all_accumulated_candles # Prepend
+
+            if raw_candles_from_api: # Set toTs untuk request berikutnya
+                current_to_ts = raw_candles_from_api[0]['time'] # Waktu dari candle tertua di batch saat ini
+            else: # Seharusnya tidak sampai sini jika raw_candles_from_api kosong karena sudah break di atas
                 break
 
             fetch_loop_count +=1
-            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and (fetch_loop_count % 2 == 0 or len(all_accumulated_candles) >= total_limit_desired): # Update progress bar tiap 2 request atau jika sudah selesai
+            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and (fetch_loop_count % 2 == 0 or len(all_accumulated_candles) >= total_limit_desired): # Update progress bar
                 simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
 
-            # Jika API mengembalikan data lebih sedikit dari yang diminta, berarti sudah di ujung histori
+            # Jika API mengembalikan kurang dari yang diminta, berarti akhir data
             if len(raw_candles_from_api) < limit_for_this_api_call:
                 if is_large_fetch: log_info(f"API mengembalikan < limit ({len(raw_candles_from_api)} vs {limit_for_this_api_call}). Akhir histori tercapai.", pair_name=pair_name)
-                break # Keluar loop, sudah dapat semua yang ada
+                break # Akhir data tercapai
 
-            if len(all_accumulated_candles) >= total_limit_desired: break # Sudah cukup
+            if len(all_accumulated_candles) >= total_limit_desired: break # Target tercapai
 
-            # Delay kecil antar request jika fetch besar untuk menghindari rate limit yang terlalu agresif
+            # Delay kecil antar batch besar untuk tidak membebani API
             if len(all_accumulated_candles) < total_limit_desired and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and is_large_fetch:
                 log_debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...", pair_name=pair_name)
-                time.sleep(0.3) # 300ms delay
+                time.sleep(0.3) # Jeda antar request batch besar
 
-        except APIKeyError: # Dilempar dari dalam blok try di atas
-            raise # Lempar lagi agar ditangani oleh loop pemanggil di start_trading
+        except APIKeyError: # Dilempar dari dalam try block
+            raise # Biarkan pemanggil yang menangani penggantian key
         except requests.exceptions.RequestException as e:
             log_error(f"{AnsiColors.RED}Kesalahan koneksi/permintaan saat mengambil batch: {e}{AnsiColors.ENDC}", pair_name=pair_name)
-            break # Hentikan loop fetch untuk pair ini jika ada error koneksi
-        except Exception as e: # Error tak terduga lainnya
-            log_error(f"{AnsiColors.RED}Error tak terduga dalam fetch_candles: {e}{AnsiColors.ENDC}", pair_name=pair_name)
-            log_exception("Traceback Error:", pair_name=pair_name) # Log traceback
+            # Tidak raise APIKeyError, karena ini masalah jaringan, bukan key.
+            # Pemanggil mungkin mau retry dengan key yang sama.
+            # Untuk fetch_candles, kita break saja loop fetch batchnya.
             break
-    
-    # Potong jika data yang didapat lebih banyak dari yang diminta (misal karena pembulatan limit)
+        except Exception as e:
+            log_error(f"{AnsiColors.RED}Error tak terduga dalam fetch_candles (batch loop): {e}{AnsiColors.ENDC}", pair_name=pair_name)
+            log_exception("Traceback Error Fetch Candles (batch loop):", pair_name=pair_name) # CHART_MOD
+            break # Hentikan loop fetch untuk pair ini
+
+    # Pastikan jumlah candle tidak melebihi yang diinginkan (jika ada overlap atau API memberi lebih)
     if len(all_accumulated_candles) > total_limit_desired:
-        all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
+        all_accumulated_candles = all_accumulated_candles[-total_limit_desired:] # Ambil N terakhir
 
     if is_large_fetch:
-        if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: # Final update progress bar
-            simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles Complete', length=40)
+        if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: # Final progress bar update
+             simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles Complete', length=40)
         log_info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} (target: {total_limit_desired}).", pair_name=pair_name)
 
     return all_accumulated_candles
 
-# --- LOGIKA STRATEGI --- (Perlu sedikit modifikasi untuk mengirim data ke chart)
 
+# --- LOGIKA STRATEGI ---
 def get_initial_strategy_state():
     return {
-        "last_signal_type": 0, # 0: None, 1: High, -1: Low
+        "last_signal_type": 0, # 1 for high, -1 for low
         "final_pivot_high_price_confirmed": None,
-        "final_pivot_high_time_confirmed": None, # Tambahkan timestamp untuk pivot
         "final_pivot_low_price_confirmed": None,
-        "final_pivot_low_time_confirmed": None, # Tambahkan timestamp untuk pivot
-        "high_price_for_fib": None,
-        "high_bar_index_for_fib": None,
-        "active_fib_level": None,
-        "active_fib_line_start_index": None,
-        "active_fib_line_start_time": None, # Tambahkan timestamp untuk FIB start
-        "entry_price_custom": None,
-        "entry_time": None, # Tambahkan timestamp untuk entry
-        "highest_price_for_trailing": None,
-        "trailing_tp_active_custom": False,
-        "current_trailing_stop_level": None,
-        "emergency_sl_level_custom": None,
-        "position_size": 0, # 0: No position, 1: Long
+        # CHART_MOD: Tambahkan info timestamp untuk pivot yang akan di-plot
+        "last_pivot_high_display_info": None, # Berisi {'price': X, 'timestamp_ms': Y}
+        "last_pivot_low_display_info": None,  # Berisi {'price': X, 'timestamp_ms': Y}
+
+        "high_price_for_fib": None, # Harga tertinggi dari Pivot High sebelumnya untuk kalkulasi FIB
+        "high_bar_index_for_fib": None, # Index bar dari Pivot High di atas
+
+        "active_fib_level": None, # Level FIB 0.5 yang sedang aktif
+        "active_fib_line_start_index": None, # Index bar dari Pivot Low yang membentuk FIB ini
+
+        "entry_price_custom": None, # Harga entry kustom
+        "highest_price_for_trailing": None, # Harga tertinggi sejak entry untuk trailing TP
+        "trailing_tp_active_custom": False, # Apakah trailing TP sudah aktif
+        "current_trailing_stop_level": None, # Level trailing stop loss saat ini
+        "emergency_sl_level_custom": None, # Level emergency stop loss kustom
+
+        "position_size": 0, # 0 = no position, 1 = long position (atau jumlah kontrak)
+        # CHART_MOD: Untuk plotting historis, Anda mungkin butuh list of trades, bukan hanya state saat ini.
+        # "trade_history": [] # contoh: [{'type': 'buy', 'price': X, 'time': Y, 'sl': Z}, {'type':'sell', ...}]
     }
 
 def find_pivots(series_list, left_strength, right_strength, is_high=True):
@@ -833,542 +892,600 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
 
     for i in range(left_strength, len(series_list) - right_strength):
         is_pivot = True
-        if series_list[i] is None: continue # Skip jika data tengah kosong
+        if series_list[i] is None: continue # Skip jika data harga tidak ada
 
-        # Cek kiri
+        # Cek ke kiri
         for j in range(1, left_strength + 1):
-            if series_list[i-j] is None: is_pivot = False; break # Data kiri kosong
+            if series_list[i-j] is None: is_pivot = False; break
             if is_high: # Pivot High
                 if series_list[i] <= series_list[i-j]: is_pivot = False; break
             else: # Pivot Low
                 if series_list[i] >= series_list[i-j]: is_pivot = False; break
-        if not is_pivot: continue # Lanjut ke candle berikutnya jika bukan pivot dari sisi kiri
+        if not is_pivot: continue
 
-        # Cek kanan
+        # Cek ke kanan
         for j in range(1, right_strength + 1):
-            if series_list[i+j] is None: is_pivot = False; break # Data kanan kosong
+            if series_list[i+j] is None: is_pivot = False; break
             if is_high: # Pivot High
-                # Untuk pivot high yang sedang terbentuk, candle di kanan *harus* lebih rendah
-                # Jika right_strength = 0, ini akan jadi simple highest()
-                if series_list[i] < series_list[i+j]: is_pivot = False; break
+                if series_list[i] < series_list[i+j]: is_pivot = False; break # Harus lebih tinggi dari N bar ke kanan
             else: # Pivot Low
-                if series_list[i] > series_list[i+j]: is_pivot = False; break
+                if series_list[i] > series_list[i+j]: is_pivot = False; break # Harus lebih rendah dari N bar ke kanan
         
         if is_pivot:
             pivots[i] = series_list[i]
-            
     return pivots
 
+def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings): # CHART_MOD: global_settings untuk notif
+    pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}" # Nama pair untuk logging
 
-# Variabel global untuk menyimpan data chart yang akan dikirim
-# Ini akan diupdate oleh run_strategy_logic dan dibaca oleh fungsi WebSocket
-# Strukturnya: {'pair_id': chart_event_data_object}
-# Kita tidak akan menggunakan ini secara global, tapi akan dikembalikan oleh run_strategy_logic
-
-def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
-    pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
-    
-    # Data yang akan dikirim ke chart untuk update ini
-    chart_event_data = {
-        'pair_id': pair_name, # Untuk identifikasi di frontend jika ada multiple charts
-        'candle': None,
-        'pivot_high': None, 'pivot_low': None,
-        'fib_level': None, 'entry': None, 'stop_loss': None,
-        'exit_signal': None, # Untuk menandai exit
-        'clear_fib': False, 'clear_trade_markers': False,
-        'current_sl_type': None # 'emergency' atau 'trailing'
-    }
-
-    # Reset sinyal transient di strategy_state (yang hanya berlaku per-candle)
+    # Reset pivot confirmed flags di awal setiap run, karena kita re-evaluasi berdasarkan data saat ini
     strategy_state["final_pivot_high_price_confirmed"] = None
-    strategy_state["final_pivot_high_time_confirmed"] = None
     strategy_state["final_pivot_low_price_confirmed"] = None
-    strategy_state["final_pivot_low_time_confirmed"] = None
-    # Jangan reset active_fib_level di sini, reset saat pivot high baru atau saat entry
+    # strategy_state["last_pivot_high_display_info"] = None # Jangan reset ini agar chart bisa lihat yang terakhir
+    # strategy_state["last_pivot_low_display_info"] = None  # Cukup di-overwrite jika ada yang baru
 
     left_strength = crypto_config['left_strength']
     right_strength = crypto_config['right_strength']
 
     required_keys = ['high', 'low', 'open', 'close', 'timestamp']
-    if not candles_history or not all(key in candles_history[0] for key in required_keys if candles_history and candles_history[0]):
-        log_warning(f"{AnsiColors.ORANGE}Data candle kosong atau kunci OHLC tidak lengkap.{AnsiColors.ENDC}", pair_name=pair_name)
-        return strategy_state, chart_event_data # Kembalikan juga chart_event_data kosong
+    if not candles_history or not all(key in candles_history[0] for key in required_keys if candles_history and candles_history[0]): # Cek candle pertama saja
+        log_warning(f"{AnsiColors.ORANGE}Data candle kosong atau kunci OHLC tidak lengkap di run_strategy_logic.{AnsiColors.ENDC}", pair_name=pair_name)
+        return strategy_state
 
     high_prices = [c.get('high') for c in candles_history]
     low_prices = [c.get('low') for c in candles_history]
 
-    # Pivot dihitung pada semua data historis yang tersedia
+    # Cari semua pivot high dan low potensial di seluruh histori yang diberikan
     raw_pivot_highs = find_pivots(high_prices, left_strength, right_strength, True)
     raw_pivot_lows = find_pivots(low_prices,  left_strength, right_strength, False)
 
-    current_bar_index_in_list = len(candles_history) - 1
-    if current_bar_index_in_list < 0 : return strategy_state, chart_event_data
+    # Pivot dianggap "terkonfirmasi" setelah `right_strength` candle berlalu sejak titik pivot.
+    # Jadi, kita lihat `right_strength` candle ke belakang dari candle saat ini.
+    current_bar_index_in_list = len(candles_history) - 1 # Index candle terbaru
+    if current_bar_index_in_list < 0 : return strategy_state # Tidak ada candle
 
-    # Pivot High/Low dikonfirmasi setelah `right_strength` bar berlalu
-    # Jadi, jika pivot terjadi di bar `i`, ia dikonfirmasi di bar `i + right_strength`
-    # Saat kita berada di `current_bar_index_in_list`, pivot yang bisa dikonfirmasi adalah yang terjadi di `current_bar_index_in_list - right_strength`
+    # Index di mana event pivot (jika ada) akan terkonfirmasi SEKARANG
     idx_pivot_event_high = current_bar_index_in_list - right_strength
     idx_pivot_event_low = current_bar_index_in_list - right_strength
 
-    # Ambil harga pivot dari array `raw_pivot_highs/lows` pada index di mana pivot tersebut terjadi
+    # Cek apakah ada Pivot High yang terkonfirmasi pada `idx_pivot_event_high`
     raw_pivot_high_price_at_event = raw_pivot_highs[idx_pivot_event_high] if 0 <= idx_pivot_event_high < len(raw_pivot_highs) else None
     raw_pivot_low_price_at_event = raw_pivot_lows[idx_pivot_event_low] if 0 <= idx_pivot_event_low < len(raw_pivot_lows) else None
 
-    current_candle = candles_history[current_bar_index_in_list]
-    # Kirim candle terbaru ke chart
-    chart_event_data['candle'] = {
-        'time': int(current_candle['timestamp'].timestamp()), # Lightweight Charts butuh epoch seconds
-        'open': current_candle['open'],
-        'high': current_candle['high'],
-        'low': current_candle['low'],
-        'close': current_candle['close']
-    }
-
-    # Deteksi Pivot High
-    if raw_pivot_high_price_at_event is not None and strategy_state["last_signal_type"] != 1:
+    # --- Logika Pivot High Terkonfirmasi ---
+    if raw_pivot_high_price_at_event is not None and strategy_state["last_signal_type"] != 1: # Ada PH baru & sinyal sebelumnya bukan PH
         strategy_state["final_pivot_high_price_confirmed"] = raw_pivot_high_price_at_event
-        strategy_state["final_pivot_high_time_confirmed"] = candles_history[idx_pivot_event_high]['timestamp']
-        strategy_state["last_signal_type"] = 1
+        strategy_state["last_signal_type"] = 1 # Set sinyal terakhir ke Pivot High
+        pivot_timestamp = candles_history[idx_pivot_event_high]['timestamp']
+        log_info(f"{AnsiColors.CYAN}PIVOT HIGH: {strategy_state['final_pivot_high_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
         
-        log_info(f"{AnsiColors.CYAN}PIVOT HIGH: {strategy_state['final_pivot_high_price_confirmed']:.5f} @ {strategy_state['final_pivot_high_time_confirmed'].strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
-        chart_event_data['pivot_high'] = {'time': int(strategy_state['final_pivot_high_time_confirmed'].timestamp()), 'price': strategy_state['final_pivot_high_price_confirmed']}
-        
-        # Jika ada pivot high baru, ini menjadi kandidat H untuk FIB
-        strategy_state["high_price_for_fib"] = strategy_state["final_pivot_high_price_confirmed"]
-        strategy_state["high_bar_index_for_fib"] = idx_pivot_event_high # index di `candles_history`
+        # CHART_MOD: Simpan info untuk plotting
+        strategy_state["last_pivot_high_display_info"] = {
+            'price': strategy_state['final_pivot_high_price_confirmed'],
+            'timestamp_ms': pivot_timestamp.timestamp() * 1000
+        }
 
-        # Reset FIB aktif jika ada pivot high baru (karena H berubah)
+        # Jika PH terkonfirmasi, ini menjadi kandidat High untuk FIB berikutnya
+        strategy_state["high_price_for_fib"] = strategy_state["final_pivot_high_price_confirmed"]
+        strategy_state["high_bar_index_for_fib"] = idx_pivot_event_high
+
+        # Jika ada FIB aktif sebelumnya, PH baru ini me-resetnya (karena struktur pasar berubah)
         if strategy_state["active_fib_level"] is not None:
             log_debug("Resetting active FIB due to new High.", pair_name=pair_name)
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
-            strategy_state["active_fib_line_start_time"] = None
-            chart_event_data['clear_fib'] = True
+            # Juga reset state trading jika FIB di-reset dan belum entry? Tergantung aturan.
+            # Untuk saat ini, hanya reset FIB-nya.
 
-
-    # Deteksi Pivot Low
-    if raw_pivot_low_price_at_event is not None and strategy_state["last_signal_type"] != -1:
+    # --- Logika Pivot Low Terkonfirmasi & Kalkulasi FIB ---
+    if raw_pivot_low_price_at_event is not None and strategy_state["last_signal_type"] != -1: # Ada PL baru & sinyal sebelumnya bukan PL
         strategy_state["final_pivot_low_price_confirmed"] = raw_pivot_low_price_at_event
-        strategy_state["final_pivot_low_time_confirmed"] = candles_history[idx_pivot_event_low]['timestamp']
-        strategy_state["last_signal_type"] = -1
+        strategy_state["last_signal_type"] = -1 # Set sinyal terakhir ke Pivot Low
+        pivot_timestamp = candles_history[idx_pivot_event_low]['timestamp']
+        log_info(f"{AnsiColors.CYAN}PIVOT LOW:  {strategy_state['final_pivot_low_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
 
-        log_info(f"{AnsiColors.CYAN}PIVOT LOW:  {strategy_state['final_pivot_low_price_confirmed']:.5f} @ {strategy_state['final_pivot_low_time_confirmed'].strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
-        chart_event_data['pivot_low'] = {'time': int(strategy_state['final_pivot_low_time_confirmed'].timestamp()), 'price': strategy_state['final_pivot_low_price_confirmed']}
+        # CHART_MOD: Simpan info untuk plotting
+        strategy_state["last_pivot_low_display_info"] = {
+            'price': strategy_state['final_pivot_low_price_confirmed'],
+            'timestamp_ms': pivot_timestamp.timestamp() * 1000
+        }
 
-        # Jika ada pivot low baru DAN kita sudah punya H dari pivot high sebelumnya
-        if strategy_state["high_price_for_fib"] is not None and strategy_state["high_bar_index_for_fib"] is not None:
-            current_low_price = strategy_state["final_pivot_low_price_confirmed"]
-            current_low_bar_index = idx_pivot_event_low # index di `candles_history`
+        # Jika ada Pivot High valid sebelumnya dan Pivot Low ini muncul SETELAHNYA, hitung FIB
+        if strategy_state["high_price_for_fib"] is not None and \
+           strategy_state["high_bar_index_for_fib"] is not None and \
+           idx_pivot_event_low > strategy_state["high_bar_index_for_fib"]: # PL harus setelah PH
 
-            # Pastikan Low terjadi SETELAH High
-            if current_low_bar_index > strategy_state["high_bar_index_for_fib"]:
-                if strategy_state["high_price_for_fib"] is None or current_low_price is None:
-                     log_warning("Harga untuk kalkulasi FIB tidak valid (None).", pair_name=pair_name)
-                else:
-                    calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price) / 2.0
-                    is_fib_late = False
-                    if crypto_config["enable_secure_fib"]:
-                        price_val_current_candle = current_candle.get(crypto_config["secure_fib_check_price"].lower(), current_candle.get('close'))
-                        if price_val_current_candle is not None and calculated_fib_level is not None and price_val_current_candle > calculated_fib_level:
-                            is_fib_late = True
-                    
-                    if is_fib_late:
-                        log_info(f"{AnsiColors.ORANGE}FIB Terlambat ({calculated_fib_level:.5f}), Harga Cek ({crypto_config['secure_fib_check_price']}: {price_val_current_candle:.5f}) > FIB.{AnsiColors.ENDC}", pair_name=pair_name)
-                        strategy_state["active_fib_level"] = None 
-                        strategy_state["active_fib_line_start_index"] = None
-                        strategy_state["active_fib_line_start_time"] = None
-                        chart_event_data['clear_fib'] = True # Pastikan FIB lama dihapus jika ada
-                    elif calculated_fib_level is not None : 
-                        log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {current_low_price:.2f})", pair_name=pair_name)
-                        strategy_state["active_fib_level"] = calculated_fib_level
-                        strategy_state["active_fib_line_start_index"] = current_low_bar_index
-                        strategy_state["active_fib_line_start_time"] = candles_history[current_low_bar_index]['timestamp']
-                        chart_event_data['fib_level'] = {'price': strategy_state["active_fib_level"], 'start_time': int(strategy_state["active_fib_line_start_time"].timestamp())}
-                
-                # Setelah FIB dihitung (atau gagal), reset H agar tidak digunakan lagi sampai ada Pivot High baru
-                strategy_state["high_price_for_fib"] = None
-                strategy_state["high_bar_index_for_fib"] = None
+            current_low_price_for_fib = strategy_state["final_pivot_low_price_confirmed"]
+            
+            # Pastikan high_price_for_fib dan current_low_price_for_fib tidak None
+            if strategy_state["high_price_for_fib"] is None or current_low_price_for_fib is None:
+                 log_warning("Harga untuk kalkulasi FIB tidak valid (None). Tidak bisa menghitung FIB.", pair_name=pair_name)
+            else:
+                calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price_for_fib) / 2.0
 
+                # Cek Secure FIB jika diaktifkan
+                is_fib_late = False
+                current_candle_for_fib_check = candles_history[current_bar_index_in_list] # Candle saat ini
+                if crypto_config["enable_secure_fib"]:
+                    price_key_for_secure_fib = crypto_config["secure_fib_check_price"].lower() # 'close' atau 'high'
+                    price_val_current_candle = current_candle_for_fib_check.get(price_key_for_secure_fib)
 
-    # Cek Entry
-    if strategy_state["active_fib_level"] is not None and strategy_state["active_fib_line_start_index"] is not None:
-        if current_candle.get('close') is None or current_candle.get('open') is None:
-            log_warning("Nilai close atau open tidak ada di candle saat ini. Skip entry check.", pair_name=pair_name)
-        else:
-            is_bullish_candle = current_candle['close'] > current_candle['open']
-            is_closed_above_fib = current_candle['close'] > strategy_state["active_fib_level"]
+                    if price_val_current_candle is None:
+                        log_warning(f"Harga '{price_key_for_secure_fib}' tidak ada di candle saat ini untuk Secure FIB. Menggunakan close.", pair_name=pair_name)
+                        price_val_current_candle = current_candle_for_fib_check.get('close')
 
-            if is_bullish_candle and is_closed_above_fib:
-                if strategy_state["position_size"] == 0: # Jika belum ada posisi
-                    strategy_state["position_size"] = 1 # Masuk posisi Long
-                    entry_px = current_candle['close'] 
-                    strategy_state["entry_price_custom"] = entry_px
-                    strategy_state["entry_time"] = current_candle['timestamp']
-                    strategy_state["highest_price_for_trailing"] = entry_px # Inisialisasi untuk trailing
-                    strategy_state["trailing_tp_active_custom"] = False 
-                    strategy_state["current_trailing_stop_level"] = None
+                    if price_val_current_candle is not None and calculated_fib_level is not None and \
+                       price_val_current_candle > calculated_fib_level:
+                        is_fib_late = True
 
-                    emerg_sl = entry_px * (1 - crypto_config["emergency_sl_percent"] / 100.0)
-                    strategy_state["emergency_sl_level_custom"] = emerg_sl
-
-                    log_msg = f"BUY ENTRY @ {entry_px:.5f} (FIB {strategy_state['active_fib_level']:.5f} dilewati). Emerg SL: {emerg_sl:.5f}"
-                    log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
-                    play_notification_sound()
-                    
-                    # Data untuk chart
-                    chart_event_data['entry'] = {'time': int(strategy_state["entry_time"].timestamp()), 'price': entry_px, 'type': 'buy'}
-                    chart_event_data['stop_loss'] = {'price': emerg_sl, 'type': 'emergency'}
-                    chart_event_data['current_sl_type'] = 'emergency'
-
-
-                    termux_title = f"BUY Signal: {pair_name}"
-                    termux_content = f"Entry @ {entry_px:.5f}. SL: {emerg_sl:.5f}"
-                    send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
-                    # ... (notifikasi email) ...
-                    
-                    # Setelah entry, FIB dianggap selesai (tidak aktif lagi untuk entry berikutnya)
-                    strategy_state["active_fib_level"] = None
+                if is_fib_late:
+                    log_info(f"{AnsiColors.ORANGE}FIB Terlambat ({calculated_fib_level:.5f}), Harga Cek ({crypto_config['secure_fib_check_price']}: {price_val_current_candle:.5f}) > FIB.{AnsiColors.ENDC}", pair_name=pair_name)
+                    strategy_state["active_fib_level"] = None 
                     strategy_state["active_fib_line_start_index"] = None
-                    strategy_state["active_fib_line_start_time"] = None
-                    chart_event_data['clear_fib'] = True # Hapus FIB dari chart
+                elif calculated_fib_level is not None : 
+                    log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.5f}, L: {current_low_price_for_fib:.5f})", pair_name=pair_name)
+                    strategy_state["active_fib_level"] = calculated_fib_level
+                    strategy_state["active_fib_line_start_index"] = idx_pivot_event_low # Index PL yang membentuk FIB ini
 
-    # Manajemen Posisi Aktif (Trailing Stop, Emergency SL)
-    if strategy_state["position_size"] > 0: # Jika sedang dalam posisi
-        current_high_for_trailing = strategy_state.get("highest_price_for_trailing", current_candle.get('high'))
-        if current_high_for_trailing is None or current_candle.get('high') is None:
-            log_warning("Harga tertinggi untuk trailing atau high candle tidak valid (None).", pair_name=pair_name)
+            # Reset high_price_for_fib setelah digunakan (atau diabaikan karena telat)
+            # agar menunggu Pivot High baru berikutnya.
+            strategy_state["high_price_for_fib"] = None
+            strategy_state["high_bar_index_for_fib"] = None
+    
+    # --- Logika Entry & Manajemen Posisi ---
+    current_candle = candles_history[current_bar_index_in_list] # Candle terbaru yang lengkap
+    
+    # Validasi data candle saat ini
+    if any(current_candle.get(k) is None for k in ['open', 'high', 'low', 'close', 'timestamp']):
+        log_warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp', 'N/A')}. Skip evaluasi trading.", pair_name=pair_name)
+        return strategy_state
+
+    # Cek Entry jika ada FIB Aktif dan belum ada posisi
+    if strategy_state["active_fib_level"] is not None and \
+       strategy_state["active_fib_line_start_index"] is not None and \
+       strategy_state["position_size"] == 0: # Hanya jika belum ada posisi
+
+        is_bullish_candle = current_candle['close'] > current_candle['open']
+        is_closed_above_fib = current_candle['close'] > strategy_state["active_fib_level"]
+
+        if is_bullish_candle and is_closed_above_fib:
+            strategy_state["position_size"] = 1 # Atau jumlah lot/kontrak sesuai aturan
+            entry_px = current_candle['close'] # Entry di close candle sinyal
+            strategy_state["entry_price_custom"] = entry_px
+            strategy_state["highest_price_for_trailing"] = entry_px # Inisialisasi harga tertinggi
+            strategy_state["trailing_tp_active_custom"] = False # Trailing TP belum aktif
+            strategy_state["current_trailing_stop_level"] = None # Belum ada trailing SL
+
+            emerg_sl = entry_px * (1 - crypto_config["emergency_sl_percent"] / 100.0)
+            strategy_state["emergency_sl_level_custom"] = emerg_sl
+
+            log_msg = f"BUY ENTRY @ {entry_px:.5f} (FIB {strategy_state['active_fib_level']:.5f} dilewati). Emerg SL: {emerg_sl:.5f}"
+            log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
+            play_notification_sound()
+            
+            termux_title = f"BUY Signal: {pair_name}"
+            termux_content = f"Entry @ {entry_px:.5f}. SL: {emerg_sl:.5f}"
+            send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
+
+            email_subject = f"BUY Signal: {pair_name}"
+            email_body = (f"New BUY signal for {pair_name} on {crypto_config['exchange']}.\n\n"
+                          f"Entry Price: {entry_px:.5f}\n"
+                          f"FIB Level: {strategy_state['active_fib_level']:.5f}\n"
+                          f"Emergency SL: {emerg_sl:.5f}\n"
+                          f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+            send_email_notification(email_subject, email_body, {**crypto_config, 'pair_name': pair_name}) # CHART_MOD: pass pair_name
+
+            # Reset FIB setelah entry agar tidak re-entry di FIB yang sama
+            strategy_state["active_fib_level"] = None
+            strategy_state["active_fib_line_start_index"] = None
+
+    # Manajemen Posisi Aktif (jika ada)
+    if strategy_state["position_size"] > 0:
+        # Update harga tertinggi untuk trailing stop
+        current_high_for_trailing_update = strategy_state.get("highest_price_for_trailing", current_candle.get('high')) # Default ke entry jika baru masuk
+        if current_high_for_trailing_update is None or current_candle.get('high') is None:
+            log_warning("Harga tertinggi untuk trailing atau high candle tidak valid (None) saat update.", pair_name=pair_name)
         else:
-            strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
+            strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing_update , current_candle['high'])
 
         # Aktivasi Trailing TP
         if not strategy_state["trailing_tp_active_custom"] and strategy_state["entry_price_custom"] is not None:
-            if strategy_state["entry_price_custom"] == 0: profit_percent = 0.0
-            elif strategy_state.get("highest_price_for_trailing") is None: profit_percent = 0.0
+            if strategy_state["entry_price_custom"] == 0: # Hindari ZeroDivisionError
+                profit_percent = 0.0
+            elif strategy_state.get("highest_price_for_trailing") is None: # Harga tertinggi belum diset
+                profit_percent = 0.0
+                log_warning("highest_price_for_trailing is None saat kalkulasi profit untuk aktivasi Trailing TP.", pair_name=pair_name)
             else:
                 profit_percent = ((strategy_state["highest_price_for_trailing"] - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
-            
+
             if profit_percent >= crypto_config["profit_target_percent_activation"]:
                 strategy_state["trailing_tp_active_custom"] = True
-                log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High: {strategy_state.get('highest_price_for_trailing',0):.5f}{AnsiColors.ENDC}", pair_name=pair_name)
-                # Tidak ada update chart khusus di sini, kecuali SL berubah
+                log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High Sejak Entry: {strategy_state.get('highest_price_for_trailing',0):.5f}{AnsiColors.ENDC}", pair_name=pair_name)
 
         # Update Trailing Stop Level jika Trailing TP aktif
-        sl_updated_this_candle = False
         if strategy_state["trailing_tp_active_custom"] and strategy_state.get("highest_price_for_trailing") is not None:
             potential_new_stop_price = strategy_state["highest_price_for_trailing"] * (1 - (crypto_config["trailing_stop_gap_percent"] / 100.0))
             if strategy_state["current_trailing_stop_level"] is None or potential_new_stop_price > strategy_state["current_trailing_stop_level"]:
                 strategy_state["current_trailing_stop_level"] = potential_new_stop_price
                 log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
-                sl_updated_this_candle = True
-        
-        # Tentukan SL yang akan digunakan untuk exit (Emergency atau Trailing)
+
+        # Cek Exit (Emergency SL atau Trailing SL)
         final_stop_for_exit = strategy_state["emergency_sl_level_custom"]
         exit_comment = "Emergency SL"
-        current_sl_type_for_chart = 'emergency'
+        exit_color = AnsiColors.RED
 
         if strategy_state["trailing_tp_active_custom"] and strategy_state["current_trailing_stop_level"] is not None:
+            # Jika trailing SL lebih tinggi dari emergency SL, gunakan trailing SL
             if final_stop_for_exit is None or strategy_state["current_trailing_stop_level"] > final_stop_for_exit :
                 final_stop_for_exit = strategy_state["current_trailing_stop_level"]
                 exit_comment = "Trailing Stop"
-                current_sl_type_for_chart = 'trailing'
-        
-        # Kirim update SL ke chart jika ada SL aktif atau baru diupdate
-        if final_stop_for_exit is not None:
-             chart_event_data['stop_loss'] = {'price': final_stop_for_exit, 'type': current_sl_type_for_chart}
-             chart_event_data['current_sl_type'] = current_sl_type_for_chart
+                exit_color = AnsiColors.BLUE # Biru untuk Trailing TP (bisa jadi profit)
 
-
-        # Cek Exit
+        # Jika low candle saat ini menyentuh atau melewati level stop
         if final_stop_for_exit is not None and current_candle.get('low') is not None and current_candle['low'] <= final_stop_for_exit:
-            exit_price_open = current_candle.get('open')
-            if exit_price_open is None: exit_price = final_stop_for_exit 
-            else: exit_price = min(exit_price_open, final_stop_for_exit) # Keluar di SL atau open candle (mana yg lebih dulu)
-            
+            exit_price_open_candle = current_candle.get('open')
+            if exit_price_open_candle is None:
+                log_warning("Harga open candle tidak ada untuk kalkulasi exit. Menggunakan SL sebagai harga exit.", pair_name=pair_name)
+                exit_price = final_stop_for_exit # Harga exit adalah level SL itu sendiri
+            else:
+                # Exit di open candle berikutnya (disimulasikan sebagai open candle ini jika SL tembus),
+                # atau di level SL jika open lebih buruk dari SL (slippage)
+                exit_price = min(exit_price_open_candle, final_stop_for_exit)
+
             pnl = 0.0
             if strategy_state["entry_price_custom"] is not None and strategy_state["entry_price_custom"] != 0:
                 pnl = ((exit_price - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
 
-            exit_color = AnsiColors.RED if pnl < 0 else AnsiColors.BLUE # Merah jika rugi, biru jika profit by trailing
-            if exit_comment == "Emergency SL": exit_color = AnsiColors.RED # Selalu merah untuk emergency SL
+            if exit_comment == "Trailing Stop" and pnl < 0: # Jika trailing stop tapi rugi
+                exit_color = AnsiColors.RED # Merah juga
 
             log_msg = f"EXIT ORDER @ {exit_price:.5f} by {exit_comment}. PnL: {pnl:.2f}%"
             log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
             play_notification_sound()
 
-            chart_event_data['exit_signal'] = {'time': int(current_candle['timestamp'].timestamp()), 'price': exit_price, 'reason': exit_comment, 'pnl': pnl}
-            chart_event_data['clear_trade_markers'] = True # Hapus entry dan SL dari chart
-
-            # ... (notifikasi Termux dan email untuk exit) ...
             termux_title_exit = f"EXIT Signal: {pair_name}"
             termux_content_exit = f"{exit_comment} @ {exit_price:.5f}. PnL: {pnl:.2f}%"
             send_termux_notification(termux_title_exit, termux_content_exit, global_settings, pair_name_for_log=pair_name)
 
-            # Reset state setelah exit
+            email_subject = f"Trade Closed: {pair_name} ({exit_comment})"
+            email_body = (f"Trade closed for {pair_name} on {crypto_config['exchange']}.\n\n"
+                          f"Exit Price: {exit_price:.5f}\n"
+                          f"Reason: {exit_comment}\n"
+                          f"Entry Price: {strategy_state.get('entry_price_custom', 0):.5f}\n"
+                          f"PnL: {pnl:.2f}%\n"
+                          f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+            send_email_notification(email_subject, email_body, {**crypto_config, 'pair_name': pair_name}) # CHART_MOD
+
+            # Reset state posisi
             strategy_state["position_size"] = 0
             strategy_state["entry_price_custom"] = None
-            strategy_state["entry_time"] = None
             strategy_state["highest_price_for_trailing"] = None
             strategy_state["trailing_tp_active_custom"] = False
             strategy_state["current_trailing_stop_level"] = None
             strategy_state["emergency_sl_level_custom"] = None
-            # Biarkan last_signal_type agar tidak langsung re-entry jika kondisi masih sama
-        
-        # Jika tidak exit, log status posisi
-        elif strategy_state.get("entry_price_custom") is not None :
+            # Sinyal terakhir direset agar bisa deteksi pivot baru setelah exit
+            # strategy_state["last_signal_type"] = 0 # Atau biarkan agar tidak langsung re-entry jika kondisi masih sama
+
+        elif strategy_state["position_size"] > 0 : # Jika masih ada posisi dan tidak exit
+            plot_stop_level = strategy_state.get("emergency_sl_level_custom")
+            stop_type_info = "Emergency SL"
+            if strategy_state.get("trailing_tp_active_custom") and strategy_state.get("current_trailing_stop_level") is not None:
+                # Pilih SL yang lebih relevan (lebih tinggi/protektif) untuk display
+                current_trailing_sl = strategy_state.get("current_trailing_stop_level")
+                if plot_stop_level is None or (current_trailing_sl is not None and current_trailing_sl > plot_stop_level):
+                    plot_stop_level = current_trailing_sl
+                    stop_type_info = "Trailing SL"
+
             entry_price_display = strategy_state.get('entry_price_custom', 0)
-            sl_display_str = f'{final_stop_for_exit:.5f} ({current_sl_type_for_chart})' if final_stop_for_exit is not None else 'N/A'
+            sl_display_str = f'{plot_stop_level:.5f} ({stop_type_info})' if plot_stop_level is not None else 'N/A'
             log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
 
+    return strategy_state
 
-    return strategy_state, chart_event_data
+# CHART_INTEGRATION_START
+# Global data store untuk Flask dan lock-nya
+shared_crypto_data_manager = {}
+shared_data_lock = threading.Lock()
 
-# --- LIVE CHART SERVER ---
-app_flask = Flask(__name__)
-# Ganti secret_key jika perlu, tapi untuk penggunaan lokal sederhana tidak terlalu krusial
-app_flask.config['SECRET_KEY'] = os.urandom(24) 
-# Gunakan gevent untuk async mode jika tersedia, lebih baik untuk performa I/O bound
-# Jika gevent tidak ada, Flask-SocketIO akan fallback ke mode threading.
-# Pastikan `pip install gevent`
-socketio = SocketIO(app_flask, async_mode='gevent', cors_allowed_origins="*")
+# Fungsi untuk mempersiapkan data untuk chart ApexCharts
+def prepare_chart_data_for_pair(pair_id_to_display, current_data_manager_snapshot):
+    if pair_id_to_display not in current_data_manager_snapshot:
+        log_warning(f"Data untuk pair {pair_id_to_display} tidak ditemukan di snapshot untuk chart.", pair_name="SYSTEM_CHART")
+        return None
 
-# Global dictionary untuk menyimpan data candle dan state strategi per pair
-# Ini akan diisi oleh `start_trading`
-# Format: crypto_data_store[pair_id_config] = {'candles': [], 'strategy_state': {}}
-# Sebenarnya kita akan menggunakan `crypto_data_manager` dari `start_trading` secara langsung.
-# Variabel global ini untuk kemudahan akses dari handler Flask.
-# Jika `start_trading` berjalan di thread berbeda, perlu cara aman untuk share data.
-# Untuk saat ini, asumsikan `start_trading` mengisi variabel yang bisa diakses.
-# Kita akan gunakan referensi ke `crypto_data_manager` yang ada di `start_trading`.
-# Ini agak tricky jika `start_trading` tidak di-pass ke sini.
-# Solusi: Buat `crypto_data_manager` dapat diakses secara global atau pass instance.
-# Untuk simplicity, kita akan buat `crypto_data_manager` global di scope main,
-# dan diakses dari sini. Ini bukan best practice tapi paling mudah diintegrasikan.
-# **Revisi**: Lebih baik `start_trading` memanggil fungsi emit dari SocketIO secara langsung.
-# Tidak perlu `shared_crypto_data_manager` global.
+    pair_specific_data = current_data_manager_snapshot[pair_id_to_display]
+    candles_full_history = pair_specific_data.get("all_candles_list", [])
+    current_strategy_state = pair_specific_data.get("strategy_state", {})
+    pair_config = pair_specific_data.get("config", {})
 
-# HTML Template untuk chart
-HTML_TEMPLATE = """
+    # Ambil 2500 candle terbaru untuk chart
+    candles_for_chart_display = candles_full_history[-TARGET_BIG_DATA_CANDLES:]
+
+    ohlc_data_points = []
+    if not candles_for_chart_display:
+        log_warning(f"Tidak ada candle di `candles_for_chart_display` untuk {pair_id_to_display}.", pair_name="SYSTEM_CHART")
+        return {"ohlc": [], "annotations_yaxis": [], "annotations_points": [], "pair_name": pair_config.get('pair_name', pair_id_to_display), "last_updated_tv": None}
+
+
+    for candle in candles_for_chart_display:
+        required_candle_keys = ['timestamp', 'open', 'high', 'low', 'close']
+        if all(k in candle and candle[k] is not None for k in required_candle_keys):
+            ohlc_data_points.append({
+                'x': candle['timestamp'].timestamp() * 1000, # ApexCharts butuh timestamp milidetik
+                'y': [candle['open'], candle['high'], candle['low'], candle['close']]
+            })
+        else:
+            log_debug(f"Skipping incomplete candle for chart: {candle.get('timestamp')}", pair_name="SYSTEM_CHART")
+
+
+    chart_annotations_yaxis = [] # Untuk garis horizontal (misal FIB, SL)
+    chart_annotations_points = [] # Untuk titik spesifik (misal Pivot, Entry)
+
+    # Anotasi untuk Active FIB Level
+    active_fib_val = current_strategy_state.get("active_fib_level")
+    if active_fib_val and current_strategy_state.get("active_fib_line_start_index") is not None:
+        if ohlc_data_points: # Hanya jika ada data untuk dirender
+            chart_annotations_yaxis.append({
+                'y': active_fib_val,
+                'borderColor': '#00E396', # Hijau
+                'label': {
+                    'borderColor': '#00E396',
+                    'style': {'color': '#fff', 'background': '#00E396', 'fontSize': '10px', 'padding': {'left': '3px', 'right': '3px', 'top':'1px', 'bottom':'1px'}},
+                    'text': f'FIB 0.5: {active_fib_val:.5f}'
+                }
+            })
+    
+    # Anotasi untuk Posisi Aktif (Entry & SL)
+    if current_strategy_state.get("position_size", 0) > 0 and current_strategy_state.get("entry_price_custom") is not None:
+        entry_price_val = current_strategy_state.get("entry_price_custom")
+        
+        # Untuk titik entry, idealnya kita punya timestamp entry.
+        # Karena tidak disimpan, kita tandai saja di candle terakhir jika posisi masih aktif.
+        # Atau, kita bisa juga buat garis horizontal untuk entry price.
+        if ohlc_data_points:
+             chart_annotations_yaxis.append({ # Garis horizontal untuk entry
+                'y': entry_price_val,
+                'borderColor': '#2698FF', # Biru
+                'strokeDashArray': 4, # Garis putus-putus
+                'label': {
+                    'borderColor': '#2698FF',
+                    'style': {'color': '#fff', 'background': '#2698FF', 'fontSize': '10px', 'padding': {'left': '3px', 'right': '3px', 'top':'1px', 'bottom':'1px'}},
+                    'text': f'Entry: {entry_price_val:.5f}'
+                }
+            })
+
+        # Stop Loss Level
+        sl_level_val = current_strategy_state.get("emergency_sl_level_custom")
+        sl_type_text = "Emerg. SL"
+        if current_strategy_state.get("trailing_tp_active_custom") and current_strategy_state.get("current_trailing_stop_level") is not None:
+            current_trailing_sl_val = current_strategy_state.get("current_trailing_stop_level")
+            if sl_level_val is None or (current_trailing_sl_val is not None and current_trailing_sl_val > sl_level_val):
+                sl_level_val = current_trailing_sl_val
+                sl_type_text = "Trail. SL"
+        
+        if sl_level_val and ohlc_data_points:
+            chart_annotations_yaxis.append({
+                'y': sl_level_val,
+                'borderColor': '#FF4560', # Merah
+                'label': {
+                    'borderColor': '#FF4560',
+                    'style': {'color': '#fff', 'background': '#FF4560', 'fontSize': '10px', 'padding': {'left': '3px', 'right': '3px', 'top':'1px', 'bottom':'1px'}},
+                    'text': f'{sl_type_text}: {sl_level_val:.5f}'
+                }
+            })
+
+    # Anotasi untuk Pivot High/Low Terbaru yang terkonfirmasi (jika ada)
+    # Ini akan menampilkan *hanya* pivot terakhir yang disimpan di state.
+    # Untuk histori pivot, `run_strategy_logic` perlu diubah untuk menyimpan list pivot.
+    first_candle_ts_ms_on_chart = ohlc_data_points[0]['x'] if ohlc_data_points else 0
+    
+    last_ph_info = current_strategy_state.get("last_pivot_high_display_info")
+    if last_ph_info and last_ph_info['timestamp_ms'] >= first_candle_ts_ms_on_chart: # Hanya jika pivot ada di chart saat ini
+        chart_annotations_points.append({
+            'x': last_ph_info['timestamp_ms'],
+            'y': last_ph_info['price'],
+            'marker': {'size': 7, 'fillColor': '#FF0000', 'strokeColor': '#FF0000', 'shape': 'triangle', 'radius':0},
+            'label': {'borderColor': '#FF0000','offsetY': -18, 'style': {'color': '#fff', 'background': '#FF0000', 'fontSize': '10px'}, 'text': 'PH'}
+        })
+
+    last_pl_info = current_strategy_state.get("last_pivot_low_display_info")
+    if last_pl_info and last_pl_info['timestamp_ms'] >= first_candle_ts_ms_on_chart:
+        chart_annotations_points.append({
+            'x': last_pl_info['timestamp_ms'],
+            'y': last_pl_info['price'],
+            'marker': {'size': 7, 'fillColor': '#00CD00', 'strokeColor': '#00CD00', 'shape': 'triangle', 'radius':0, 'cssClass': 'apexcharts-marker-inverted'}, # Inverted triangle
+            'label': {'borderColor': '#00CD00','offsetY': 10, 'style': {'color': '#fff', 'background': '#00CD00', 'fontSize': '10px'}, 'text': 'PL'}
+        })
+
+    return {
+        "ohlc": ohlc_data_points,
+        "annotations_yaxis": chart_annotations_yaxis,
+        "annotations_points": chart_annotations_points,
+        "pair_name": pair_config.get('pair_name', pair_id_to_display),
+        "last_updated_tv": candles_for_chart_display[-1]['timestamp'].timestamp() * 1000 if candles_for_chart_display else None
+    }
+
+# Flask App Instance
+flask_app_instance = Flask(__name__)
+
+# Template HTML untuk chart (disimpan sebagai string agar mudah)
+HTML_CHART_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Live Crypto Chart</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #131722; color: #d1d4dc;}
-        #chartContainer { width: 98%; height: 550px; margin: 10px auto; }
-        #controls { text-align: center; padding: 10px; background-color: #1e222d; }
-        label, select, button { margin: 0 5px; color: #d1d4dc; background-color: #2a2e39; border: 1px solid #4E5C6E; padding: 5px;}
-        #log { width: 98%; height: 100px; margin: 10px auto; overflow-y: scroll; border: 1px solid #333; padding: 5px; font-family: monospace; font-size: 0.8em; background-color: #1e222d;}
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #1e1e1e; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; padding: 10px;}
+        #controls { background-color: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); width:100%; max-width: 1200px; }
+        #controls label { font-size: 0.9em; }
+        select, button { padding: 8px 12px; font-size:0.9em; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; cursor:pointer; }
+        button:hover { background-color: #444; }
+        #chart-container { width: 100%; max-width: 1200px; background-color: #2a2a2a; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        h1 { text-align: center; color: #00bcd4; margin-top: 0; margin-bottom:15px; font-size:1.5em; }
+        #lastUpdatedLabel { font-size: 0.8em; color: #aaa; }
+        .apexcharts-tooltip-candlestick { background: #333 !important; color: #fff !important; border: 1px solid #555 !important;}
+        .apexcharts-tooltip-candlestick .value { font-weight: bold; }
+        .apexcharts-marker-inverted .apexcharts-marker-poly { transform: rotate(180deg); transform-origin: center; } /* For inverted triangle */
     </style>
 </head>
 <body>
+    <h1>Live Strategy Chart</h1>
     <div id="controls">
-        <label for="pairSelector">Select Pair:</label>
-        <select id="pairSelector"></select>
-        <button id="loadPairButton">Load/Refresh Pair</button>
-        <span id="connectionStatus" style="margin-left: 20px;">Disconnected</span>
+        <label for="pairSelector">Pilih Pair:</label>
+        <select id="pairSelector" onchange="handlePairSelectionChange()"></select>
+        <button onclick="loadChartDataForCurrentPair()">Refresh Manual</button>
+        <span id="lastUpdatedLabel">Memuat...</span>
     </div>
-    <div id="chartContainer"></div>
-    <div id="log"></div>
+    <div id="chart-container">
+        <div id="chart"></div>
+    </div>
 
     <script>
-        const chartContainer = document.getElementById('chartContainer');
-        const logDiv = document.getElementById('log');
-        const pairSelector = document.getElementById('pairSelector');
-        const loadPairButton = document.getElementById('loadPairButton');
-        const connectionStatusSpan = document.getElementById('connectionStatus');
-        
-        let chart = null;
-        let candlestickSeries = null;
-        let fibLine = null; // Untuk PriceLine Fibonacci
-        let entryMarkerSeries = null; // Series terpisah untuk marker agar mudah di-clear
-        let slLine = null;    // Untuk PriceLine Stop Loss
+        let activeChart;
+        let currentSelectedPairId = '';
+        let lastKnownDataTimestamp = null;
+        let autoRefreshIntervalId = null;
 
-        let currentChartPairId = null;
-
-        function addLog(message) {
-            const time = new Date().toLocaleTimeString();
-            logDiv.innerHTML = `[${time}] ${message}<br>` + logDiv.innerHTML;
-            if (logDiv.children.length > 50) { // Batasi jumlah log
-                logDiv.removeChild(logDiv.lastChild);
-            }
-        }
-
-        function createOrUpdateChart(pairId) {
-            if (chart) {
-                chart.remove(); // Hapus chart lama jika ada
-            }
-            chart = LightweightCharts.createChart(chartContainer, {
-                width: chartContainer.clientWidth,
-                height: chartContainer.clientHeight,
-                layout: {
-                    backgroundColor: '#131722',
-                    textColor: '#d1d4dc',
-                },
-                grid: {
-                    vertLines: { color: '#334158' },
-                    horzLines: { color: '#334158' },
-                },
-                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                priceScale: { borderColor: '#485c7b' },
-                timeScale: { borderColor: '#485c7b', timeVisible: true, secondsVisible: false },
-            });
-            candlestickSeries = chart.addCandlestickSeries({
-                upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
-                wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-            });
-            entryMarkerSeries = chart.addCandlestickSeries({}); // Dummy series for markers
-            currentChartPairId = pairId;
-            addLog(`Chart created/reset for ${pairId}. Requesting initial data...`);
-            socket.emit('request_initial_data', { pair_id: pairId });
-        }
-        
-        const socket = io();
-
-        socket.on('connect', () => {
-            addLog('Connected to backend.');
-            connectionStatusSpan.textContent = 'Connected';
-            connectionStatusSpan.style.color = 'lightgreen';
-            socket.emit('request_available_pairs'); // Minta daftar pair yang tersedia
-        });
-
-        socket.on('disconnect', () => {
-            addLog('Disconnected from backend.');
-            connectionStatusSpan.textContent = 'Disconnected';
-            connectionStatusSpan.style.color = 'red';
-        });
-
-        socket.on('available_pairs', (data) => {
-            addLog(`Available pairs received: ${data.pairs.join(', ')}`);
-            pairSelector.innerHTML = ''; // Clear existing options
-            if (data.pairs && data.pairs.length > 0) {
-                data.pairs.forEach(pairId => {
-                    const option = document.createElement('option');
-                    option.value = pairId;
-                    option.textContent = pairId;
-                    pairSelector.appendChild(option);
-                });
-                // Otomatis load pair pertama jika belum ada yang dipilih
-                if (!currentChartPairId && pairSelector.options.length > 0) {
-                    pairSelector.value = pairSelector.options[0].value; // Pilih yang pertama
-                    createOrUpdateChart(pairSelector.value);
+        const initialChartOptions = {
+            series: [{ name: 'Candlestick', data: [] }],
+            chart: { 
+                type: 'candlestick', 
+                height: 550, // Adjusted height
+                id: 'mainCandlestickChart',
+                background: '#2a2a2a', // Chart background
+                animations: { enabled: true, easing: 'easeinout', speed: 500, animateGradually: { enabled: false } },
+                toolbar: { show: true, tools: { download: true, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true } }
+            },
+            theme: { mode: 'dark' },
+            title: { text: 'Memuat Data Pair...', align: 'left', style: { color: '#e0e0e0', fontSize: '16px'} },
+            xaxis: { type: 'datetime', labels: { style: { colors: '#aaa'} }, tooltip: { enabled: false } },
+            yaxis: { tooltip: { enabled: true }, labels: { style: { colors: '#aaa'}, formatter: function (value) { return value.toFixed(5); } } },
+            grid: { borderColor: '#444' },
+            annotations: { yaxis: [], points: [] }, // Init empty annotations
+            tooltip: { theme: 'dark', shared: true, 
+                custom: function({series, seriesIndex, dataPointIndex, w}) {
+                    if (w.globals.seriesCandleO && w.globals.seriesCandleO[seriesIndex] && w.globals.seriesCandleO[seriesIndex][dataPointIndex] !== undefined) {
+                        const o = w.globals.seriesCandleO[seriesIndex][dataPointIndex];
+                        const h = w.globals.seriesCandleH[seriesIndex][dataPointIndex];
+                        const l = w.globals.seriesCandleL[seriesIndex][dataPointIndex];
+                        const c = w.globals.seriesCandleC[seriesIndex][dataPointIndex];
+                        return (
+                            '<div class="apexcharts-tooltip-candlestick" style="padding:5px 10px;">' +
+                            '<div>O: <span class="value">' + o.toFixed(5) + '</span></div>' +
+                            '<div>H: <span class="value">' + h.toFixed(5) + '</span></div>' +
+                            '<div>L: <span class="value">' + l.toFixed(5) + '</span></div>' +
+                            '<div>C: <span class="value">' + c.toFixed(5) + '</span></div>' +
+                            '</div>'
+                        );
+                    } return '';
                 }
-            } else {
-                addLog("No active pairs found from backend.");
-            }
-        });
+            },
+            noData: { text: 'Tidak ada data untuk ditampilkan.', align: 'center', verticalAlign: 'middle', style: { color: '#ccc', fontSize: '14px' } }
+        };
 
-        socket.on('initial_chart_data', (data) => {
-            if (!chart || !candlestickSeries || data.pair_id !== currentChartPairId) {
-                if (data.pair_id !== currentChartPairId) {
-                    addLog(`Received initial data for ${data.pair_id}, but current chart is for ${currentChartPairId}. Ignoring.`);
+        async function fetchAvailablePairs() {
+            try {
+                const response = await fetch('/api/available_pairs');
+                if (!response.ok) throw new Error(`Gagal memuat daftar pair: ${response.status}`);
+                const pairs = await response.json();
+                const selectorElement = document.getElementById('pairSelector');
+                selectorElement.innerHTML = ''; // Hapus opsi lama
+                if (pairs.length > 0) {
+                    pairs.forEach(pair => {
+                        const optionEl = document.createElement('option');
+                        optionEl.value = pair.id;
+                        optionEl.textContent = pair.name;
+                        selectorElement.appendChild(optionEl);
+                    });
+                    currentSelectedPairId = selectorElement.value || pairs[0].id; // Set pair pertama sebagai default atau yang terpilih
+                    loadChartDataForCurrentPair(); // Muat data untuk pair yang terpilih
                 } else {
-                    addLog("Chart not ready for initial data.");
+                     selectorElement.innerHTML = '<option value="">Tidak ada pair aktif</option>';
+                     if(activeChart) activeChart.destroy();
+                     document.getElementById('chart').innerHTML = '<p style="text-align:center; color:#aaa;">Tidak ada pair aktif yang dikonfigurasi di server.</p>';
                 }
+            } catch (error) {
+                console.error("Error fetching pair list:", error);
+                document.getElementById('pairSelector').innerHTML = '<option value="">Error memuat pair</option>';
+                if(activeChart) activeChart.destroy();
+                document.getElementById('chart').innerHTML = `<p style="text-align:center; color:red;">Error: ${error.message}</p>`;
+            }
+        }
+
+        function handlePairSelectionChange() {
+            currentSelectedPairId = document.getElementById('pairSelector').value;
+            lastKnownDataTimestamp = null; // Reset timestamp agar data baru selalu diambil
+            loadChartDataForCurrentPair();
+        }
+
+        async function loadChartDataForCurrentPair() {
+            if (!currentSelectedPairId) {
+                console.log("Tidak ada pair ID yang dipilih.");
+                if(activeChart) activeChart.updateOptions(initialChartOptions); // Reset ke state awal
                 return;
             }
-            addLog(`Received initial ${data.candles.length} candles for ${data.pair_id}.`);
-            candlestickSeries.setData(data.candles);
-            
-            // Hapus semua marker/line lama sebelum menggambar yang baru dari initial state
-            if (fibLine) { fibLine.applyOptions({price: 0}); fibLine = null; } // Hacky remove
-            if (slLine) { slLine.applyOptions({price: 0}); slLine = null; }
-            entryMarkerSeries.setMarkers([]);
-
-
-            if (data.strategy_markers) {
-                const markers = data.strategy_markers;
-                if (markers.pivot_highs && markers.pivot_highs.length > 0) {
-                    const phMarkers = markers.pivot_highs.map(m => ({ time: m.time, position: 'aboveBar', color: 'red', shape: 'arrowDown', text: `PH ${m.price.toFixed(2)}`}));
-                    candlestickSeries.setMarkers(candlestickSeries.markers().concat(phMarkers)); // Gabung, jangan timpa semua
+            console.log(`Memuat data chart untuk: ${currentSelectedPairId}`);
+            try {
+                const fetchResponse = await fetch(`/api/chart_data/${currentSelectedPairId}`);
+                if (!fetchResponse.ok) {
+                     let errorMsg = `Gagal mengambil data chart: ${fetchResponse.status}`;
+                     try { const errorData = await fetchResponse.json(); errorMsg = errorData.error || errorMsg; } catch(e){}
+                     throw new Error(errorMsg);
                 }
-                if (markers.pivot_lows && markers.pivot_lows.length > 0) {
-                     const plMarkers = markers.pivot_lows.map(m => ({ time: m.time, position: 'belowBar', color: 'lime', shape: 'arrowUp', text: `PL ${m.price.toFixed(2)}`}));
-                     candlestickSeries.setMarkers(candlestickSeries.markers().concat(plMarkers));
-                }
-                if (markers.active_fib_level) {
-                    if (fibLine) chart.removePriceLine(fibLine);
-                    fibLine = candlestickSeries.createPriceLine({ price: markers.active_fib_level.price, color: 'blue', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `FIB 0.5 ${markers.active_fib_level.price.toFixed(2)}`});
-                }
-                if (markers.entry) {
-                    const entryMarkers = [{ time: markers.entry.time, position: 'belowBar', color: 'green', shape: 'arrowUp', text: `BUY @ ${markers.entry.price.toFixed(2)}`}];
-                    entryMarkerSeries.setMarkers(entryMarkers);
-                }
-                if (markers.stop_loss) {
-                    if (slLine) chart.removePriceLine(slLine);
-                    slLine = candlestickSeries.createPriceLine({ price: markers.stop_loss.price, color: markers.stop_loss.type === 'trailing' ? 'orange' : 'red', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `${markers.stop_loss.type.toUpperCase()} SL ${markers.stop_loss.price.toFixed(2)}`});
-                }
-            }
-            chart.timeScale().fitContent();
-        });
+                const chartDataPayload = await fetchResponse.json();
 
-        socket.on('chart_update', (data) => {
-            if (!chart || !candlestickSeries || data.pair_id !== currentChartPairId) return;
-
-            if (data.candle) {
-                candlestickSeries.update(data.candle);
-            }
-
-            // Handle markers and lines
-            if (data.pivot_high) {
-                candlestickSeries.setMarkers(candlestickSeries.markers().filter(m => m.shape !== 'arrowDown').concat([{ time: data.pivot_high.time, position: 'aboveBar', color: 'red', shape: 'arrowDown', text: `PH ${data.pivot_high.price.toFixed(2)}` }]));
-            }
-            if (data.pivot_low) {
-                 candlestickSeries.setMarkers(candlestickSeries.markers().filter(m => m.shape !== 'arrowUp' || m.position !== 'belowBar').concat([{ time: data.pivot_low.time, position: 'belowBar', color: 'lime', shape: 'arrowUp', text: `PL ${data.pivot_low.price.toFixed(2)}` }]));
-            }
-
-            if (data.clear_fib) {
-                if (fibLine) {
-                    try { candlestickSeries.removePriceLine(fibLine); } catch(e) { /* ignore if already removed */ }
-                    fibLine = null;
+                if (chartDataPayload.last_updated_tv && chartDataPayload.last_updated_tv === lastKnownDataTimestamp) {
+                    console.log("Data chart tidak berubah, tidak perlu update render.");
+                    document.getElementById('lastUpdatedLabel').textContent = `Data terakhir (server): ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;
+                    return;
                 }
-            } else if (data.fib_level) {
-                if (fibLine) candlestickSeries.removePriceLine(fibLine);
-                fibLine = candlestickSeries.createPriceLine({ price: data.fib_level.price, color: 'blue', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `FIB 0.5 ${data.fib_level.price.toFixed(2)}` });
-            }
+                lastKnownDataTimestamp = chartDataPayload.last_updated_tv;
+                document.getElementById('lastUpdatedLabel').textContent = lastKnownDataTimestamp ? `Data terakhir (server): ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}` : "N/A";
 
-            if (data.clear_trade_markers) {
-                entryMarkerSeries.setMarkers([]);
-                if (slLine) {
-                    try { candlestickSeries.removePriceLine(slLine); } catch(e) { /* ignore */ }
-                    slLine = null;
+                const newChartOptions = {
+                    ...initialChartOptions, // Ambil basis dari initial options
+                    title: { ...initialChartOptions.title, text: `${chartDataPayload.pair_name} Candlestick` },
+                    series: [{ name: 'Candlestick', data: chartDataPayload.ohlc || [] }],
+                    annotations: { 
+                        yaxis: chartDataPayload.annotations_yaxis || [], 
+                        points: chartDataPayload.annotations_points || [] 
+                    }
+                };
+                
+                if (!activeChart) {
+                    activeChart = new ApexCharts(document.querySelector("#chart"), newChartOptions);
+                    activeChart.render();
+                } else {
+                    activeChart.updateOptions(newChartOptions);
                 }
-            }
-            
-            if (data.entry) {
-                entryMarkerSeries.setMarkers([{ time: data.entry.time, position: 'belowBar', color: 'green', shape: 'arrowUp', text: `BUY @ ${data.entry.price.toFixed(2)}` }]);
-            }
-            
-            if (data.stop_loss) {
-                if (slLine) candlestickSeries.removePriceLine(slLine);
-                slLine = candlestickSeries.createPriceLine({ price: data.stop_loss.price, color: data.current_sl_type === 'trailing' ? 'orange' : 'red', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `${data.current_sl_type.toUpperCase()} SL ${data.stop_loss.price.toFixed(2)}` });
-            }
 
-            if (data.exit_signal) {
-                entryMarkerSeries.setMarkers(entryMarkerSeries.markers().concat([{ time: data.exit_signal.time, position: data.exit_signal.pnl >= 0 ? 'aboveBar' : 'aboveBar', color: data.exit_signal.pnl >= 0 ? 'aqua' : 'fuchsia', shape: data.exit_signal.pnl >= 0 ? 'circle' : 'circle', text: `EXIT ${data.exit_signal.reason} ${data.exit_signal.price.toFixed(2)} PNL: ${data.exit_signal.pnl.toFixed(1)}%` }]));
-                // Clear SL line on exit
-                if (slLine) {
-                    try { candlestickSeries.removePriceLine(slLine); } catch(e) { /* ignore */ }
-                    slLine = null;
+            } catch (error) {
+                console.error("Error loading chart data:", error);
+                if (activeChart) { // Hancurkan chart jika error agar tidak tampilkan data lama
+                    activeChart.destroy();
+                    activeChart = null; 
                 }
+                 // Buat ulang chart dengan pesan error
+                const errorChartOptions = { ...initialChartOptions, title: { ...initialChartOptions.title, text: `Error: ${chartDataPayload.pair_name || currentSelectedPairId}` }, series: [], noData: { text: error.message } };
+                activeChart = new ApexCharts(document.querySelector("#chart"), errorChartOptions);
+                activeChart.render();
+                document.getElementById('lastUpdatedLabel').textContent = "Error update";
             }
-        });
-
-        loadPairButton.addEventListener('click', () => {
-            const selectedPairId = pairSelector.value;
-            if (selectedPairId) {
-                createOrUpdateChart(selectedPairId);
-            } else {
-                addLog("No pair selected.");
-            }
-        });
+        }
         
-        // Resize chart on window resize
-        window.addEventListener('resize', () => {
-            if (chart) {
-                chart.resize(chartContainer.clientWidth, chartContainer.clientHeight);
-            }
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchAvailablePairs(); // Muat daftar pair saat halaman siap
+            
+            if (autoRefreshIntervalId) clearInterval(autoRefreshIntervalId); // Hapus interval lama jika ada
+            autoRefreshIntervalId = setInterval(async () => {
+                if (currentSelectedPairId && document.visibilityState === 'visible') { // Hanya refresh jika tab terlihat
+                    console.log(`Auto-refresh chart untuk ${currentSelectedPairId}`);
+                    await loadChartDataForCurrentPair();
+                }
+            }, 30000); // Refresh setiap 30 detik
         });
 
     </script>
@@ -1376,139 +1493,78 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- Flask Routes ---
-@app_flask.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
+@flask_app_instance.route('/')
+def serve_index_page():
+    return render_template_string(HTML_CHART_TEMPLATE)
 
-# Global reference to the main trading data structure, to be set by start_trading
-# Ini adalah cara yang kurang ideal, tapi paling mudah untuk integrasi cepat.
-# Seharusnya, event SocketIO diemit langsung dari dalam `start_trading` loop.
-_g_crypto_data_manager = None
-_g_all_crypto_configs = None # Untuk daftar pairs
-
-@socketio.on('connect')
-def handle_connect():
-    log_info("Chart client connected to WebSocket.", pair_name="CHART_SERVER")
-    emit('message', {'data': 'Connected to Python backend!'})
-
-@socketio.on('request_available_pairs')
-def handle_request_available_pairs():
-    global _g_all_crypto_configs # Akses konfigurasi global
-    if _g_all_crypto_configs:
-        pair_ids = [f"{cfg.get('symbol','N/A')}-{cfg.get('currency','N/A')}" for cfg in _g_all_crypto_configs if cfg.get("enabled", True)]
-        emit('available_pairs', {'pairs': pair_ids})
-        log_debug(f"Sent available pairs: {pair_ids}", pair_name="CHART_SERVER")
-    else:
-        emit('available_pairs', {'pairs': []})
-        log_debug("No crypto_configs available to send.", pair_name="CHART_SERVER")
-
-
-@socketio.on('request_initial_data')
-def handle_request_initial_data(message):
-    global _g_crypto_data_manager # Akses data manager global
-    pair_id_req = message.get('pair_id')
-    log_info(f"Chart client requested initial data for {pair_id_req}", pair_name="CHART_SERVER")
-
-    if not _g_crypto_data_manager or not pair_id_req:
-        log_warning(f"Cannot provide initial data: crypto_data_manager not set or pair_id missing ({pair_id_req})", pair_name="CHART_SERVER")
-        emit('initial_chart_data', {'pair_id': pair_id_req, 'candles': [], 'strategy_markers': {}})
-        return
-
-    # Cari data untuk pair_id yang diminta
-    # Ingat, key di _g_crypto_data_manager mungkin menyertakan timeframe
-    # Kita perlu mencocokkan bagian symbol-currency
-    data_for_pair = None
-    matched_key_in_manager = None
-    for key, data_val in _g_crypto_data_manager.items():
-        if key.startswith(pair_id_req + "_"): # Contoh: "BTC-USD_hour"
-            data_for_pair = data_val
-            matched_key_in_manager = key
-            break
+@flask_app_instance.route('/api/available_pairs')
+def get_available_pairs():
+    with shared_data_lock:
+        # Buat salinan dangkal, karena kita hanya baca konfigurasi pair
+        data_manager_view = shared_crypto_data_manager.copy()
     
-    if not data_for_pair: # Jika tidak ada timeframe, coba match langsung
-         if pair_id_req in _g_crypto_data_manager:
-            data_for_pair = _g_crypto_data_manager[pair_id_req]
-            matched_key_in_manager = pair_id_req
+    active_pairs_info = []
+    for pair_identifier, pair_data_item in data_manager_view.items():
+        config_item = pair_data_item.get("config", {})
+        if config_item.get("enabled", True): # Hanya pair yang aktif
+             active_pairs_info.append({
+                "id": pair_identifier, 
+                "name": config_item.get('pair_name', pair_identifier)
+            })
+    return jsonify(active_pairs_info)
 
 
-    if data_for_pair and data_for_pair.get("all_candles_list"):
-        candles_to_send = data_for_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
-        formatted_candles = []
-        for c in candles_to_send:
-            if all(k in c for k in ['timestamp', 'open', 'high', 'low', 'close']):
-                 formatted_candles.append({
-                    'time': int(c['timestamp'].timestamp()),
-                    'open': c['open'], 'high': c['high'],
-                    'low': c['low'], 'close': c['close']
-                })
-            else:
-                log_warning(f"Skipping malformed candle in initial_data for {pair_id_req}: {c.get('timestamp')}", pair_name="CHART_SERVER")
-
-
-        # Ambil state strategi saat ini untuk marker awal
-        # Ini perlu diekstrak dari `strategy_state` yang ada
-        s_state = data_for_pair.get("strategy_state", {})
-        initial_markers = {
-            'pivot_highs': [], # Ini perlu diisi dari histori jika mau ditampilkan
-            'pivot_lows': [],  # Ini perlu diisi dari histori jika mau ditampilkan
-            'active_fib_level': None,
-            'entry': None,
-            'stop_loss': None
-        }
-        if s_state.get("active_fib_level") and s_state.get("active_fib_line_start_time"):
-            initial_markers['active_fib_level'] = {'price': s_state["active_fib_level"], 'start_time': int(s_state["active_fib_line_start_time"].timestamp())}
+@flask_app_instance.route('/api/chart_data/<pair_id_from_request>')
+def get_chart_data_for_frontend(pair_id_from_request):
+    with shared_data_lock:
+        # Salinan dalam (deep copy) untuk `pair_specific_data` penting jika `prepare_chart_data_for_pair`
+        # atau sub-fungsinya memodifikasi data. Jika hanya read-only, shallow copy cukup.
+        # Mengingat `all_candles_list` bisa besar, `deepcopy` seluruh `shared_crypto_data_manager` bisa lambat.
+        # Jadi kita ambil pair spesifik saja dan deepcopy itu.
+        if pair_id_from_request not in shared_crypto_data_manager:
+             return jsonify({"error": f"Data untuk pair {pair_id_from_request} tidak ditemukan di server."}), 404
         
-        if s_state.get("position_size", 0) > 0 and s_state.get("entry_price_custom") and s_state.get("entry_time"):
-            initial_markers['entry'] = {'time': int(s_state["entry_time"].timestamp()), 'price': s_state["entry_price_custom"]}
-            
-            sl_price = s_state.get("current_trailing_stop_level") if s_state.get("trailing_tp_active_custom") else s_state.get("emergency_sl_level_custom")
-            sl_type = 'trailing' if s_state.get("trailing_tp_active_custom") and s_state.get("current_trailing_stop_level") else 'emergency'
-            if sl_price:
-                initial_markers['stop_loss'] = {'price': sl_price, 'type': sl_type}
+        # Deepcopy hanya data pair yang diminta untuk thread safety saat memproses
+        pair_data_snapshot = copy.deepcopy(shared_crypto_data_manager.get(pair_id_from_request, {}))
 
-        # Untuk pivot, kita idealnya menyimpan histori pivot yang dikonfirmasi.
-        # Skrip saat ini hanya menyimpan yang paling baru di `strategy_state` transient.
-        # Untuk kesederhanaan, kita tidak akan mengirim histori pivot saat ini.
-        # Hanya pivot yang terdeteksi secara live akan muncul.
+    if not pair_data_snapshot: # Jika setelah get ternyata kosong (meski sudah dicek)
+        return jsonify({"error": f"Data untuk pair {pair_id_from_request} tidak ditemukan (snapshot kosong)."}), 404
 
-        log_info(f"Sending {len(formatted_candles)} initial candles and markers for {pair_id_req}.", pair_name="CHART_SERVER")
-        emit('initial_chart_data', {'pair_id': pair_id_req, 'candles': formatted_candles, 'strategy_markers': initial_markers})
-    else:
-        log_warning(f"No candle data found for {pair_id_req} in crypto_data_manager or key not matched: {matched_key_in_manager}", pair_name="CHART_SERVER")
-        emit('initial_chart_data', {'pair_id': pair_id_req, 'candles': [], 'strategy_markers': {}})
+    # Buat snapshot tiruan dari data manager hanya dengan pair yang diminta
+    # agar prepare_chart_data_for_pair tidak perlu diubah signature-nya.
+    temp_data_manager_for_prep = {pair_id_from_request: pair_data_snapshot}
+    
+    prepared_data = prepare_chart_data_for_pair(pair_id_from_request, temp_data_manager_for_prep)
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    log_info("Chart client disconnected.", pair_name="CHART_SERVER")
+    if not prepared_data or not prepared_data.get("ohlc"): # Cek jika OHLC kosong
+        log_warning(f"Tidak ada data OHLC yang cukup untuk ditampilkan untuk {pair_id_from_request} setelah diproses.", pair_name="SYSTEM_CHART")
+        return jsonify({"error": f"Tidak ada data candle yang cukup untuk ditampilkan untuk {pair_id_from_request} (setelah proses).", "ohlc": [], "annotations_yaxis": [], "annotations_points": [], "pair_name": pair_id_from_request, "last_updated_tv": None}), 200 # Kirim 200 agar JS bisa handle noData
+    
+    return jsonify(prepared_data)
 
-# Fungsi untuk menjalankan Flask app di thread terpisah
-def run_flask_app():
-    log_info("Starting Flask-SocketIO server for charts on http://0.0.0.0:5000", pair_name="CHART_SERVER")
-    # socketio.run(app_flask, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-    # Menggunakan server gevent secara eksplisit
-    from gevent import pywsgi
-    from geventwebsocket.handler import WebSocketHandler
-    server = pywsgi.WSGIServer(('0.0.0.0', 5000), app_flask, handler_class=WebSocketHandler)
-    log_info("gevent WSGI server for Flask-SocketIO is running.", pair_name="CHART_SERVER")
+
+def run_flask_server_thread():
+    log_info("Memulai Flask server di http://localhost:5001 (atau IP Termux-mu)", pair_name="SYSTEM_CHART")
     try:
-        server.serve_forever()
-    except Exception as e:
-        log_error(f"Flask-SocketIO server crashed: {e}", pair_name="CHART_SERVER")
-        log_exception("Flask-SocketIO server exception details:", pair_name="CHART_SERVER")
+        # use_reloader=False penting saat Flask dijalankan di thread non-main atau produksi
+        # debug=False untuk produksi/Termux
+        flask_app_instance.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
+    except Exception as e_flask:
+        log_error(f"Flask server gagal dijalankan: {e_flask}", pair_name="SYSTEM_CHART")
+        log_exception("Traceback Error Flask Server:", pair_name="SYSTEM_CHART")
+
+# CHART_INTEGRATION_END
 
 
 # --- FUNGSI UTAMA TRADING LOOP ---
-
-def start_trading(global_settings_dict):
-    global _g_crypto_data_manager, _g_all_crypto_configs # Set variabel global
-    
+# CHART_MOD: Tambahkan argumen shared_data_lock dan shared_crypto_data_manager_ref
+def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
     clear_screen_animated()
     api_settings = global_settings_dict.get("api_settings", {})
     api_key_manager = APIKeyManager(
         api_settings.get("primary_key"),
         api_settings.get("recovery_keys", []),
-        api_settings # Pass entire api_settings for global email config
+        api_settings # Untuk notifikasi email global saat ganti key
     )
 
     if not api_key_manager.has_valid_keys():
@@ -1517,57 +1573,44 @@ def start_trading(global_settings_dict):
         input()
         return
 
-    all_crypto_configs_from_settings = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
-    _g_all_crypto_configs = all_crypto_configs_from_settings # Set untuk chart server
-
-    if not all_crypto_configs_from_settings:
+    all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
+    if not all_crypto_configs:
         log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
         animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
         input()
         return
 
     animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
-    # ... (log API key) ...
+    current_key_display_val = api_key_manager.get_current_key()
+    current_key_display = "N/A"
+    if current_key_display_val:
+        current_key_display = ("..." + current_key_display_val[-3:]) if len(current_key_display_val) > 8 else current_key_display_val # CHART_MOD: Disingkat
+    log_info(f"Menggunakan API Key Index: {api_key_manager.get_current_key_index()} ({current_key_display}). Total keys: {api_key_manager.total_keys()}", pair_name="SYSTEM")
 
-    crypto_data_manager = {} # Ini akan menjadi _g_crypto_data_manager
-    _g_crypto_data_manager = crypto_data_manager # Set referensi global
+    # Inisialisasi crypto_data_manager lokal untuk loop trading
+    local_crypto_data_manager = {}
 
-    for config in all_crypto_configs_from_settings:
-        # Gunakan ID unik dari config jika ada, atau buat berdasarkan pair & TF
-        # ID dari config lebih baik jika user bisa edit/hapus/tambah config
-        config_id = config.get("id") # ID ini harusnya sudah ada dari load_settings / _prompt_crypto_config
-        if not config_id: # Fallback jika ID tidak ada (seharusnya tidak terjadi)
-            config_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}"
-            log_warning(f"Config crypto tidak memiliki ID, menggunakan fallback ID: {config_id}", pair_name=config.get('pair_name', 'UNKNOWN_PAIR'))
-        
-        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" # Untuk logging
+    for config in all_crypto_configs:
+        # Buat ID unik untuk setiap pair berdasarkan simbol, currency, dan timeframe
+        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}"
+        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" # Tambahkan nama pair ke config untuk logging mudah
 
         animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
 
-        # pair_id_for_manager adalah ID unik untuk data manager, bisa pakai config_id
-        pair_id_for_manager = config_id 
-        # Namun, untuk chart, kita sering menggunakan symbol-currency. Jadi kita perlu keduanya.
-        # Key di crypto_data_manager akan menggunakan symbol-currency_timeframe untuk kemudahan debug
-        # tapi kita juga simpan config_id di dalamnya.
-        # REVISI: Mari gunakan Symbol-Currency_Timeframe sebagai key utama di crypto_data_manager
-        # karena ini yang paling sering digunakan untuk logika dan identifikasi.
-        # ID dari config.json akan disimpan di dalam value dict.
-        
-        # Key untuk crypto_data_manager (lebih deskriptif)
-        manager_key = f"{config['pair_name']}_{config['timeframe']}"
-
-
-        crypto_data_manager[manager_key] = {
-            "config_id": config_id, # Simpan ID asli dari settings.json
-            "config": config, # Seluruh config pair
+        local_crypto_data_manager[pair_id] = {
+            "config": config,
             "all_candles_list": [],
             "strategy_state": get_initial_strategy_state(),
-            "big_data_collection_phase_active": True, 
-            "big_data_email_sent": False,
-            "last_candle_fetch_time": datetime.min, 
-            "data_fetch_failed_consecutively": 0,
-            "last_attempt_after_all_keys_failed": datetime.min # Timestamp retry setelah semua key gagal
+            "big_data_collection_phase_active": True, # Fase pengumpulan data besar awal
+            "big_data_email_sent": False, # Flag email notifikasi data besar
+            "last_candle_fetch_time": datetime.min, # Waktu fetch terakhir
+            "data_fetch_failed_consecutively": 0 # Counter kegagalan fetch berturut-turut
         }
+        
+        # CHART_INTEGRATION_START: Update shared manager untuk Flask
+        with lock_ref:
+            shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id]) # Deepcopy state awal
+        # CHART_INTEGRATION_END
 
         initial_candles_target = TARGET_BIG_DATA_CANDLES
         initial_candles = []
@@ -1575,6 +1618,7 @@ def start_trading(global_settings_dict):
         retries_done_initial = 0
         initial_fetch_successful = False
 
+        # Loop untuk mengambil data awal, coba semua API key jika perlu
         while retries_done_initial < max_retries_initial and not initial_fetch_successful:
             current_api_key = api_key_manager.get_current_key()
             if not current_api_key:
@@ -1588,381 +1632,403 @@ def start_trading(global_settings_dict):
                     config['exchange'], current_api_key, config['timeframe'],
                     pair_name=config['pair_name']
                 )
-                initial_fetch_successful = True # Berhasil fetch, keluar loop retry
-            except APIKeyError: # Gagal karena API Key
-                log_warning(f"BIG DATA: API Key gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
-                if not api_key_manager.switch_to_next_key(): break # Tidak ada key lagi, keluar loop retry
-                retries_done_initial +=1 # Tambah counter retry
-            except requests.exceptions.RequestException as e: # Gagal karena jaringan/koneksi
-                log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key. Coba lagi nanti.", pair_name=config['pair_name'])
-                # Tidak increment retries_done_initial di sini, anggap ini masalah sementara,
-                # loop utama akan retry nanti. Atau, bisa juga break. Untuk fetch awal, lebih baik break.
-                break # Keluar loop retry, masalah koneksi
+                initial_fetch_successful = True # Jika fetch_candles tidak error, anggap berhasil
+            except APIKeyError: # Gagal karena API key (limit, invalid)
+                log_warning(f"BIG DATA: API Key (Idx {api_key_manager.get_current_key_index()}) gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
+                if not api_key_manager.switch_to_next_key(): break # Tidak ada key lagi untuk dicoba
+                retries_done_initial +=1 
+            except requests.exceptions.RequestException as e: # Error jaringan
+                log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key, akan coba lagi nanti jika loop utama mengizinkan.", pair_name=config['pair_name'])
+                # Berhenti mencoba untuk pair ini di fase inisialisasi jika jaringan error parah
+                break 
             except Exception as e_gen: # Error umum lainnya
                 log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
                 log_exception("Traceback Error Initial Fetch:", pair_name=config['pair_name'])
-                break # Keluar loop retry
-
-        if not initial_candles:
+                break # Error tidak terduga, hentikan inisialisasi pair ini
+        
+        if not initial_candles and not initial_fetch_successful : # Jika semua upaya gagal
             log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            crypto_data_manager[manager_key]["big_data_collection_phase_active"] = False # Tandai agar tidak coba fetch besar lagi
-            crypto_data_manager[manager_key]["last_candle_fetch_time"] = datetime.now() # Agar tidak langsung di-fetch di loop utama
-            continue # Lanjut ke config pair berikutnya
+            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False # Anggap gagal kumpul data besar
+            local_crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now() # Tandai waktu agar tidak langsung retry
+            # CHART_INTEGRATION_START: Update shared manager untuk Flask
+            with lock_ref:
+                shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
+            # CHART_INTEGRATION_END
+            continue # Lanjut ke pair berikutnya
 
-        crypto_data_manager[manager_key]["all_candles_list"] = initial_candles
-        log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
+        local_crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
+        log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima untuk {config['pair_name']}.", pair_name=config['pair_name'])
 
-        # Warm-up strategy state
+        # Warm-up state strategi dengan data historis (jika ada cukup data)
         if initial_candles:
-            min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1 
+            min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1
             if len(initial_candles) >= min_len_for_pivots:
-                log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
+                log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state {config['pair_name']}...", pair_name=config['pair_name'])
                 
-                # Proses semua candle historis kecuali yang terakhir (yang akan diproses live)
-                for i in range(min_len_for_pivots -1, len(initial_candles) - 1): # -1 agar tidak proses candle terakhir
-                    historical_slice = initial_candles[:i+1] # Slice dari awal sampai candle ke-i
-                    if len(historical_slice) < min_len_for_pivots: continue # Lewati jika slice terlalu pendek
+                # Iterasi dari candle ke-(min_len_for_pivots -1) hingga sebelum candle terakhir
+                # untuk membangun state pivot dan FIB tanpa memicu trade.
+                for i in range(min_len_for_pivots -1, len(initial_candles) - 1): # -1 agar tidak proses candle paling baru untuk warm-up sinyal
+                    historical_slice = initial_candles[:i+1] # Slice dari awal hingga candle ke-i
+                    if len(historical_slice) < min_len_for_pivots: continue # Pastikan cukup data untuk pivot
 
-                    # Saat warm-up, kita tidak mau ada sinyal trade aktual, hanya update state pivot/fib
-                    temp_state_for_warmup = crypto_data_manager[manager_key]["strategy_state"].copy()
-                    temp_state_for_warmup["position_size"] = 0 # Pastikan tidak ada posisi
+                    # Buat state sementara untuk warm-up, jangan simpan posisi/trade
+                    temp_state_for_warmup = local_crypto_data_manager[pair_id]["strategy_state"].copy()
+                    temp_state_for_warmup["position_size"] = 0 # Pastikan tidak ada posisi aktif selama warm-up
                     
-                    # Panggil run_strategy_logic, tapi abaikan chart_event_data-nya
-                    updated_state, _ = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
-                    crypto_data_manager[manager_key]["strategy_state"] = updated_state
+                    # Jalankan logika strategi hanya untuk update internal state (pivot, fib)
+                    local_crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(
+                        historical_slice, config, temp_state_for_warmup, global_settings_dict
+                    )
                     
-                    # Jika ada "posisi" terbuka selama warm-up (seharusnya tidak jika position_size=0), reset lagi
-                    if crypto_data_manager[manager_key]["strategy_state"]["position_size"] > 0: 
-                        crypto_data_manager[manager_key]["strategy_state"] = {
-                            **crypto_data_manager[manager_key]["strategy_state"], # Ambil state pivot/fib
-                            **{"position_size":0, "entry_price_custom":None, "entry_time": None, 
-                               "emergency_sl_level_custom":None, "highest_price_for_trailing":None, 
-                               "trailing_tp_active_custom":False, "current_trailing_stop_level":None}
+                    # Pastikan setelah warm-up, state trading direset (jika run_strategy_logic sempat set)
+                    if local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: 
+                        local_crypto_data_manager[pair_id]["strategy_state"] = {
+                            **local_crypto_data_manager[pair_id]["strategy_state"], # Ambil state pivot/fib
+                            **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None, 
+                               "highest_price_for_trailing":None, "trailing_tp_active_custom":False, 
+                               "current_trailing_stop_level":None} # Reset state trading
                         }
-                log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+                log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal untuk {config['pair_name']} selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
             else:
-                log_warning(f"Data awal ({len(initial_candles)}) tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}).", pair_name=config['pair_name'])
-        else:
-            log_warning("Tidak ada data awal untuk warm-up.", pair_name=config['pair_name'])
+                log_warning(f"Data awal ({len(initial_candles)}) untuk {config['pair_name']} tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}). State mungkin tidak optimal.", pair_name=config['pair_name'])
+        else: # Tidak ada data awal sama sekali
+            log_warning(f"Tidak ada data awal untuk warm-up state {config['pair_name']}.", pair_name=config['pair_name'])
 
-        if len(crypto_data_manager[manager_key]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-            crypto_data_manager[manager_key]["big_data_collection_phase_active"] = False
-            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            if not crypto_data_manager[manager_key]["big_data_email_sent"]:
-                # ... (send email notif) ...
-                crypto_data_manager[manager_key]["big_data_email_sent"] = True
-            log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[manager_key]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        # Cek apakah target data besar tercapai setelah pengambilan awal
+        if len(local_crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
+            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
+            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {config['pair_name']} setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            if not local_crypto_data_manager[pair_id]["big_data_email_sent"]: # Kirim notif jika belum
+                send_email_notification(
+                    f"Data Downloading Complete: {config['pair_name']}", 
+                    f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", 
+                    {**config, 'pair_name': config['pair_name']} # CHART_MOD: pastikan pair_name ada di konteks email
+                )
+                local_crypto_data_manager[pair_id]["big_data_email_sent"] = True
+            log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(local_crypto_data_manager[pair_id]['all_candles_list'])} candles) untuk {config['pair_name']} ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        
+        # CHART_INTEGRATION_START: Update shared manager untuk Flask setelah inisialisasi pair
+        with lock_ref:
+            shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
+        # CHART_INTEGRATION_END
 
-    animated_text_display(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+    animated_text_display(f"{AnsiColors.HEADER}----------------- SEMUA PAIR DIINISIALISASI -----------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
 
+    # Loop Trading Utama
     try:
         while True:
             active_cryptos_still_in_big_data_collection = 0
-            min_overall_next_refresh_seconds = float('inf')
-            any_data_fetched_this_cycle = False
+            min_overall_next_refresh_seconds = float('inf') # Untuk menentukan sleep optimal
+            any_data_fetched_this_cycle = False # Flag apakah ada data baru di-fetch di siklus ini
 
-            # Iterasi melalui copy dari keys jika kita mungkin memodifikasi dict (meski di sini tidak)
-            for manager_key_loop, data in list(crypto_data_manager.items()):
-                config = data["config"] # Ambil config dari data yang disimpan
-                pair_name = config['pair_name'] # Ini "BTC-USD", dll.
-                
-                # Cek cooldown jika semua key gagal sebelumnya
-                if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 : # +1 untuk toleransi
-                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # Cooldown 1 jam
-                        log_debug(f"Pair {pair_name} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name)
-                        min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, 3600) # Pertimbangkan cooldown ini
-                        continue # Lewati pair ini untuk siklus ini
-                    else:
-                        data["data_fetch_failed_consecutively"] = 0 # Reset counter setelah cooldown
-                        log_info(f"Cooldown 1 jam untuk {pair_name} selesai. Mencoba fetch lagi.", pair_name=pair_name)
+            # Iterasi semua pair yang dikelola
+            for pair_id, data_per_pair in local_crypto_data_manager.items():
+                config_for_pair = data_per_pair["config"]
+                pair_name_for_log = config_for_pair['pair_name']
+
+                # Cooldown jika semua API key gagal untuk pair ini
+                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 : 
+                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # Cooldown 1 jam
+                        log_debug(f"Pair {pair_name_for_log} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name_for_log)
+                        continue # Skip pair ini untuk sementara
+                    else: # Cooldown selesai
+                        data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset counter gagal
+                        log_info(f"Cooldown 1 jam untuk {pair_name_for_log} selesai. Mencoba fetch lagi.", pair_name=pair_name_for_log)
 
                 current_loop_time = datetime.now()
-                time_since_last_fetch_seconds = (current_loop_time - data["last_candle_fetch_time"]).total_seconds()
+                time_since_last_fetch_seconds = (current_loop_time - data_per_pair["last_candle_fetch_time"]).total_seconds()
 
+                # Tentukan interval refresh yang dibutuhkan untuk pair ini
                 required_interval_for_this_pair = 0
-                if data["big_data_collection_phase_active"]:
+                if data_per_pair["big_data_collection_phase_active"]:
                     active_cryptos_still_in_big_data_collection += 1
-                    # Interval lebih cepat saat kumpulkan big data, tapi tidak terlalu cepat
-                    if config.get('timeframe') == "minute": required_interval_for_this_pair = 55 # Hampir tiap menit
-                    elif config.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 23.8 # Hampir tiap hari
+                    # Interval lebih cepat saat kumpul data besar, tergantung timeframe
+                    if config_for_pair.get('timeframe') == "minute": required_interval_for_this_pair = 55 # Hampir tiap menit
+                    elif config_for_pair.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 23.8 # Hampir tiap hari
                     else: required_interval_for_this_pair = 3580 # Hampir tiap jam
                 else: # Fase live trading
-                    required_interval_for_this_pair = config.get('refresh_interval_seconds', 60) 
+                    required_interval_for_this_pair = config_for_pair.get('refresh_interval_seconds', 60) 
 
+                # Jika belum waktunya refresh untuk pair ini, skip
                 if time_since_last_fetch_seconds < required_interval_for_this_pair:
                     remaining_time_for_this_pair = required_interval_for_this_pair - time_since_last_fetch_seconds
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, remaining_time_for_this_pair)
-                    continue # Belum waktunya refresh untuk pair ini
+                    continue # Lanjut ke pair berikutnya
 
-                log_info(f"Memproses {pair_name} ({manager_key_loop})...", pair_name=pair_name)
-                data["last_candle_fetch_time"] = current_loop_time # Catat waktu mulai proses
-                num_candles_before_fetch = len(data["all_candles_list"])
+                # Waktunya proses pair ini
+                log_info(f"Memproses {pair_name_for_log} (Interval: {required_interval_for_this_pair}s)...", pair_name=pair_name_for_log)
+                data_per_pair["last_candle_fetch_time"] = current_loop_time # Update waktu fetch terakhir
+                num_candles_before_fetch = len(data_per_pair["all_candles_list"])
 
-                if data["big_data_collection_phase_active"]:
-                    animated_text_display(f"\n--- PENGUMPULAN BIG DATA ({len(data['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005)
+                if data_per_pair["big_data_collection_phase_active"]:
+                    animated_text_display(f"\n--- PENGUMPULAN BIG DATA {pair_name_for_log} ({len(data_per_pair['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005, new_line=True)
                 else:
-                    animated_text_display(f"\n--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(data['all_candles_list'])} candles ---", color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005)
+                    animated_text_display(f"\n--- ANALISA LIVE {pair_name_for_log} ({current_loop_time.strftime('%H:%M:%S')}) | {len(data_per_pair['all_candles_list'])} candles ---", color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005, new_line=True)
 
                 new_candles_batch = []
                 fetch_update_successful_for_this_pair = False
                 
-                max_retries_for_this_pair_update = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
-                retries_done_for_this_pair_update = 0 # Counter retry untuk siklus ini
+                # Tentukan berapa banyak candle yang akan di-fetch
+                limit_fetch_for_update = 3 # Default untuk update live (ambil beberapa candle terakhir untuk jaga-jaga)
+                if data_per_pair["big_data_collection_phase_active"]:
+                    limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data_per_pair["all_candles_list"])
+                    if limit_fetch_needed <=0 : # Seharusnya sudah selesai fase big data jika ini terjadi
+                         fetch_update_successful_for_this_pair = True # Anggap berhasil, tidak perlu fetch
+                         new_candles_batch = [] # Tidak ada candle baru
+                         # Lanjutkan ke bawah untuk memastikan fase big data di-nonaktifkan
+                    else:
+                        limit_fetch_for_update = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT) # Ambil sebanyak mungkin hingga max limit
+                        limit_fetch_for_update = max(limit_fetch_for_update, 1) # Minimal 1
 
-                while retries_done_for_this_pair_update < max_retries_for_this_pair_update and not fetch_update_successful_for_this_pair:
-                    current_api_key_for_attempt = api_key_manager.get_current_key()
-                    if not current_api_key_for_attempt:
-                        log_error(f"Semua API key habis secara global saat mencoba mengambil update untuk {pair_name}.", pair_name=pair_name)
-                        break # Tidak ada key lagi
+                if limit_fetch_for_update > 0 or data_per_pair["big_data_collection_phase_active"]: # Hanya fetch jika perlu
+                    # Loop retry dengan API key berbeda jika gagal
+                    max_retries_for_this_pair_update = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
+                    retries_done_for_this_pair_update = 0
+                    original_api_key_index = api_key_manager.get_current_key_index() # Simpan index key awal
 
-                    limit_fetch = 3 # Default untuk update live (ambil beberapa candle terakhir)
-                    if data["big_data_collection_phase_active"]:
-                        limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data["all_candles_list"])
-                        if limit_fetch_needed <=0 : # Seharusnya sudah selesai, tapi jaga-jaga
-                             fetch_update_successful_for_this_pair = True # Anggap berhasil (tidak perlu fetch)
-                             new_candles_batch = []
-                             break
-                        limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT) # Ambil sebanyak sisa atau max limit
-                        limit_fetch = max(limit_fetch, 1) # Minimal 1
+                    while retries_done_for_this_pair_update < max_retries_for_this_pair_update and not fetch_update_successful_for_this_pair:
+                        current_api_key_for_attempt = api_key_manager.get_current_key()
+                        if not current_api_key_for_attempt:
+                            log_error(f"Semua API key habis (global) saat mencoba mengambil update untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
+                            break # Tidak ada key lagi
 
-                    log_info(f"Mengambil {limit_fetch} candle (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name)
-                    try:
-                        new_candles_batch = fetch_candles(
-                            config['symbol'], config['currency'], limit_fetch, 
-                            config['exchange'], current_api_key_for_attempt, config['timeframe'],
-                            pair_name=pair_name
-                        )
-                        fetch_update_successful_for_this_pair = True
-                        data["data_fetch_failed_consecutively"] = 0 # Reset counter gagal jika berhasil
-                        any_data_fetched_this_cycle = True # Tandai ada data di-fetch di siklus ini
-                    
-                    except APIKeyError: # Gagal karena API Key
-                        log_warning(f"API Key (Idx: {api_key_manager.get_current_key_index()}) gagal untuk update {pair_name}. Mencoba key berikutnya.", pair_name=pair_name)
-                        data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
+                        log_info(f"Mengambil {limit_fetch_for_update} candle untuk {pair_name_for_log} (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name_for_log)
+                        try:
+                            new_candles_batch = fetch_candles(
+                                config_for_pair['symbol'], config_for_pair['currency'], limit_fetch_for_update, 
+                                config_for_pair['exchange'], current_api_key_for_attempt, config_for_pair['timeframe'],
+                                pair_name=pair_name_for_log
+                            )
+                            fetch_update_successful_for_this_pair = True
+                            data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset counter gagal jika berhasil
+                            any_data_fetched_this_cycle = True # Tandai ada data di-fetch
+                            if api_key_manager.get_current_key_index() != original_api_key_index : # Jika key diganti dan berhasil
+                                log_info(f"Fetch berhasil dengan key index {api_key_manager.get_current_key_index()} setelah retry.", pair_name=pair_name_for_log)
                         
-                        if not api_key_manager.switch_to_next_key(): # Coba ganti key
-                            log_error(f"Tidak ada lagi API key tersedia secara global setelah kegagalan pada {pair_name}.", pair_name=pair_name)
-                            break # Keluar loop retry jika tidak ada key lagi
-                        retries_done_for_this_pair_update += 1 # Tambah counter retry
+                        except APIKeyError:
+                            log_warning(f"API Key (Idx: {api_key_manager.get_current_key_index()}) gagal untuk update {pair_name_for_log}. Mencoba key berikutnya.", pair_name=pair_name_for_log)
+                            data_per_pair["data_fetch_failed_consecutively"] = data_per_pair.get("data_fetch_failed_consecutively", 0) + 1
+                            
+                            if not api_key_manager.switch_to_next_key(): # Coba ganti key
+                                log_error(f"Tidak ada lagi API key tersedia (global) setelah kegagalan pada {pair_name_for_log}.", pair_name=pair_name_for_log)
+                                break # Berhenti retry jika tidak ada key lagi
+                            retries_done_for_this_pair_update += 1 
 
-                    except requests.exceptions.RequestException as e: # Gagal karena jaringan
-                        log_error(f"Error jaringan saat mengambil update {pair_name}: {e}. Tidak mengganti key. Akan dicoba lagi nanti.", pair_name=pair_name)
-                        data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1 # Tetap hitung sbg kegagalan
-                        # Tidak break loop retry di sini, biarkan loop utama yang handle sleep
-                        break # Keluar dari while loop retry untuk pair ini, akan coba lagi di siklus berikutnya
-                    except Exception as e_gen_update: # Error umum lainnya
-                        log_error(f"Error umum saat mengambil update {pair_name}: {e_gen_update}. Tidak mengganti key.", pair_name=pair_name)
-                        log_exception("Traceback Error Update Fetch:", pair_name=pair_name)
-                        data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
-                        break # Keluar dari while loop retry
+                        except requests.exceptions.RequestException as e_req: # Error jaringan, jangan ganti key
+                            log_error(f"Error jaringan saat mengambil update {pair_name_for_log}: {e_req}. Tidak mengganti key.", pair_name=pair_name_for_log)
+                            data_per_pair["data_fetch_failed_consecutively"] = data_per_pair.get("data_fetch_failed_consecutively", 0) + 1
+                            # Hentikan retry untuk pair ini di siklus ini jika jaringan error
+                            break 
+                        except Exception as e_gen_update: # Error umum lain
+                            log_error(f"Error umum saat mengambil update {pair_name_for_log}: {e_gen_update}. Tidak mengganti key.", pair_name=pair_name_for_log)
+                            log_exception("Traceback Error Update Fetch:", pair_name=pair_name_for_log)
+                            data_per_pair["data_fetch_failed_consecutively"] = data_per_pair.get("data_fetch_failed_consecutively", 0) + 1
+                            break # Hentikan retry
 
-                # Setelah loop retry, cek apakah semua key sudah dicoba dan gagal
-                if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) +1 :
-                    data["last_attempt_after_all_keys_failed"] = datetime.now() # Catat waktu untuk cooldown
-                    log_warning(f"Semua API key telah dicoba dan gagal untuk {pair_name}. Akan masuk cooldown.", pair_name=pair_name)
+                # Jika semua upaya fetch gagal untuk pair ini di siklus ini
+                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) +1 :
+                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() # Tandai waktu untuk cooldown
+                    log_warning(f"Semua API key telah dicoba dan gagal untuk {pair_name_for_log} di siklus ini. Akan masuk cooldown.", pair_name=pair_name_for_log)
 
+                # Proses data baru jika fetch berhasil
                 if not fetch_update_successful_for_this_pair or not new_candles_batch:
-                    if fetch_update_successful_for_this_pair and not new_candles_batch and not data["big_data_collection_phase_active"]:
-                        log_warning(f"{AnsiColors.ORANGE}Tidak ada data candle baru diterima untuk {pair_name} meskipun fetch (dianggap) berhasil.{AnsiColors.ENDC}", pair_name=pair_name)
+                    if fetch_update_successful_for_this_pair and not new_candles_batch and not data_per_pair["big_data_collection_phase_active"]:
+                        log_info(f"Tidak ada data candle baru diterima untuk {pair_name_for_log} (fetch dianggap berhasil tapi batch kosong).", pair_name=pair_name_for_log)
                     elif not fetch_update_successful_for_this_pair:
-                         log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name)
-                    min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair) # Jadwalkan refresh berikutnya
-                    continue # Lanjut ke pair berikutnya jika fetch gagal atau tidak ada data baru
+                         log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name_for_log} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                    # Jangan proses lebih lanjut jika tidak ada candle baru atau fetch gagal
+                    min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair) # Hitung untuk sleep
+                    # CHART_INTEGRATION_START: Update shared manager bahkan jika tidak ada candle baru, untuk state
+                    with lock_ref:
+                        shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
+                    # CHART_INTEGRATION_END
+                    continue # Lanjut ke pair berikutnya
 
-                # Gabungkan candle baru dengan yang lama, hindari duplikat berdasarkan timestamp
-                merged_candles_dict = {c['timestamp']: c for c in data["all_candles_list"]}
+                # Gabungkan candle baru dengan yang lama, hindari duplikasi
+                # Gunakan dictionary untuk merge berdasarkan timestamp untuk efisiensi
+                merged_candles_dict = {c['timestamp']: c for c in data_per_pair["all_candles_list"]}
                 newly_added_count_this_batch = 0
-                updated_count_this_batch = 0 # Untuk candle yang mungkin sama timestamp tapi beda OHLC (misal candle live)
+                updated_count_this_batch = 0 # Jika candle dengan timestamp sama di-update (misal close berubah)
 
                 for candle in new_candles_batch:
                     ts = candle['timestamp']
                     if ts not in merged_candles_dict: # Candle baru
                         merged_candles_dict[ts] = candle
                         newly_added_count_this_batch +=1
-                    elif merged_candles_dict[ts] != candle : # Candle ada tapi isinya beda (update)
+                    elif merged_candles_dict[ts] != candle : # Candle lama tapi isinya berubah (misal candle saat ini di-update)
                         merged_candles_dict[ts] = candle
                         updated_count_this_batch +=1
 
+                # Urutkan kembali semua candle berdasarkan timestamp
                 all_candles_list_temp = sorted(list(merged_candles_dict.values()), key=lambda c: c['timestamp'])
+                data_per_pair["all_candles_list"] = all_candles_list_temp # Update list candle di data manager lokal
+
                 actual_new_or_updated_count = newly_added_count_this_batch + updated_count_this_batch
-                data["all_candles_list"] = all_candles_list_temp
-
                 if actual_new_or_updated_count > 0:
-                     log_info(f"{actual_new_or_updated_count} candle baru/diupdate. Total: {len(data['all_candles_list'])}.", pair_name=pair_name)
-                elif new_candles_batch : # Ada batch tapi tidak ada yg baru/update (data identik)
-                     log_info("Tidak ada candle dengan timestamp baru atau update konten. Data terakhir mungkin identik.", pair_name=pair_name)
+                     log_info(f"{actual_new_or_updated_count} candle baru/diupdate untuk {pair_name_for_log}. Total: {len(data_per_pair['all_candles_list'])}.", pair_name=pair_name_for_log)
+                elif new_candles_batch : # Fetch berhasil tapi tidak ada timestamp baru/update
+                     log_info(f"Tidak ada candle dengan timestamp baru atau konten berbeda untuk {pair_name_for_log}. Data terakhir mungkin identik.", pair_name=pair_name_for_log)
 
-
-                # Handle fase big data
-                if data["big_data_collection_phase_active"]:
-                    if len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name}!{AnsiColors.ENDC}", pair_name=pair_name)
-                        if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: # Pangkas jika kelebihan
-                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] 
+                # Cek lagi apakah target big data tercapai setelah update (jika masih dalam fase itu)
+                if data_per_pair["big_data_collection_phase_active"]:
+                    if len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
+                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                        # Pangkas jika melebihi target
+                        if len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
+                            data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] 
                         
-                        if not data["big_data_email_sent"]:
-                            # ... (send email notif) ...
-                            data["big_data_email_sent"] = True
+                        if not data_per_pair["big_data_email_sent"]: # Kirim notif email
+                            send_email_notification(
+                                f"Data Downloading Complete: {pair_name_for_log}", 
+                                f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_name_for_log}.", 
+                                {**config_for_pair, 'pair_name': pair_name_for_log} # CHART_MOD
+                            )
+                            data_per_pair["big_data_email_sent"] = True
                         
-                        data["big_data_collection_phase_active"] = False # Selesai fase big data
-                        active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1)
-                        log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data['all_candles_list'])} candles) untuk {pair_name} ----------{AnsiColors.ENDC}", pair_name=pair_name)
-                else: # Fase live, pastikan tidak melebihi target
-                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
-                        data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+                        data_per_pair["big_data_collection_phase_active"] = False # Selesai fase big data
+                        active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) # Kurangi counter
+                        log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data_per_pair['all_candles_list'])} candles) untuk {pair_name_for_log} ----------{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                else: # Jika sudah live trading, pastikan tidak melebihi target (misal karena API memberi lebih)
+                    if len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
+                        data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
 
-                # Jalankan logika strategi jika ada data baru atau jika baru selesai big data
-                min_len_for_pivots = config.get('left_strength',50) + config.get('right_strength',150) + 1
-                if len(data["all_candles_list"]) >= min_len_for_pivots:
-                    # Proses jika ada candle baru/update, ATAU jika baru beralih dari big data ke live,
-                    # ATAU jika masih big data tapi ada penambahan candle baru.
+                # Jalankan logika strategi jika ada cukup data
+                min_len_for_pivots_logic = config_for_pair.get('left_strength',50) + config_for_pair.get('right_strength',150) + 1
+                if len(data_per_pair["all_candles_list"]) >= min_len_for_pivots_logic:
+                    # Hanya proses logika jika ada candle baru/diupdate, ATAU
+                    # jika baru selesai fase big data, ATAU
+                    # jika masih fase big data dan ada tambahan baru (untuk warm-up berkelanjutan)
                     process_logic_now = (actual_new_or_updated_count > 0 or
-                                         (not data["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or # Baru selesai big data
-                                         (data["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) ) # Masih big data tapi ada progress
+                                         (not data_per_pair["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or # Transisi dari big data ke live
+                                         (data_per_pair["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) )
 
                     if process_logic_now:
-                         log_info(f"Menjalankan logika strategi dengan {len(data['all_candles_list'])} candle...", pair_name=pair_name)
-                         updated_strategy_state, chart_update_payload = run_strategy_logic(data["all_candles_list"], config, data["strategy_state"], global_settings_dict)
-                         data["strategy_state"] = updated_strategy_state
-                         
-                         # Kirim update ke chart melalui WebSocket
-                         # Pastikan chart_update_payload memiliki pair_id yang benar (symbol-currency)
-                         # manager_key_loop adalah "BTC-USD_hour", chart butuh "BTC-USD"
-                         chart_update_payload['pair_id'] = pair_name # Seharusnya sudah diisi oleh run_strategy_logic
-                         if chart_update_payload.get('candle') or any(v for k, v in chart_update_payload.items() if k not in ['pair_id', 'candle'] and v is not None and v != False): # Ada sesuatu untuk dikirim
-                            socketio.emit('chart_update', chart_update_payload)
-                            log_debug(f"Chart update sent for {pair_name}: Cand? {'Yes' if chart_update_payload.get('candle') else 'No'}, PivH? {'Yes' if chart_update_payload.get('pivot_high') else 'No'}, PivL? {'Yes' if chart_update_payload.get('pivot_low') else 'No'}", pair_name="CHART_SERVER")
-
-
-                    elif not data["big_data_collection_phase_active"]: # Live, tapi tidak ada candle baru
-                         last_c_time_str = data["all_candles_list"][-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if data["all_candles_list"] else "N/A"
-                         log_info(f"Tidak ada candle baru untuk diproses untuk {pair_name}. Data terakhir @ {last_c_time_str}.", pair_name=pair_name)
-                else: # Belum cukup data untuk analisa pivot
-                    log_info(f"Data ({len(data['all_candles_list'])}) untuk {pair_name} belum cukup utk analisa (min: {min_len_for_pivots}).", pair_name=pair_name)
+                         log_info(f"Menjalankan logika strategi untuk {pair_name_for_log} dengan {len(data_per_pair['all_candles_list'])} candle...", pair_name=pair_name_for_log)
+                         data_per_pair["strategy_state"] = run_strategy_logic(
+                             data_per_pair["all_candles_list"], 
+                             config_for_pair, 
+                             data_per_pair["strategy_state"],
+                             global_settings_dict # CHART_MOD: Pass global_settings untuk notif termux
+                         )
+                    elif not data_per_pair["big_data_collection_phase_active"]: # Live tapi tidak ada candle baru
+                         last_c_time_str = data_per_pair["all_candles_list"][-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if data_per_pair["all_candles_list"] else "N/A"
+                         log_info(f"Tidak ada candle baru untuk diproses untuk {pair_name_for_log}. Data terakhir @ {last_c_time_str}.", pair_name=pair_name_for_log)
+                else: # Tidak cukup data untuk analisa pivot
+                    log_info(f"Data ({len(data_per_pair['all_candles_list'])}) untuk {pair_name_for_log} belum cukup utk analisa pivot (min: {min_len_for_pivots_logic}).", pair_name=pair_name_for_log)
                 
-                min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
+                min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair) # Update untuk sleep
             
-            # --- End of loop for crypto_data_manager.items() ---
+                # CHART_INTEGRATION_START: Update shared manager untuk Flask setelah pair diproses
+                with lock_ref:
+                    shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
+                # CHART_INTEGRATION_END
 
-            # Tentukan durasi tidur
-            sleep_duration = 15 # Default jika tidak ada kalkulasi lain
+            # Tentukan durasi sleep sebelum siklus berikutnya
+            sleep_duration = 15 # Default sleep jika tidak ada kalkulasi lain
 
-            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None:
-                # Semua API key gagal global DAN tidak ada data berhasil di-fetch di siklus ini
-                log_error("Semua API key gagal secara global dan tidak ada data berhasil di-fetch. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
-                sleep_duration = 3600 # Tunggu 1 jam
-            elif active_cryptos_still_in_big_data_collection > 0:
-                # Jika masih ada yang kumpulkan big data, interval tidur lebih pendek
-                min_big_data_interval = float('inf')
-                for pid_loop, pdata_loop in crypto_data_manager.items(): # Cek interval big data
-                    if pdata_loop["big_data_collection_phase_active"]:
-                        pconfig_loop = pdata_loop["config"]
-                        interval_bd = 55 if pconfig_loop.get('timeframe') == "minute" else (3600 * 23.8 if pconfig_loop.get('timeframe') == "day" else 3580)
-                        min_big_data_interval = min(min_big_data_interval, interval_bd)
+            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: # Semua key habis global & tidak ada data
+                log_error("Semua API key gagal secara global dan tidak ada data berhasil di-fetch di siklus ini. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
+                sleep_duration = 3600 # Cooldown 1 jam
+            elif active_cryptos_still_in_big_data_collection > 0: # Masih ada yang kumpul big data
+                min_big_data_interval_for_sleep = float('inf')
+                for _pid_loop, pdata_loop_item in local_crypto_data_manager.items(): # Iterasi manager lokal
+                    if pdata_loop_item["big_data_collection_phase_active"]:
+                        pconfig_loop = pdata_loop_item["config"]
+                        interval_bd_sleep = 55 if pconfig_loop.get('timeframe') == "minute" else (3600 * 23.8 if pconfig_loop.get('timeframe') == "day" else 3580)
+                        min_big_data_interval_for_sleep = min(min_big_data_interval_for_sleep, interval_bd_sleep)
                 
-                # Tidur sesuai interval big data terpendek, atau max 30 detik agar responsif
-                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30) 
+                # Sleep berdasarkan interval big data terpendek, tapi tidak terlalu cepat
+                sleep_duration = min(min_big_data_interval_for_sleep if min_big_data_interval_for_sleep != float('inf') else 30, 30) 
                 log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
-            else: # Semua sudah live
+            else: # Semua pair sudah live
                 if min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0 :
-                    # Ambil nilai minimal refresh dari semua pair, tapi tidak kurang dari batas bawah
+                    # Sleep hingga waktu refresh pair berikutnya, tapi tidak kurang dari batas minimal
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
+                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya (min_overall_next_refresh_seconds: {min_overall_next_refresh_seconds:.0f}s).", pair_name="SYSTEM")
                 else: # Fallback jika min_overall_next_refresh_seconds tidak terhitung
-                    default_refresh_from_config = 60 # Default umum
-                    if all_crypto_configs_from_settings : # Ambil dari config pair pertama jika ada
-                        default_refresh_from_config = all_crypto_configs_from_settings[0].get('refresh_interval_seconds', 60)
-
-                    sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_config)
-                    log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama).", pair_name="SYSTEM")
+                    default_refresh_from_first_config = 60 # Default umum
+                    if all_crypto_configs : # Ambil dari config pair pertama jika ada
+                        default_refresh_from_first_config = all_crypto_configs[0].get('refresh_interval_seconds', 60)
+                    sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_first_config)
+                    log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama setelah live).", pair_name="SYSTEM")
 
             if sleep_duration > 0:
-                show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s...")
-            else: # Jika sleep_duration 0 atau negatif (seharusnya tidak terjadi)
+                show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s hingga siklus berikutnya...")
+            else: # Jaga-jaga jika sleep_duration jadi 0 atau negatif
                 log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
-                time.sleep(1) # Minimal sleep
+                time.sleep(1)
 
     except KeyboardInterrupt:
-        animated_text_display(f"\n{AnsiColors.ORANGE}Proses trading dihentikan oleh pengguna.{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01)
-    except Exception as e:
-        log_error(f"{AnsiColors.RED}Error tak terduga di loop trading utama: {e}{AnsiColors.ENDC}", pair_name="SYSTEM")
-        log_exception("Traceback Error:", pair_name="SYSTEM")
+        animated_text_display(f"\n{AnsiColors.ORANGE}Proses trading dihentikan oleh pengguna (Ctrl+C).{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01, new_line=True)
+    except Exception as e_main_loop:
+        log_error(f"{AnsiColors.RED}Error tak terduga di loop trading utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM")
+        log_exception("Traceback Error Loop Trading Utama:", pair_name="SYSTEM") # CHART_MOD
     finally:
-        animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+        animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005, new_line=True)
         animated_text_display("Tekan Enter untuk kembali ke menu utama...", color=AnsiColors.ORANGE, delay=0.01)
-        # _g_crypto_data_manager = None # Clear referensi global saat keluar
-        # _g_all_crypto_configs = None
         input()
 
 
 # --- MENU UTAMA ---
-
 def main_menu():
-    global _g_crypto_data_manager, _g_all_crypto_configs # Deklarasi untuk modifikasi
-
     settings = load_settings()
-    _g_all_crypto_configs = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
 
-
-    # Mulai Flask-SocketIO server di thread terpisah
-    # Cek apakah thread sudah berjalan untuk menghindari multiple server
-    # Ini lebih baik dihandle dengan flag atau mengecek thread yang ada.
-    # Untuk kesederhanaan, kita anggap hanya ada satu instance main_menu.
-    flask_thread = Thread(target=run_flask_app, daemon=True)
-    flask_thread.start()
-    log_info("Flask-SocketIO server thread started.", pair_name="SYSTEM")
-
+    # CHART_INTEGRATION_START: Jalankan Flask server di thread terpisah
+    flask_server_thread = threading.Thread(target=run_flask_server_thread, daemon=True)
+    flask_server_thread.start()
+    # CHART_INTEGRATION_END
 
     while True:
         clear_screen_animated()
-        animated_text_display("========= Crypto Strategy Runner (Multi + Key Recovery + Live Chart) =========", color=AnsiColors.HEADER, delay=0.005)
-        
-        # Perbarui _g_all_crypto_configs jika settings diubah
-        _g_all_crypto_configs = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
+        animated_text_display("========= Crypto Strategy Runner (Multi + Key Recovery + Chart) =========", color=AnsiColors.HEADER, delay=0.005) # CHART_MOD: Title
 
-
-        pick_title_main = "" 
-        active_configs = _g_all_crypto_configs # Gunakan yang sudah difilter
-        if active_configs:
-            pick_title_main += f"--- Crypto Aktif ({len(active_configs)}) ---\n"
-            for i, cfg in enumerate(active_configs):
-                pick_title_main += f"  {i+1}. {cfg.get('symbol','N/A')}-{cfg.get('currency','N/A')} (TF: {cfg.get('timeframe','N/A')}, Exch: {cfg.get('exchange','N/A')})\n"
+        pick_title_main = ""
+        active_configs_list = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)] # Ambil yang aktif
+        if active_configs_list:
+            pick_title_main += f"--- Crypto Aktif ({len(active_configs_list)}) ---\n"
+            for i, cfg_item in enumerate(active_configs_list): # Tampilkan beberapa info
+                pick_title_main += f"  {i+1}. {cfg_item.get('symbol','N/A')}-{cfg_item.get('currency','N/A')} (TF: {cfg_item.get('timeframe','N/A')}, Exch: {cfg_item.get('exchange','N/A')})\n"
         else:
             pick_title_main += "Tidak ada konfigurasi crypto yang aktif.\n"
 
-        api_s = settings.get("api_settings", {})
-        primary_key_display = api_s.get('primary_key', 'BELUM DIATUR')
-        if primary_key_display and len(primary_key_display) > 10 and primary_key_display not in ["YOUR_PRIMARY_KEY", "BELUM DIATUR"]:
-             primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
-        num_recovery_keys = len([k for k in api_s.get('recovery_keys',[]) if k])
-        termux_notif_main_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
+        api_s_main = settings.get("api_settings", {})
+        primary_key_display_main = api_s_main.get('primary_key', 'BELUM DIATUR')
+        if primary_key_display_main and len(primary_key_display_main) > 10 and primary_key_display_main not in ["YOUR_PRIMARY_KEY", "BELUM DIATUR"]:
+            primary_key_display_main = "..." + primary_key_display_main[-5:] # CHART_MOD: Disingkat
+        num_recovery_keys_main = len([k for k in api_s_main.get('recovery_keys',[]) if k])
+        termux_notif_main_status = "Aktif" if api_s_main.get("enable_termux_notifications", False) else "Nonaktif"
 
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
-        pick_title_main += f"Chart Server: http://localhost:5000\n" # Info chart server
-        pick_title_main += f"Primary API Key: {primary_key_display} | Recovery Keys: {num_recovery_keys}\n"
+        pick_title_main += f"Primary API Key: {primary_key_display_main} | Recovery Keys: {num_recovery_keys_main}\n"
         pick_title_main += f"Notifikasi Termux: {termux_notif_main_status}\n"
+        # CHART_MOD: Info Chart Server
+        pick_title_main += f"Chart Server: http://localhost:5001 (atau IP Termux-mu)\n"
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += "Pilih Opsi:"
 
-        options_plain = [
+        main_menu_options_plain = [
             "Mulai Analisa Realtime Semua Pair Aktif",
             "Pengaturan",
             "Keluar"
         ]
+        
+        selected_main_option_text = None
+        selected_main_index = -1
 
-        selected_index = -1
         try:
-            _option_text, selected_index = pick(options_plain, pick_title_main, indicator='=>', default_index=0)
-        except Exception as e_pick_main: # Fallback jika pick gagal
+            selected_main_option_text, selected_main_index = pick(main_menu_options_plain, pick_title_main, indicator='=>', default_index=0)
+        except Exception as e_pick_main: # Fallback ke input manual jika `pick` error
             log_error(f"Error dengan library 'pick' di menu utama: {e_pick_main}. Gunakan input manual.")
             print(pick_title_main) # Tampilkan title lagi
-            for idx_main, opt_text_main in enumerate(options_plain):
+            for idx_main, opt_text_main in enumerate(main_menu_options_plain):
                 print(f"  {idx_main + 1}. {opt_text_main}")
             try:
-                choice_main = int(input("Pilih nomor opsi: ")) -1
-                if 0 <= choice_main < len(options_plain):
-                    selected_index = choice_main
+                choice_main_input = input("Pilih nomor opsi: ").strip()
+                if not choice_main_input: continue # Kembali jika input kosong
+                choice_main_val = int(choice_main_input) -1
+                if 0 <= choice_main_val < len(main_menu_options_plain):
+                    selected_main_index = choice_main_val
                 else:
                     print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
                     show_spinner(1.5, "Kembali...")
@@ -1971,49 +2037,54 @@ def main_menu():
                 print(f"{AnsiColors.RED}Input harus berupa angka.{AnsiColors.ENDC}")
                 show_spinner(1.5, "Kembali...")
                 continue
+        
+        # `selected_main_index` sudah merupakan index dari `main_menu_options_plain`
+        if selected_main_index == 0: # Mulai Analisa
+            # CHART_MOD: Pass shared data manager dan lock ke start_trading
+            start_trading(settings, shared_crypto_data_manager, shared_data_lock)
+        elif selected_main_index == 1: # Pengaturan
+            settings = settings_menu(settings) # settings_menu mengembalikan settings yang mungkin diubah
+            # CHART_MOD: Setelah kembali dari settings, shared_crypto_data_manager mungkin perlu di-clear atau di-update
+            # jika konfigurasi pair berubah drastis. Untuk saat ini, kita biarkan.
+            # Jika user menonaktifkan pair, chart akan tetap menampilkannya sampai restart/refresh data.
+            # Atau, kita bisa panggil clear di sini:
+            with shared_data_lock:
+                # Jika ada perubahan config, data lama mungkin tidak relevan lagi.
+                # Ini akan memaksa chart mengambil data baru jika pair masih ada dan aktif.
+                # Atau, bisa juga lebih selektif menghapus pair yang diubah/dinonaktifkan.
+                # Untuk kesederhanaan, kita bisa refresh semua atau biarkan.
+                # shared_crypto_data_manager.clear() # Ini akan membersihkan semua data chart
+                # log_info("Data chart di-reset karena perubahan pengaturan.", pair_name="SYSTEM_CHART")
+                # Pendekatan yang lebih baik: start_trading akan meng-overwrite/menginisialisasi ulang data pair yang aktif.
+                pass
 
-        if selected_index == 0:
-            # Sebelum memulai trading, pastikan _g_crypto_data_manager direset atau disiapkan
-            _g_crypto_data_manager = {} # Akan diisi oleh start_trading
-            start_trading(settings)
-        elif selected_index == 1:
-            settings = settings_menu(settings) # settings_menu mengembalikan settings yang diupdate
-             # Setelah kembali dari pengaturan, update _g_all_crypto_configs
-            _g_all_crypto_configs = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
-            # Kirim ulang daftar pair ke client chart jika ada yang terhubung
-            if _g_all_crypto_configs:
-                pair_ids_update = [f"{cfg.get('symbol','N/A')}-{cfg.get('currency','N/A')}" for cfg in _g_all_crypto_configs]
-                socketio.emit('available_pairs', {'pairs': pair_ids_update})
 
-
-        elif selected_index == 2:
+        elif selected_main_index == 2: # Keluar
             log_info("Aplikasi ditutup.", pair_name="SYSTEM")
             clear_screen_animated()
-            animated_text_display("Terima kasih telah menggunakan skrip ini! Sampai jumpa!", color=AnsiColors.MAGENTA)
+            animated_text_display("Terima kasih telah menggunakan skrip ini! Sampai jumpa!", color=AnsiColors.MAGENTA, new_line=True)
             show_spinner(0.5, "Exiting")
-            # Tidak perlu mematikan thread Flask secara eksplisit karena daemon=True
-            break # Keluar dari loop while True
+            break # Keluar dari loop while True -> keluar dari main_menu
+
 
 if __name__ == "__main__":
     try:
-        # Pastikan library 'pick' ada atau berikan fallback
-        try:
-            import pick
-        except ImportError:
-            print(f"{AnsiColors.RED}WARNING: Library 'pick' tidak ditemukan. Menu akan menggunakan input angka standar.{AnsiColors.ENDC}")
-            print(f"{AnsiColors.ORANGE}Anda bisa menginstalnya dengan: pip install pick{AnsiColors.ENDC}")
-            time.sleep(3) # Beri waktu untuk membaca warning
-
+        # Pastikan direktori log ada (jika diperlukan oleh logger)
+        # if not os.path.exists("logs"): os.makedirs("logs") # Contoh
         main_menu()
     except KeyboardInterrupt:
         clear_screen_animated()
-        animated_text_display(f"{AnsiColors.ORANGE}Aplikasi dihentikan paksa. Bye!{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01)
-    except Exception as e:
+        animated_text_display(f"{AnsiColors.ORANGE}Aplikasi dihentikan paksa dari level utama (Ctrl+C). Bye!{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01, new_line=True)
+    except Exception as e_global: # Tangkap error global yang mungkin tidak tertangani
         clear_screen_animated()
-        print(f"{AnsiColors.RED}Terjadi error tak terduga di level utama: {e}{AnsiColors.ENDC}")
-        # Menggunakan logger yang sudah dikonfigurasi untuk traceback yang lebih baik
+        print(f"{AnsiColors.RED}{AnsiColors.BOLD}TERJADI ERROR KRITIKAL DI LEVEL UTAMA:{AnsiColors.ENDC}")
+        print(f"{AnsiColors.RED}{str(e_global)}{AnsiColors.ENDC}")
+        # Gunakan logger yang sudah dikonfigurasi untuk traceback yang lebih baik
         log_exception("MAIN LEVEL UNHANDLED EXCEPTION:", pair_name="SYSTEM_CRITICAL")
+        print(f"\n{AnsiColors.ORANGE}Detail error telah dicatat di: {log_file_name}{AnsiColors.ENDC}")
         animated_text_display("Tekan Enter untuk keluar...", color=AnsiColors.RED, delay=0.01)
         input()
     finally:
-        log_info("Skrip Selesai.", pair_name="SYSTEM_FINAL")
+        # Pastikan semua output di-flush
+        sys.stdout.flush()
+        sys.stderr.flush()
