@@ -1,3 +1,4 @@
+python
 import requests
 import time
 import json
@@ -10,6 +11,21 @@ import sys
 import uuid
 from pick import pick
 import subprocess # Ditambahkan untuk termux-notification
+
+# --- CHARTING AND KEYBOARD INPUT (NEW) ---
+TERMUX_CHART_ENABLED = True # Set to False if plotext is not available or causing issues
+try:
+    import plotext as ptx
+    import select
+    import tty
+    import termios
+except ImportError:
+    TERMUX_CHART_ENABLED = False
+    print("WARNING: plotext, select, tty, or termios not found. Charting feature will be disabled.")
+
+current_view_mode = "log"  # "log" or "chart"
+original_terminal_settings = None
+# --- END CHARTING AND KEYBOARD INPUT ---
 
 # --- ANSI COLOR CODES ---
 class AnsiColors:
@@ -27,6 +43,13 @@ class AnsiColors:
 
 # --- ANIMATION HELPER FUNCTIONS ---
 def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True):
+    # In chart mode, avoid too many animated texts unless crucial
+    if TERMUX_CHART_ENABLED and current_view_mode == "chart" and "menu" not in text.lower() and "settings" not in text.lower():
+        # Only print crucial things or nothing
+        if "error" in text.lower() or "kritis" in text.lower() or "signal" in text.lower() or "penting" in text.lower():
+            print(color + text + AnsiColors.ENDC if color else text)
+        return
+
     for char in text:
         sys.stdout.write(color + char + AnsiColors.ENDC if color else char)
         sys.stdout.flush()
@@ -35,6 +58,15 @@ def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True
         print()
 
 def show_spinner(duration_seconds, message="Processing..."):
+    # Disable spinner in chart mode to avoid overwriting the chart
+    if TERMUX_CHART_ENABLED and current_view_mode == "chart":
+        # print(f"\r{AnsiColors.MAGENTA}{message} (Chart Mode - No Spinner). Waiting {duration_seconds}s...{AnsiColors.ENDC}{' '*20}", end="")
+        # sys.stdout.flush()
+        time.sleep(duration_seconds)
+        # print(f"\r{' ' * (len(message) + 40)}\r", end="") # Clear the line
+        # sys.stdout.flush()
+        return
+
     spinner_chars = ['-', '\\', '|', '/']
     start_time = time.time()
     idx = 0
@@ -52,11 +84,14 @@ def show_spinner(duration_seconds, message="Processing..."):
         sys.stdout.flush()
         time.sleep(0.1)
         idx += 1
-    sys.stdout.write(f"\r{' ' * (len(display_message) + 3)}\r") 
-    sys.stdout.write(AnsiColors.ENDC) 
+    sys.stdout.write(f"\r{' ' * (len(display_message) + 3)}\r")
+    sys.stdout.write(AnsiColors.ENDC)
     sys.stdout.flush()
 
 def simple_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
+    if TERMUX_CHART_ENABLED and current_view_mode == "chart": # Avoid progress bar in chart mode
+        return
+
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
@@ -68,10 +103,10 @@ def simple_progress_bar(iteration, total, prefix='', suffix='', decimals=1, leng
             pass
 
     progress_line = f'\r{AnsiColors.GREEN}{prefix} |{bar}| {percent}% {suffix}{AnsiColors.ENDC}'
-    sys.stdout.write(progress_line[:term_width]) 
+    sys.stdout.write(progress_line[:term_width])
     sys.stdout.flush()
     if iteration == total:
-        sys.stdout.write('\n') 
+        sys.stdout.write('\n')
         sys.stdout.flush()
 
 # --- CUSTOM EXCEPTION ---
@@ -80,7 +115,9 @@ class APIKeyError(Exception):
 
 # --- KONFIGURASI LOGGING ---
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO) # Default INFO, can be changed
+# logger.setLevel(logging.DEBUG) # For more verbose logging
+
 if logger.hasHandlers():
     logger.handlers.clear()
 
@@ -89,12 +126,24 @@ file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pair_name)s 
 fh.setFormatter(file_formatter)
 logger.addHandler(fh)
 
-ch = logging.StreamHandler()
+# --- Modified StreamHandler to respect chart mode ---
+class ChartAwareStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        if TERMUX_CHART_ENABLED and current_view_mode == "chart":
+            # In chart mode, only print ERROR/CRITICAL logs to console, or if it's a system message not tied to a pair
+            if record.levelno >= logging.ERROR or getattr(record, 'pair_name', 'SYSTEM') == 'SYSTEM':
+                super().emit(record)
+            # else: suppress other logs like INFO, WARNING for pairs when chart is active
+        else:
+            super().emit(record)
+
+ch = ChartAwareStreamHandler()
 console_formatter_template = '%(asctime)s - {bold}%(levelname)s{endc} - {cyan}[%(pair_name)s]{endc} - %(message)s'
 ch.setFormatter(logging.Formatter(
     console_formatter_template.format(bold=AnsiColors.BOLD, endc=AnsiColors.ENDC, cyan=AnsiColors.CYAN)
 ))
 logger.addHandler(ch)
+
 
 class AddPairNameFilter(logging.Filter):
     def filter(self, record):
@@ -109,17 +158,20 @@ def log_error(message, pair_name="SYSTEM"): logger.error(message, extra={'pair_n
 def log_debug(message, pair_name="SYSTEM"): logger.debug(message, extra={'pair_name': pair_name})
 def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra={'pair_name': pair_name})
 
+
 SETTINGS_FILE = "settings_multiple_recovery.json"
 CRYPTOCOMPARE_MAX_LIMIT = 1999
-TARGET_BIG_DATA_CANDLES = 2500
+TARGET_BIG_DATA_CANDLES = 2500 # Keep this reasonable for terminal chart performance
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
 
 # --- FUNGSI CLEAR SCREEN ---
 def clear_screen_animated():
-    show_spinner(0.1, "Clearing screen")
+    # If in chart mode and TERMUX_CHART_ENABLED, ptx.clt() is preferred for chart area
+    # but this is a general screen clear, so it's fine.
+    show_spinner(0.1, "Clearing screen") # This spinner will be skipped in chart mode
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- API KEY MANAGER ---
+# --- API KEY MANAGER (no changes needed for charting) ---
 class APIKeyManager:
     def __init__(self, primary_key, recovery_keys_list, global_settings_for_email=None): #init diubah ke __init__
         self.keys = []
@@ -156,7 +208,7 @@ class APIKeyManager:
                               f"Key: ...{new_key_display[-8:] if len(new_key_display) > 8 else new_key_display} (bagian akhir ditampilkan untuk identifikasi)\n\n"
                               f"Harap periksa status API key Anda di CryptoCompare.")
                 dummy_email_cfg = {
-                    "enable_email_notifications": True, 
+                    "enable_email_notifications": True,
                     "email_sender_address": self.global_email_settings.get("email_sender_address"),
                     "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
                     "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
@@ -174,7 +226,7 @@ class APIKeyManager:
                               f"Skrip tidak dapat lagi mengambil data harga.\n"
                               f"Harap segera periksa akun CryptoCompare Anda dan konfigurasi API key di skrip.")
                 dummy_email_cfg = {
-                     "enable_email_notifications": True, 
+                     "enable_email_notifications": True,
                     "email_sender_address": self.global_email_settings.get("email_sender_address"),
                     "email_sender_app_password": self.global_email_settings.get("email_sender_app_password"),
                     "email_receiver_address": self.global_email_settings.get("email_receiver_address_admin", self.global_email_settings.get("email_receiver_address"))
@@ -194,14 +246,14 @@ class APIKeyManager:
     def get_current_key_index(self):
         return self.current_index
 
-# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION ---
+# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION (no changes needed) ---
 def play_notification_sound():
     try:
         if sys.platform == "win32":
             import winsound
             winsound.Beep(1000, 500)
         else:
-            print('\a', end='', flush=True)
+            print('\a', end='', flush=True) # Beep for Linux/macOS/Termux
     except Exception as e:
         log_warning(f"Tidak bisa memainkan suara notifikasi: {e}")
 
@@ -214,8 +266,8 @@ def send_email_notification(subject, body_text, settings_for_email):
     receiver_email = settings_for_email.get("email_receiver_address")
 
     if not all([sender_email, sender_password, receiver_email]):
-        pair_name_ctx = settings_for_email.get('pair_name', 
-                                             settings_for_email.get('symbol', 'GLOBAL_EMAIL')) 
+        pair_name_ctx = settings_for_email.get('pair_name',
+                                             settings_for_email.get('symbol', 'GLOBAL_EMAIL'))
         log_warning(f"Konfigurasi email tidak lengkap. Notifikasi email dilewati.", pair_name=pair_name_ctx)
         return
 
@@ -234,16 +286,14 @@ def send_email_notification(subject, body_text, settings_for_email):
         pair_name_ctx = settings_for_email.get('pair_name', settings_for_email.get('symbol', 'GLOBAL_EMAIL'))
         log_error(f"{AnsiColors.RED}Gagal mengirim email notifikasi: {e}{AnsiColors.ENDC}", pair_name=pair_name_ctx)
 
-# --- BARU: Fungsi untuk Notifikasi Termux ---
 def send_termux_notification(title, content_msg, global_settings, pair_name_for_log="SYSTEM"):
-    """Mengirim notifikasi menggunakan termux-notification jika diaktifkan."""
     api_settings = global_settings.get("api_settings", {})
     if not api_settings.get("enable_termux_notifications", False):
         return
 
     try:
-        subprocess.run(['termux-notification', '--title', title, '--content', content_msg], 
-                       check=False, 
+        subprocess.run(['termux-notification', '--title', title, '--content', content_msg],
+                       check=False,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         log_info(f"{AnsiColors.CYAN}Notifikasi Termux dikirim: '{title}'{AnsiColors.ENDC}", pair_name=pair_name_for_log)
     except FileNotFoundError:
@@ -251,7 +301,7 @@ def send_termux_notification(title, content_msg, global_settings, pair_name_for_
     except Exception as e:
         log_error(f"{AnsiColors.RED}Gagal mengirim notifikasi Termux: {e}{AnsiColors.ENDC}", pair_name=pair_name_for_log)
 
-# --- FUNGSI PENGATURAN ---
+# --- FUNGSI PENGATURAN (no direct changes for charting logic, but menus won't show chart) ---
 def get_default_crypto_config():
     return {
         "id": str(uuid.uuid4()), "enabled": True,
@@ -315,7 +365,7 @@ def _prompt_crypto_config(current_config):
 
     tf_input = (input(f"{AnsiColors.BLUE}Timeframe (minute/hour/day) [{new_config.get('timeframe','hour')}]: {AnsiColors.ENDC}") or new_config.get('timeframe','hour')).lower().strip()
     if tf_input in ['minute', 'hour', 'day']: new_config["timeframe"] = tf_input
-    else: print(f"{AnsiColors.RED}Timeframe tidak valid. Menggunakan default: {new_config.get('timeframe','hour')}{AnsiColors.ENDC}"); 
+    else: print(f"{AnsiColors.RED}Timeframe tidak valid. Menggunakan default: {new_config.get('timeframe','hour')}{AnsiColors.ENDC}");
 
     refresh_input_str = input(f"{AnsiColors.BLUE}Interval Refresh (detik, setelah {TARGET_BIG_DATA_CANDLES} candle) [{new_config.get('refresh_interval_seconds',60)}]: {AnsiColors.ENDC}").strip()
     try:
@@ -373,7 +423,7 @@ def settings_menu(current_settings):
             primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
 
         recovery_keys = api_s.get('recovery_keys', [])
-        num_recovery_keys = len([k for k in recovery_keys if k]) 
+        num_recovery_keys = len([k for k in recovery_keys if k])
         termux_notif_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
 
         pick_title_settings = "--- Menu Pengaturan Utama ---\n"
@@ -405,9 +455,9 @@ def settings_menu(current_settings):
             ("header", "-----------------------------"),
             ("option", "Kembali ke Menu Utama")
         ]
-        
+
         selectable_options = [text for type, text in original_options_structure if type == "option"]
-        
+
         try:
             option_text, index = pick(selectable_options, pick_title_settings, indicator='=>', default_index=0)
         except Exception as e_pick:
@@ -418,7 +468,7 @@ def settings_menu(current_settings):
             try:
                 choice = int(input("Pilih nomor opsi: ")) -1
                 if 0 <= choice < len(selectable_options):
-                    index = choice 
+                    index = choice
                 else:
                     print(f"{AnsiColors.RED}Pilihan tidak valid.{AnsiColors.ENDC}")
                     show_spinner(1.5, "Kembali...")
@@ -427,23 +477,23 @@ def settings_menu(current_settings):
                 print(f"{AnsiColors.RED}Input harus berupa angka.{AnsiColors.ENDC}")
                 show_spinner(1.5, "Kembali...")
                 continue
-        
-        action_choice = index 
+
+        action_choice = index
 
         try:
             clear_screen_animated()
-            if action_choice == 0: 
+            if action_choice == 0:
                 animated_text_display("--- Atur Primary API Key ---", color=AnsiColors.HEADER)
                 api_s["primary_key"] = (input(f"Masukkan Primary API Key CryptoCompare baru [{api_s.get('primary_key','')}]: ").strip() or api_s.get('primary_key',''))
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
-            elif action_choice == 1: 
+            elif action_choice == 1:
                 while True:
                     clear_screen_animated()
                     recovery_pick_title = "\n-- Kelola Recovery API Keys --\n"
-                    current_recovery = [k for k in api_s.get('recovery_keys', []) if k] 
-                    api_s['recovery_keys'] = current_recovery 
+                    current_recovery = [k for k in api_s.get('recovery_keys', []) if k]
+                    api_s['recovery_keys'] = current_recovery
 
                     if not current_recovery:
                         recovery_pick_title += "  (Tidak ada recovery key tersimpan)\n"
@@ -454,7 +504,7 @@ def settings_menu(current_settings):
                     recovery_pick_title += "\nPilih tindakan:"
 
                     recovery_options_plain = ["Tambah Recovery Key", "Hapus Recovery Key", "Kembali ke Pengaturan Utama"]
-                    
+
                     try:
                         rec_option_text, rec_index = pick(recovery_options_plain, recovery_pick_title, indicator='=>', default_index=0)
                     except Exception as e_pick_rec:
@@ -477,7 +527,7 @@ def settings_menu(current_settings):
 
                     clear_screen_animated()
 
-                    if rec_index == 0: 
+                    if rec_index == 0:
                         animated_text_display("-- Tambah Recovery Key --", color=AnsiColors.HEADER)
                         new_r_key = input("Masukkan Recovery API Key baru: ").strip()
                         if new_r_key:
@@ -488,7 +538,7 @@ def settings_menu(current_settings):
                         else:
                             print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
-                    elif rec_index == 1: 
+                    elif rec_index == 1:
                         animated_text_display("-- Hapus Recovery Key --", color=AnsiColors.HEADER)
                         if not current_recovery:
                             print(f"{AnsiColors.ORANGE}Tidak ada recovery key untuk dihapus.{AnsiColors.ENDC}")
@@ -514,21 +564,21 @@ def settings_menu(current_settings):
                         except ValueError:
                             print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                         show_spinner(1, "Kembali...")
-                    elif rec_index == 2: 
+                    elif rec_index == 2:
                         break
-            elif action_choice == 2: 
+            elif action_choice == 2:
                 animated_text_display("-- Pengaturan Email Global Notifikasi Sistem --", color=AnsiColors.HEADER)
                 enable_g_email = input(f"Aktifkan notifikasi email global (API Key switch, dll)? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip()
                 api_s['enable_global_email_notifications_for_key_switch'] = True if enable_g_email == 'true' else (False if enable_g_email == 'false' else api_s.get('enable_global_email_notifications_for_key_switch',False))
-                
+
                 api_s['email_sender_address'] = (input(f"Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
                 api_s['email_sender_app_password'] = (input(f"App Password Pengirim Global [{api_s.get('email_sender_app_password','')}]: ").strip() or api_s.get('email_sender_app_password',''))
                 api_s['email_receiver_address_admin'] = (input(f"Email Penerima Notifikasi Sistem (Admin) [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(1, "Menyimpan & Kembali...")
-            
-            elif action_choice == 3: 
+
+            elif action_choice == 3:
                 animated_text_display("-- Pengaturan Notifikasi Termux Realtime --", color=AnsiColors.HEADER)
                 current_status = api_s.get('enable_termux_notifications', False)
                 new_status_input = input(f"Aktifkan Notifikasi Termux? (true/false) [{current_status}]: ").lower().strip()
@@ -539,20 +589,20 @@ def settings_menu(current_settings):
                 elif new_status_input == 'false':
                     api_s['enable_termux_notifications'] = False
                     print(f"{AnsiColors.GREEN}Notifikasi Termux dinonaktifkan.{AnsiColors.ENDC}")
-                else: 
+                else:
                     print(f"{AnsiColors.ORANGE}Input tidak valid. Status Notifikasi Termux tidak berubah: {current_status}.{AnsiColors.ENDC}")
 
                 current_settings["api_settings"] = api_s
                 save_settings(current_settings)
                 show_spinner(2, "Menyimpan & Kembali...")
-            elif action_choice == 4: 
+            elif action_choice == 4:
                 new_crypto_conf = get_default_crypto_config()
                 new_crypto_conf = _prompt_crypto_config(new_crypto_conf)
                 current_settings.setdefault("cryptos", []).append(new_crypto_conf)
                 save_settings(current_settings)
                 log_info(f"Konfigurasi untuk {new_crypto_conf['symbol']}-{new_crypto_conf['currency']} ditambahkan.")
                 show_spinner(1, "Menyimpan & Kembali...")
-            elif action_choice == 5: 
+            elif action_choice == 5:
                 if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk diubah.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali...");
@@ -560,7 +610,7 @@ def settings_menu(current_settings):
                 animated_text_display("-- Ubah Konfigurasi Crypto --", color=AnsiColors.HEADER)
                 for i, crypto_conf in enumerate(current_settings["cryptos"]):
                     print(f"  {i+1}. {crypto_conf.get('symbol','N/A')}-{crypto_conf.get('currency','N/A')}")
-                
+
                 idx_choice_str = input("Nomor konfigurasi crypto yang akan diubah: ").strip()
                 if not idx_choice_str:
                     print(f"{AnsiColors.RED}Input tidak boleh kosong.{AnsiColors.ENDC}")
@@ -575,7 +625,7 @@ def settings_menu(current_settings):
                 except ValueError:
                      print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                 show_spinner(1, "Kembali...")
-            elif action_choice == 6: 
+            elif action_choice == 6:
                 if not current_settings.get("cryptos"):
                     print(f"{AnsiColors.ORANGE}Tidak ada konfigurasi untuk dihapus.{AnsiColors.ENDC}")
                     show_spinner(1, "Kembali...");
@@ -599,7 +649,7 @@ def settings_menu(current_settings):
                 except ValueError:
                     print(f"{AnsiColors.RED}Input nomor tidak valid.{AnsiColors.ENDC}")
                 show_spinner(1, "Kembali...")
-            elif action_choice == 7: 
+            elif action_choice == 7:
                 break
         except ValueError:
             print(f"{AnsiColors.RED}Input angka tidak valid.{AnsiColors.ENDC}")
@@ -623,23 +673,23 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     elif timeframe == "day": api_endpoint = "histoday"
 
     url = f"https://min-api.cryptocompare.com/data/v2/{api_endpoint}"
-    is_large_fetch = total_limit_desired > 10 
+    is_large_fetch = total_limit_desired > 10
 
-    if is_large_fetch:
+    if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): # Avoid log spam in chart mode
         log_info(f"Memulai pengambilan data: target {total_limit_desired} TF {timeframe}.", pair_name=pair_name)
 
-    if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT :
+    if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
         simple_progress_bar(0, total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
 
-    fetch_loop_count = 0 
+    fetch_loop_count = 0
     while len(all_accumulated_candles) < total_limit_desired:
         candles_still_needed = total_limit_desired - len(all_accumulated_candles)
         limit_for_this_api_call = min(candles_still_needed, CRYPTOCOMPARE_MAX_LIMIT)
 
-        if current_to_ts is not None and candles_still_needed > 1 : 
+        if current_to_ts is not None and candles_still_needed > 1 :
             limit_for_this_api_call = min(candles_still_needed + 1, CRYPTOCOMPARE_MAX_LIMIT)
-        
-        if limit_for_this_api_call <= 0: break 
+
+        if limit_for_this_api_call <= 0: break
 
         params = {
             "fsym": symbol, "tsym": currency,
@@ -650,36 +700,36 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         if current_to_ts is not None: params["toTs"] = current_to_ts
 
         try:
-            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: 
+            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT:
                 key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
-                log_debug(f"Fetching batch (Key: ...{key_display}, Limit: {limit_for_this_api_call})", pair_name=pair_name)
+                # log_debug avoids ChartAwareStreamHandler filter if debug is not enabled for console
+                if logger.isEnabledFor(logging.DEBUG):
+                     log_debug(f"Fetching batch (Key: ...{key_display}, Limit: {limit_for_this_api_call})", pair_name=pair_name)
 
-            response = requests.get(url, params=params, timeout=20) 
 
-            if response.status_code in [401, 403, 429]: 
+            response = requests.get(url, params=params, timeout=20)
+
+            if response.status_code in [401, 403, 429]:
                 error_data = {}
                 try:
                     error_data = response.json()
                 except json.JSONDecodeError:
-                    pass 
+                    pass
                 error_message = error_data.get('Message', f"HTTP Error {response.status_code}")
                 key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
                 log_warning(f"{AnsiColors.RED}API Key Error (HTTP {response.status_code}): {error_message}{AnsiColors.ENDC} Key: ...{key_display}", pair_name=pair_name)
                 raise APIKeyError(f"HTTP {response.status_code}: {error_message}")
 
-            response.raise_for_status() 
+            response.raise_for_status()
             data = response.json()
 
             if data.get('Response') == 'Error':
                 error_message = data.get('Message', 'N/A')
-                # ####################################################################
-                # ## SATU-SATUNYA PERUBAHAN ADA DI BAGIAN key_related_error_messages ##
-                # ####################################################################
                 key_related_error_messages = [
                     "api key is invalid", "apikey_is_missing", "apikey_invalid",
                     "your_monthly_calls_are_over_the_limit", "rate limit exceeded",
                     "your_pro_tier_has_expired_or_is_not_active",
-                    "you are over your rate limit" # <--- PENAMBAHAN BARIS INI
+                    "you are over your rate limit"
                 ]
                 key_display = current_api_key_to_use[-5:] if len(current_api_key_to_use) > 5 else current_api_key_to_use
                 if any(keyword.lower() in error_message.lower() for keyword in key_related_error_messages):
@@ -687,16 +737,16 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                     raise APIKeyError(f"JSON Error: {error_message}")
                 else:
                     log_error(f"{AnsiColors.RED}API Error CryptoCompare: {error_message}{AnsiColors.ENDC} (Params: {params})", pair_name=pair_name)
-                    break 
+                    break
 
             if 'Data' not in data or 'Data' not in data['Data'] or not data['Data']['Data']:
-                if is_large_fetch: log_info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
-                break 
+                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info(f"Tidak ada lagi data candle dari API atau format data tidak sesuai. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
+                break
 
             raw_candles_from_api = data['Data']['Data']
 
-            if not raw_candles_from_api: 
-                if is_large_fetch: log_info(f"API mengembalikan list candle kosong. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
+            if not raw_candles_from_api:
+                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info(f"API mengembalikan list candle kosong. Total diambil: {len(all_accumulated_candles)}.", pair_name=pair_name)
                 break
 
             batch_candles_list = []
@@ -705,61 +755,64 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                     'timestamp': datetime.fromtimestamp(item['time']),
                     'open': item.get('open'), 'high': item.get('high'),
                     'low': item.get('low'), 'close': item.get('close'),
-                    'volume': item.get('volumefrom') 
+                    'volume': item.get('volumefrom')
                 }
                 batch_candles_list.append(candle)
 
             if current_to_ts is not None and all_accumulated_candles and batch_candles_list:
                 if batch_candles_list[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']:
-                    if is_large_fetch: log_debug(f"Menghapus candle tumpang tindih: {batch_candles_list[-1]['timestamp']}", pair_name=pair_name)
-                    batch_candles_list.pop() 
+                    if is_large_fetch and logger.isEnabledFor(logging.DEBUG): log_debug(f"Menghapus candle tumpang tindih: {batch_candles_list[-1]['timestamp']}", pair_name=pair_name)
+                    batch_candles_list.pop()
 
-            if not batch_candles_list and current_to_ts is not None : 
-                if is_large_fetch: log_info("Batch menjadi kosong setelah overlap removal. Kemungkinan akhir data.", pair_name=pair_name)
+            if not batch_candles_list and current_to_ts is not None :
+                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info("Batch menjadi kosong setelah overlap removal. Kemungkinan akhir data.", pair_name=pair_name)
                 break
 
-            all_accumulated_candles = batch_candles_list + all_accumulated_candles 
+            all_accumulated_candles = batch_candles_list + all_accumulated_candles
 
-            if raw_candles_from_api: 
-                current_to_ts = raw_candles_from_api[0]['time'] 
-            else: 
+            if raw_candles_from_api:
+                current_to_ts = raw_candles_from_api[0]['time']
+            else:
                 break
 
             fetch_loop_count +=1
-            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and (fetch_loop_count % 2 == 0 or len(all_accumulated_candles) >= total_limit_desired): 
-                simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
+            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and (fetch_loop_count % 2 == 0 or len(all_accumulated_candles) >= total_limit_desired):
+                 if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
+                    simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles', length=40)
+
 
             if len(raw_candles_from_api) < limit_for_this_api_call:
-                if is_large_fetch: log_info(f"API mengembalikan < limit ({len(raw_candles_from_api)} vs {limit_for_this_api_call}). Akhir histori tercapai.", pair_name=pair_name)
-                break 
+                if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): log_info(f"API mengembalikan < limit ({len(raw_candles_from_api)} vs {limit_for_this_api_call}). Akhir histori tercapai.", pair_name=pair_name)
+                break
 
-            if len(all_accumulated_candles) >= total_limit_desired: break 
+            if len(all_accumulated_candles) >= total_limit_desired: break
 
             if len(all_accumulated_candles) < total_limit_desired and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT and is_large_fetch:
-                log_debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...", pair_name=pair_name)
-                time.sleep(0.3) 
+                if logger.isEnabledFor(logging.DEBUG): log_debug(f"Diambil {len(batch_candles_list)} baru. Total: {len(all_accumulated_candles)}. Target: {total_limit_desired}. Delay...", pair_name=pair_name)
+                time.sleep(0.3)
 
-        except APIKeyError: 
-            raise 
+        except APIKeyError:
+            raise
         except requests.exceptions.RequestException as e:
             log_error(f"{AnsiColors.RED}Kesalahan koneksi/permintaan saat mengambil batch: {e}{AnsiColors.ENDC}", pair_name=pair_name)
-            break 
+            break
         except Exception as e:
             log_error(f"{AnsiColors.RED}Error tak terduga dalam fetch_candles: {e}{AnsiColors.ENDC}", pair_name=pair_name)
-            log_exception("Traceback Error:", pair_name=pair_name) 
-            break 
-            
+            log_exception("Traceback Error:", pair_name=pair_name)
+            break
+
     if len(all_accumulated_candles) > total_limit_desired:
         all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
 
-    if is_large_fetch:
+    if is_large_fetch and not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
         if total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT:
             simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles Complete', length=40)
         log_info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} (target: {total_limit_desired}).", pair_name=pair_name)
 
     return all_accumulated_candles
 
-# --- LOGIKA STRATEGI ---
+
+# --- LOGIKA STRATEGI (no direct changes for charting, but its output is used by chart) ---
 def get_initial_strategy_state():
     return {
         "last_signal_type": 0,
@@ -788,21 +841,21 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
 
         for j in range(1, left_strength + 1):
             if series_list[i-j] is None: is_pivot = False; break
-            if is_high: 
+            if is_high:
                 if series_list[i] <= series_list[i-j]: is_pivot = False; break
-            else: 
+            else:
                 if series_list[i] >= series_list[i-j]: is_pivot = False; break
-        if not is_pivot: continue 
+        if not is_pivot: continue
 
         for j in range(1, right_strength + 1):
             if series_list[i+j] is None: is_pivot = False; break
-            if is_high: 
+            if is_high:
                 if series_list[i] < series_list[i+j]: is_pivot = False; break
-            else: 
+            else:
                 if series_list[i] > series_list[i+j]: is_pivot = False; break
-        
+
         if is_pivot:
-            pivots[i] = series_list[i] 
+            pivots[i] = series_list[i]
     return pivots
 
 def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
@@ -818,14 +871,14 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
         log_warning(f"{AnsiColors.ORANGE}Data candle kosong atau kunci OHLC tidak lengkap di run_strategy_logic.{AnsiColors.ENDC}", pair_name=pair_name)
         return strategy_state
 
-    high_prices = [c.get('high') for c in candles_history] 
-    low_prices = [c.get('low') for c in candles_history]   
+    high_prices = [c.get('high') for c in candles_history]
+    low_prices = [c.get('low') for c in candles_history]
 
     raw_pivot_highs = find_pivots(high_prices, left_strength, right_strength, True)
     raw_pivot_lows = find_pivots(low_prices,  left_strength, right_strength, False)
 
     current_bar_index_in_list = len(candles_history) - 1
-    if current_bar_index_in_list < 0 : return strategy_state 
+    if current_bar_index_in_list < 0 : return strategy_state
 
     idx_pivot_event_high = current_bar_index_in_list - right_strength
     idx_pivot_event_low = current_bar_index_in_list - right_strength
@@ -835,13 +888,13 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
 
     if raw_pivot_high_price_at_event is not None and strategy_state["last_signal_type"] != 1:
         strategy_state["final_pivot_high_price_confirmed"] = raw_pivot_high_price_at_event
-        strategy_state["last_signal_type"] = 1 
+        strategy_state["last_signal_type"] = 1
         pivot_timestamp = candles_history[idx_pivot_event_high]['timestamp']
         log_info(f"{AnsiColors.CYAN}PIVOT HIGH: {strategy_state['final_pivot_high_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
 
     if raw_pivot_low_price_at_event is not None and strategy_state["last_signal_type"] != -1:
         strategy_state["final_pivot_low_price_confirmed"] = raw_pivot_low_price_at_event
-        strategy_state["last_signal_type"] = -1 
+        strategy_state["last_signal_type"] = -1
         pivot_timestamp = candles_history[idx_pivot_event_low]['timestamp']
         log_info(f"{AnsiColors.CYAN}PIVOT LOW:  {strategy_state['final_pivot_low_price_confirmed']:.5f} @ {pivot_timestamp.strftime('%Y-%m-%d %H:%M')}{AnsiColors.ENDC}", pair_name=pair_name)
 
@@ -853,22 +906,22 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
 
     if strategy_state["final_pivot_high_price_confirmed"] is not None:
         strategy_state["high_price_for_fib"] = strategy_state["final_pivot_high_price_confirmed"]
-        strategy_state["high_bar_index_for_fib"] = idx_pivot_event_high 
+        strategy_state["high_bar_index_for_fib"] = idx_pivot_event_high
 
         if strategy_state["active_fib_level"] is not None:
-            log_debug("Resetting active FIB due to new High.", pair_name=pair_name)
+            if logger.isEnabledFor(logging.DEBUG): log_debug("Resetting active FIB due to new High.", pair_name=pair_name)
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
     if strategy_state["final_pivot_low_price_confirmed"] is not None:
         if strategy_state["high_price_for_fib"] is not None and strategy_state["high_bar_index_for_fib"] is not None:
             current_low_price = strategy_state["final_pivot_low_price_confirmed"]
-            current_low_bar_index = idx_pivot_event_low 
+            current_low_bar_index = idx_pivot_event_low
 
             if current_low_bar_index > strategy_state["high_bar_index_for_fib"]:
-                if strategy_state["high_price_for_fib"] is None or current_low_price is None: 
+                if strategy_state["high_price_for_fib"] is None or current_low_price is None:
                      log_warning("Harga untuk kalkulasi FIB tidak valid (None).", pair_name=pair_name)
-                else: 
+                else:
                     calculated_fib_level = (strategy_state["high_price_for_fib"] + current_low_price) / 2.0
 
                     is_fib_late = False
@@ -879,13 +932,13 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
 
                     if is_fib_late:
                         log_info(f"{AnsiColors.ORANGE}FIB Terlambat ({calculated_fib_level:.5f}), Harga Cek ({crypto_config['secure_fib_check_price']}: {price_val_current_candle:.5f}) > FIB.{AnsiColors.ENDC}", pair_name=pair_name)
-                        strategy_state["active_fib_level"] = None 
+                        strategy_state["active_fib_level"] = None
                         strategy_state["active_fib_line_start_index"] = None
-                    elif calculated_fib_level is not None : 
+                    elif calculated_fib_level is not None :
                         log_info(f"{AnsiColors.CYAN}FIB 0.5 Aktif: {calculated_fib_level:.5f}{AnsiColors.ENDC} (H: {strategy_state['high_price_for_fib']:.2f}, L: {current_low_price:.2f})", pair_name=pair_name)
                         strategy_state["active_fib_level"] = calculated_fib_level
                         strategy_state["active_fib_line_start_index"] = current_low_bar_index
-            
+
             strategy_state["high_price_for_fib"] = None
             strategy_state["high_bar_index_for_fib"] = None
 
@@ -898,21 +951,21 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
         is_closed_above_fib = current_candle['close'] > strategy_state["active_fib_level"]
 
         if is_bullish_candle and is_closed_above_fib:
-            if strategy_state["position_size"] == 0: 
-                strategy_state["position_size"] = 1 
-                entry_px = current_candle['close'] 
+            if strategy_state["position_size"] == 0:
+                strategy_state["position_size"] = 1
+                entry_px = current_candle['close']
                 strategy_state["entry_price_custom"] = entry_px
-                strategy_state["highest_price_for_trailing"] = entry_px 
-                strategy_state["trailing_tp_active_custom"] = False 
+                strategy_state["highest_price_for_trailing"] = entry_px
+                strategy_state["trailing_tp_active_custom"] = False
                 strategy_state["current_trailing_stop_level"] = None
 
                 emerg_sl = entry_px * (1 - crypto_config["emergency_sl_percent"] / 100.0)
                 strategy_state["emergency_sl_level_custom"] = emerg_sl
 
                 log_msg = f"BUY ENTRY @ {entry_px:.5f} (FIB {strategy_state['active_fib_level']:.5f} dilewati). Emerg SL: {emerg_sl:.5f}"
-                log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
+                log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name) # This log will be shown by ChartAwareStreamHandler
                 play_notification_sound()
-                
+
                 termux_title = f"BUY Signal: {pair_name}"
                 termux_content = f"Entry @ {entry_px:.5f}. SL: {emerg_sl:.5f}"
                 send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
@@ -924,26 +977,26 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                               f"Emergency SL: {emerg_sl:.5f}\n"
                               f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
                 send_email_notification(email_subject, email_body, crypto_config)
-            
+
             strategy_state["active_fib_level"] = None
             strategy_state["active_fib_line_start_index"] = None
 
-    if strategy_state["position_size"] > 0: 
+    if strategy_state["position_size"] > 0:
         current_high_for_trailing = strategy_state.get("highest_price_for_trailing", current_candle.get('high'))
-        if current_high_for_trailing is None or current_candle.get('high') is None: 
+        if current_high_for_trailing is None or current_candle.get('high') is None:
             log_warning("Harga tertinggi untuk trailing atau high candle tidak valid (None).", pair_name=pair_name)
         else:
              strategy_state["highest_price_for_trailing"] = max(current_high_for_trailing , current_candle['high'])
 
         if not strategy_state["trailing_tp_active_custom"] and strategy_state["entry_price_custom"] is not None:
-            if strategy_state["entry_price_custom"] == 0: 
+            if strategy_state["entry_price_custom"] == 0:
                 profit_percent = 0.0
             elif strategy_state.get("highest_price_for_trailing") is None:
                 profit_percent = 0.0
                 log_warning("highest_price_for_trailing is None saat kalkulasi profit.", pair_name=pair_name)
             else:
                 profit_percent = ((strategy_state["highest_price_for_trailing"] - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
-            
+
             if profit_percent >= crypto_config["profit_target_percent_activation"]:
                 strategy_state["trailing_tp_active_custom"] = True
                 log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_percent:.2f}%, High: {strategy_state.get('highest_price_for_trailing',0):.5f}{AnsiColors.ENDC}", pair_name=pair_name)
@@ -952,7 +1005,8 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
             potential_new_stop_price = strategy_state["highest_price_for_trailing"] * (1 - (crypto_config["trailing_stop_gap_percent"] / 100.0))
             if strategy_state["current_trailing_stop_level"] is None or potential_new_stop_price > strategy_state["current_trailing_stop_level"]:
                 strategy_state["current_trailing_stop_level"] = potential_new_stop_price
-                log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
+                if logger.isEnabledFor(logging.DEBUG): log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
+
 
         final_stop_for_exit = strategy_state["emergency_sl_level_custom"]
         exit_comment = "Emergency SL"
@@ -962,16 +1016,16 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
             if final_stop_for_exit is None or strategy_state["current_trailing_stop_level"] > final_stop_for_exit :
                 final_stop_for_exit = strategy_state["current_trailing_stop_level"]
                 exit_comment = "Trailing Stop"
-                exit_color = AnsiColors.BLUE 
-        
+                exit_color = AnsiColors.BLUE
+
         if final_stop_for_exit is not None and current_candle.get('low') is not None and current_candle['low'] <= final_stop_for_exit:
             exit_price_open = current_candle.get('open')
             if exit_price_open is None:
                 log_warning("Harga open candle tidak ada untuk exit. Menggunakan SL sebagai harga exit.", pair_name=pair_name)
-                exit_price = final_stop_for_exit 
+                exit_price = final_stop_for_exit
             else:
                 exit_price = min(exit_price_open, final_stop_for_exit)
-            
+
             pnl = 0.0
             if strategy_state["entry_price_custom"] is not None and strategy_state["entry_price_custom"] != 0:
                 pnl = ((exit_price - strategy_state["entry_price_custom"]) / strategy_state["entry_price_custom"]) * 100.0
@@ -980,7 +1034,7 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                 exit_color = AnsiColors.RED
 
             log_msg = f"EXIT ORDER @ {exit_price:.5f} by {exit_comment}. PnL: {pnl:.2f}%"
-            log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
+            log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name) # This log will be shown
             play_notification_sound()
 
             termux_title_exit = f"EXIT Signal: {pair_name}"
@@ -1013,153 +1067,298 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
 
         entry_price_display = strategy_state.get('entry_price_custom', 0)
         sl_display_str = f'{plot_stop_level:.5f} ({stop_type_info})' if plot_stop_level is not None else 'N/A'
-        log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
-        
+        if logger.isEnabledFor(logging.DEBUG): log_debug(f"Posisi Aktif. Entry: {entry_price_display:.5f}, SL Saat Ini: {sl_display_str}", pair_name=pair_name)
+
     return strategy_state
 
-# --- FUNGSI UTAMA TRADING LOOP ---
+
+# --- NEW: Terminal setup for raw input (non-blocking key press) ---
+def setup_terminal_for_raw_input():
+    global original_terminal_settings
+    if not TERMUX_CHART_ENABLED: return
+    if sys.stdin.isatty(): # Check if running in a real terminal with tty
+        try:
+            original_terminal_settings = termios.tcgetattr(sys.stdin)
+            tty.setraw(sys.stdin.fileno())
+        except termios.error as e:
+            log_warning(f"Could not set terminal to raw mode (is this a full TTY?): {e}", "SYSTEM")
+            # This might happen if not run in a proper terminal (e.g. output piped)
+            # TERMUX_CHART_ENABLED = False # Disable charting if raw mode fails critically
+
+
+def restore_terminal_settings():
+    global original_terminal_settings
+    if not TERMUX_CHART_ENABLED: return
+    if original_terminal_settings and sys.stdin.isatty():
+        try:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, original_terminal_settings)
+        except termios.error as e:
+            log_warning(f"Could not restore terminal settings: {e}", "SYSTEM")
+
+
+def check_for_toggle_keypress():
+    global current_view_mode
+    if not TERMUX_CHART_ENABLED: return False
+    key_pressed_handled = False
+    if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
+        key = sys.stdin.read(1)
+        if key.lower() == 't':  # Toggle with 't' key
+            current_view_mode = "chart" if current_view_mode == "log" else "log"
+            key_pressed_handled = True
+            # Provide feedback about the mode switch
+            # This print needs to be careful not to mess up logs or charts
+            # A temporary message that gets overwritten is usually fine.
+            mode_message = f"MODE SWITCHED TO: {current_view_mode.upper()}"
+            # print(f"\r{AnsiColors.YELLOW_BG}{AnsiColors.RED}{AnsiColors.BOLD}{mode_message}{AnsiColors.ENDC}{' ' * (os.get_terminal_size().columns - len(mode_message))}\r", end="")
+            # sys.stdout.flush() # Print immediately
+            # time.sleep(0.5) # Display for a short time
+            log_info(f"Tampilan diubah ke mode: {current_view_mode.upper()}", "SYSTEM")
+
+            if current_view_mode == "chart":
+                clear_screen_animated() # Clear screen when switching TO chart for a clean slate
+            else: # Switching to log
+                clear_screen_animated() # Clear chart remnants
+                log_info("Menampilkan log detail...", "SYSTEM")
+    return key_pressed_handled
+
+
+# --- NEW: Chart Display Function using plotext ---
+def display_chart_plotext(candles_history, config, strategy_state, max_candles_to_plot=75):
+    if not TERMUX_CHART_ENABLED or not candles_history:
+        # print("Charting disabled or no candle data to plot.") # Debug
+        return
+
+    pair_name = config.get('pair_name', 'CHART')
+    ptx.clt()  # Clear terminal plot space
+    ptx.cld()  # Clear plot data from previous plots
+
+    term_width, term_height = ptx.terminal_size()
+    ptx.plotsize(term_width -2 , term_height - 5) # Adjust plot size to fit terminal, leave room for title/status
+
+    plot_candles = candles_history[-max_candles_to_plot:]
+    if not plot_candles: return
+
+    # Ensure all candles have close price for plotting
+    valid_candles = [c for c in plot_candles if c.get('close') is not None and c.get('timestamp') is not None]
+    if not valid_candles: return
+
+    dates_idx = list(range(len(valid_candles))) # Use index for x-axis if dates are too complex
+    close_prices = [c['close'] for c in valid_candles]
+
+    if not close_prices: return
+
+    ptx.title(f"{pair_name} [{config['timeframe']}] (Candles: {len(valid_candles)}) - Press 'T' to toggle Logs")
+    ptx.plot(dates_idx, close_prices, label="Close", color="blue")
+
+    # Plot active FIB level
+    active_fib = strategy_state.get("active_fib_level")
+    if active_fib is not None:
+        ptx.horizontal_line(active_fib, label=f"FIB: {active_fib:.4f}", color="magenta")
+
+    # Plot entry, TP (conceptual), SL if in position
+    if strategy_state.get("position_size", 0) > 0:
+        entry_price = strategy_state.get("entry_price_custom")
+        sl_level = strategy_state.get("emergency_sl_level_custom")
+        trailing_sl = strategy_state.get("current_trailing_stop_level")
+
+        if entry_price is not None:
+            ptx.horizontal_line(entry_price, label=f"Entry: {entry_price:.4f}", color="green")
+
+        final_sl_to_plot = sl_level
+        sl_label_prefix = "EmergSL"
+        if trailing_sl is not None and (sl_level is None or trailing_sl > sl_level) :
+            final_sl_to_plot = trailing_sl
+            sl_label_prefix = "TrailSL"
+
+        if final_sl_to_plot is not None:
+            ptx.horizontal_line(final_sl_to_plot, label=f"{sl_label_prefix}: {final_sl_to_plot:.4f}", color="red")
+    
+    # X-axis labels (timestamps) - keep it simple for terminal
+    num_x_ticks = 5 # Desired number of x-axis ticks
+    if len(valid_candles) >= num_x_ticks :
+        tick_indices = [int(i * (len(valid_candles)-1) / (num_x_ticks-1)) for i in range(num_x_ticks)]
+        tick_labels = [valid_candles[i]['timestamp'].strftime('%H:%M') for i in tick_indices]
+        ptx.xticks(tick_indices, tick_labels)
+    elif len(valid_candles) > 0: # Handle fewer candles
+        tick_indices = [0, len(valid_candles)-1] if len(valid_candles) > 1 else [0]
+        tick_labels = [valid_candles[i]['timestamp'].strftime('%H:%M') for i in tick_indices]
+        ptx.xticks(tick_indices, tick_labels)
+
+
+    ptx.show() # This prints the chart to stdout
+    # Status line after chart (optional, might get overwritten by next log from other pair)
+    # last_close = valid_candles[-1]['close']
+    # print(f"Last Close: {last_close:.4f} at {valid_candles[-1]['timestamp'].strftime('%Y-%m-%d %H:%M')}{' '*10}")
+
+
+# --- FUNGSI UTAMA TRADING LOOP (MODIFIED FOR CHARTING) ---
 def start_trading(global_settings_dict):
-    clear_screen_animated()
-    api_settings = global_settings_dict.get("api_settings", {})
-    api_key_manager = APIKeyManager(
-        api_settings.get("primary_key"),
-        api_settings.get("recovery_keys", []),
-        api_settings 
-    )
+    global current_view_mode # Allow modification
+    # Reset to log mode at the start of trading session
+    # current_view_mode = "log" # Or remember last state if preferred
 
-    if not api_key_manager.has_valid_keys():
-        log_error(f"{AnsiColors.RED}Tidak ada API key (primary/recovery) yang valid dikonfigurasi. Tidak dapat memulai.{AnsiColors.ENDC}")
-        animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
-        input()
-        return
-
-    all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
-    if not all_crypto_configs:
-        log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
-        animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
-        input()
-        return
-
-    animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
-    current_key_display_val = api_key_manager.get_current_key()
-    current_key_display = "N/A"
-    if current_key_display_val:
-        current_key_display = current_key_display_val[:5] + "..." + current_key_display_val[-3:] if len(current_key_display_val) > 8 else current_key_display_val
-
-    log_info(f"Menggunakan API Key Index: {api_key_manager.get_current_key_index()} ({current_key_display}). Total keys: {api_key_manager.total_keys()}", pair_name="SYSTEM")
-
-    crypto_data_manager = {} 
-    for config in all_crypto_configs:
-        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}" 
-        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" 
-
-        animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
-
-        crypto_data_manager[pair_id] = {
-            "config": config,
-            "all_candles_list": [],
-            "strategy_state": get_initial_strategy_state(),
-            "big_data_collection_phase_active": True, 
-            "big_data_email_sent": False,
-            "last_candle_fetch_time": datetime.min, 
-            "data_fetch_failed_consecutively": 0 
-        }
-        
-        initial_candles_target = TARGET_BIG_DATA_CANDLES
-        initial_candles = []
-        max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
-        retries_done_initial = 0
-        initial_fetch_successful = False
-
-        while retries_done_initial < max_retries_initial and not initial_fetch_successful:
-            current_api_key = api_key_manager.get_current_key()
-            if not current_api_key:
-                log_error(f"BIG DATA: Semua API key habis saat mencoba mengambil data awal untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                break 
-
-            try:
-                log_info(f"BIG DATA: Mengambil data awal (target {initial_candles_target} candle) dengan key index {api_key_manager.get_current_key_index()}...", pair_name=config['pair_name'])
-                initial_candles = fetch_candles(
-                    config['symbol'], config['currency'], initial_candles_target,
-                    config['exchange'], current_api_key, config['timeframe'],
-                    pair_name=config['pair_name']
-                )
-                initial_fetch_successful = True
-            except APIKeyError:
-                log_warning(f"BIG DATA: API Key gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
-                if not api_key_manager.switch_to_next_key(): break 
-                retries_done_initial +=1 
-            except requests.exceptions.RequestException as e:
-                log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
-                break 
-            except Exception as e_gen: 
-                log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
-                log_exception("Traceback Error Initial Fetch:", pair_name=config['pair_name'])
-                break
-
-        if not initial_candles:
-            log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False 
-            crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now()
-            continue 
-
-        crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
-        log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
-
-        if initial_candles:
-            min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1 
-            if len(initial_candles) >= min_len_for_pivots:
-                log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
-                
-                for i in range(min_len_for_pivots -1, len(initial_candles) - 1): 
-                    historical_slice = initial_candles[:i+1]
-                    if len(historical_slice) < min_len_for_pivots: continue 
-
-                    temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy()
-                    temp_state_for_warmup["position_size"] = 0 
-                    
-                    crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
-                    
-                    if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: 
-                        crypto_data_manager[pair_id]["strategy_state"] = {
-                            **crypto_data_manager[pair_id]["strategy_state"], 
-                            **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None, 
-                               "highest_price_for_trailing":None, "trailing_tp_active_custom":False, 
-                               "current_trailing_stop_level":None}
-                        }
-                log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            else:
-                log_warning(f"Data awal ({len(initial_candles)}) tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}).", pair_name=config['pair_name'])
-        else:
-            log_warning("Tidak ada data awal untuk warm-up.", pair_name=config['pair_name'])
-
-        if len(crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-            crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            if not crypto_data_manager[pair_id]["big_data_email_sent"]:
-                send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", config)
-                crypto_data_manager[pair_id]["big_data_email_sent"] = True
-            log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[pair_id]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
-
-    animated_text_display(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+    if TERMUX_CHART_ENABLED:
+        setup_terminal_for_raw_input()
 
     try:
+        # clear_screen_animated() # Initial clear done by menu or here
+        api_settings = global_settings_dict.get("api_settings", {})
+        api_key_manager = APIKeyManager(
+            api_settings.get("primary_key"),
+            api_settings.get("recovery_keys", []),
+            api_settings
+        )
+
+        if not api_key_manager.has_valid_keys():
+            log_error(f"{AnsiColors.RED}Tidak ada API key (primary/recovery) yang valid dikonfigurasi. Tidak dapat memulai.{AnsiColors.ENDC}")
+            animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
+            input()
+            return
+
+        all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
+        if not all_crypto_configs:
+            log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
+            animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE)
+            input()
+            return
+
+        # Initial animated text display, respecting chart mode
+        if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
+             animated_text_display("================ MULTI-CRYPTO STRATEGY START ================", color=AnsiColors.HEADER, delay=0.005)
+        else: # In chart mode, just a simple print
+            print(f"{AnsiColors.HEADER}================ MULTI-CRYPTO STRATEGY START (Chart Mode) ================{AnsiColors.ENDC}")
+
+
+        current_key_display_val = api_key_manager.get_current_key()
+        current_key_display = "N/A"
+        if current_key_display_val:
+            current_key_display = current_key_display_val[:5] + "..." + current_key_display_val[-3:] if len(current_key_display_val) > 8 else current_key_display_val
+        log_info(f"Menggunakan API Key Index: {api_key_manager.get_current_key_index()} ({current_key_display}). Total keys: {api_key_manager.total_keys()}", pair_name="SYSTEM")
+
+        crypto_data_manager = {}
+        for config in all_crypto_configs:
+            pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}"
+            config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}"
+
+            # Animated display respects chart mode
+            animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC} | Exch: {config.get('exchange','DEF')} | TF: {config.get('timeframe','DEF')}", color=AnsiColors.MAGENTA, delay=0.01)
+
+            crypto_data_manager[pair_id] = {
+                "config": config,
+                "all_candles_list": [],
+                "strategy_state": get_initial_strategy_state(),
+                "big_data_collection_phase_active": True,
+                "big_data_email_sent": False,
+                "last_candle_fetch_time": datetime.min,
+                "data_fetch_failed_consecutively": 0
+            }
+
+            initial_candles_target = TARGET_BIG_DATA_CANDLES
+            initial_candles = []
+            max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
+            retries_done_initial = 0
+            initial_fetch_successful = False
+
+            while retries_done_initial < max_retries_initial and not initial_fetch_successful:
+                current_api_key = api_key_manager.get_current_key()
+                if not current_api_key:
+                    log_error(f"BIG DATA: Semua API key habis saat mencoba mengambil data awal untuk {config['pair_name']}.", pair_name=config['pair_name'])
+                    break
+
+                try:
+                    log_info(f"BIG DATA: Mengambil data awal (target {initial_candles_target} candle) dengan key index {api_key_manager.get_current_key_index()}...", pair_name=config['pair_name'])
+                    initial_candles = fetch_candles(
+                        config['symbol'], config['currency'], initial_candles_target,
+                        config['exchange'], current_api_key, config['timeframe'],
+                        pair_name=config['pair_name']
+                    )
+                    initial_fetch_successful = True
+                except APIKeyError:
+                    log_warning(f"BIG DATA: API Key gagal untuk {config['pair_name']}. Mencoba key berikutnya.", pair_name=config['pair_name'])
+                    if not api_key_manager.switch_to_next_key(): break
+                    retries_done_initial +=1
+                except requests.exceptions.RequestException as e:
+                    log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
+                    break
+                except Exception as e_gen:
+                    log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
+                    log_exception("Traceback Error Initial Fetch:", pair_name=config['pair_name'])
+                    break
+
+            if not initial_candles:
+                log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+                crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
+                crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now()
+                continue
+
+            crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
+            log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima.", pair_name=config['pair_name'])
+
+            if initial_candles:
+                min_len_for_pivots = config.get('left_strength', 50) + config.get('right_strength', 150) + 1
+                if len(initial_candles) >= min_len_for_pivots:
+                    log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state...", pair_name=config['pair_name'])
+
+                    for i in range(min_len_for_pivots -1, len(initial_candles) - 1):
+                        historical_slice = initial_candles[:i+1]
+                        if len(historical_slice) < min_len_for_pivots: continue
+
+                        temp_state_for_warmup = crypto_data_manager[pair_id]["strategy_state"].copy()
+                        temp_state_for_warmup["position_size"] = 0
+
+                        crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
+
+                        if crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0:
+                            crypto_data_manager[pair_id]["strategy_state"] = {
+                                **crypto_data_manager[pair_id]["strategy_state"],
+                                **{"position_size":0, "entry_price_custom":None, "emergency_sl_level_custom":None,
+                                   "highest_price_for_trailing":None, "trailing_tp_active_custom":False,
+                                   "current_trailing_stop_level":None}
+                            }
+                    log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+                else:
+                    log_warning(f"Data awal ({len(initial_candles)}) tidak cukup untuk warm-up pivot (min: {min_len_for_pivots}).", pair_name=config['pair_name'])
+            else:
+                log_warning("Tidak ada data awal untuk warm-up.", pair_name=config['pair_name'])
+
+            if len(crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
+                crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
+                log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
+                if not crypto_data_manager[pair_id]["big_data_email_sent"]:
+                    send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", config)
+                    crypto_data_manager[pair_id]["big_data_email_sent"] = True
+                log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(crypto_data_manager[pair_id]['all_candles_list'])} candles) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        
+        if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"):
+            animated_text_display(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+        else:
+             print(f"{AnsiColors.HEADER}-----------------------------------------------{AnsiColors.ENDC}")
+
+
+        # Main Trading Loop
         while True:
+            if TERMUX_CHART_ENABLED:
+                user_toggled_view = check_for_toggle_keypress()
+                # if user_toggled_view: # Handled inside check_for_toggle_keypress with clear screen
+                #     pass
+
             active_cryptos_still_in_big_data_collection = 0
-            min_overall_next_refresh_seconds = float('inf') 
-            any_data_fetched_this_cycle = False 
+            min_overall_next_refresh_seconds = float('inf')
+            any_data_fetched_this_cycle = False
 
             for pair_id, data in crypto_data_manager.items():
                 config = data["config"]
-                pair_name = config['pair_name'] 
+                pair_name = config['pair_name']
 
-                if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 : 
-                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: 
-                        log_debug(f"Pair {pair_name} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name)
-                        continue 
+                # Cooldown logic (unchanged)
+                if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 :
+                    if (datetime.now() - data.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # 1 hour cooldown
+                        if logger.isEnabledFor(logging.DEBUG): log_debug(f"Pair {pair_name} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name)
+                        continue
                     else:
-                        data["data_fetch_failed_consecutively"] = 0 
+                        data["data_fetch_failed_consecutively"] = 0
                         log_info(f"Cooldown 1 jam untuk {pair_name} selesai. Mencoba fetch lagi.", pair_name=pair_name)
+
 
                 current_loop_time = datetime.now()
                 time_since_last_fetch_seconds = (current_loop_time - data["last_candle_fetch_time"]).total_seconds()
@@ -1167,29 +1366,34 @@ def start_trading(global_settings_dict):
                 required_interval_for_this_pair = 0
                 if data["big_data_collection_phase_active"]:
                     active_cryptos_still_in_big_data_collection += 1
-                    if config.get('timeframe') == "minute": required_interval_for_this_pair = 55 
-                    elif config.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 23.8 
-                    else: required_interval_for_this_pair = 3580 
-                else: 
-                    required_interval_for_this_pair = config.get('refresh_interval_seconds', 60) 
+                    if config.get('timeframe') == "minute": required_interval_for_this_pair = 55
+                    elif config.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 23.8
+                    else: required_interval_for_this_pair = 3580
+                else:
+                    required_interval_for_this_pair = config.get('refresh_interval_seconds', 60)
 
                 if time_since_last_fetch_seconds < required_interval_for_this_pair:
                     remaining_time_for_this_pair = required_interval_for_this_pair - time_since_last_fetch_seconds
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, remaining_time_for_this_pair)
-                    continue 
+                    continue
 
-                log_info(f"Memproses {pair_name}...", pair_name=pair_name)
-                data["last_candle_fetch_time"] = current_loop_time 
+                log_info(f"Memproses {pair_name}...", pair_name=pair_name) # This log will respect chart mode
+                data["last_candle_fetch_time"] = current_loop_time
                 num_candles_before_fetch = len(data["all_candles_list"])
 
+                # Display current phase, respecting chart mode
+                current_phase_message = ""
                 if data["big_data_collection_phase_active"]:
-                    animated_text_display(f"\n--- PENGUMPULAN BIG DATA ({len(data['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005)
-                else:
-                    animated_text_display(f"\n--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(data['all_candles_list'])} candles ---", color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005)
+                    current_phase_message = f"\n--- PENGUMPULAN BIG DATA ({len(data['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---"
+                    animated_text_display(current_phase_message, color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005)
+                else: # Live Analysis
+                    if not (TERMUX_CHART_ENABLED and current_view_mode == "chart"): # Don't print this if chart is showing
+                        current_phase_message = f"\n--- ANALISA ({current_loop_time.strftime('%Y-%m-%d %H:%M:%S')}) | {len(data['all_candles_list'])} candles ---"
+                        animated_text_display(current_phase_message, color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005)
+
 
                 new_candles_batch = []
                 fetch_update_successful_for_this_pair = False
-                
                 max_retries_for_this_pair_update = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                 retries_done_for_this_pair_update = 0
 
@@ -1197,13 +1401,13 @@ def start_trading(global_settings_dict):
                     current_api_key_for_attempt = api_key_manager.get_current_key()
                     if not current_api_key_for_attempt:
                         log_error(f"Semua API key habis secara global saat mencoba mengambil update untuk {pair_name}.", pair_name=pair_name)
-                        break 
+                        break
 
-                    limit_fetch = 3 
+                    limit_fetch = 3
                     if data["big_data_collection_phase_active"]:
                         limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data["all_candles_list"])
                         if limit_fetch_needed <=0 :
-                             fetch_update_successful_for_this_pair = True 
+                             fetch_update_successful_for_this_pair = True
                              new_candles_batch = []
                              break
                         limit_fetch = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT)
@@ -1212,36 +1416,35 @@ def start_trading(global_settings_dict):
                     log_info(f"Mengambil {limit_fetch} candle (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name)
                     try:
                         new_candles_batch = fetch_candles(
-                            config['symbol'], config['currency'], limit_fetch, 
+                            config['symbol'], config['currency'], limit_fetch,
                             config['exchange'], current_api_key_for_attempt, config['timeframe'],
                             pair_name=pair_name
                         )
                         fetch_update_successful_for_this_pair = True
-                        data["data_fetch_failed_consecutively"] = 0 
-                        any_data_fetched_this_cycle = True 
-                    
+                        data["data_fetch_failed_consecutively"] = 0
+                        any_data_fetched_this_cycle = True
+
                     except APIKeyError:
                         log_warning(f"API Key (Idx: {api_key_manager.get_current_key_index()}) gagal untuk update {pair_name}. Mencoba key berikutnya.", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
-                        
-                        if not api_key_manager.switch_to_next_key(): 
+                        if not api_key_manager.switch_to_next_key():
                             log_error(f"Tidak ada lagi API key tersedia secara global setelah kegagalan pada {pair_name}.", pair_name=pair_name)
-                            break 
-                        retries_done_for_this_pair_update += 1 
-
+                            break
+                        retries_done_for_this_pair_update += 1
                     except requests.exceptions.RequestException as e:
                         log_error(f"Error jaringan saat mengambil update {pair_name}: {e}. Tidak mengganti key.", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
-                        break 
-                    except Exception as e_gen_update: 
+                        break
+                    except Exception as e_gen_update:
                         log_error(f"Error umum saat mengambil update {pair_name}: {e_gen_update}. Tidak mengganti key.", pair_name=pair_name)
                         log_exception("Traceback Error Update Fetch:", pair_name=pair_name)
                         data["data_fetch_failed_consecutively"] = data.get("data_fetch_failed_consecutively", 0) + 1
                         break
-
+                
                 if data.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) +1 :
-                    data["last_attempt_after_all_keys_failed"] = datetime.now() 
+                    data["last_attempt_after_all_keys_failed"] = datetime.now()
                     log_warning(f"Semua API key telah dicoba dan gagal untuk {pair_name}. Akan masuk cooldown.", pair_name=pair_name)
+
 
                 if not fetch_update_successful_for_this_pair or not new_candles_batch:
                     if fetch_update_successful_for_this_pair and not new_candles_batch and not data["big_data_collection_phase_active"]:
@@ -1249,18 +1452,23 @@ def start_trading(global_settings_dict):
                     elif not fetch_update_successful_for_this_pair:
                          log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name)
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-                    continue 
+                    # If in chart mode and fetch failed, current chart for this pair remains until next successful fetch
+                    if TERMUX_CHART_ENABLED and current_view_mode == "chart":
+                        display_chart_plotext(data["all_candles_list"], config, data["strategy_state"])
+                        log_warning(f"Chart for {pair_name} not updated due to fetch issue.", pair_name=pair_name)
+                    continue
+
 
                 merged_candles_dict = {c['timestamp']: c for c in data["all_candles_list"]}
                 newly_added_count_this_batch = 0
-                updated_count_this_batch = 0 
+                updated_count_this_batch = 0
 
                 for candle in new_candles_batch:
                     ts = candle['timestamp']
                     if ts not in merged_candles_dict:
                         merged_candles_dict[ts] = candle
                         newly_added_count_this_batch +=1
-                    elif merged_candles_dict[ts] != candle : 
+                    elif merged_candles_dict[ts] != candle :
                         merged_candles_dict[ts] = candle
                         updated_count_this_batch +=1
 
@@ -1273,22 +1481,24 @@ def start_trading(global_settings_dict):
                 elif new_candles_batch :
                      log_info("Tidak ada candle dengan timestamp baru atau update konten. Data terakhir mungkin identik.", pair_name=pair_name)
 
+
                 if data["big_data_collection_phase_active"]:
                     if len(data["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
                         log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name}!{AnsiColors.ENDC}", pair_name=pair_name)
-                        if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
-                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] 
-                        
+                        if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES:
+                            data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+
                         if not data["big_data_email_sent"]:
                             send_email_notification(f"Data Downloading Complete: {pair_name}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_name}.", config)
                             data["big_data_email_sent"] = True
-                        
-                        data["big_data_collection_phase_active"] = False 
+
+                        data["big_data_collection_phase_active"] = False
                         active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1)
                         log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data['all_candles_list'])} candles) untuk {pair_name} ----------{AnsiColors.ENDC}", pair_name=pair_name)
-                else: 
-                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
+                else: # Not in big data collection (live analysis)
+                    if len(data["all_candles_list"]) > TARGET_BIG_DATA_CANDLES:
                         data["all_candles_list"] = data["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+
 
                 min_len_for_pivots = config.get('left_strength',50) + config.get('right_strength',150) + 1
                 if len(data["all_candles_list"]) >= min_len_for_pivots:
@@ -1299,19 +1509,27 @@ def start_trading(global_settings_dict):
                     if process_logic_now:
                          log_info(f"Menjalankan logika strategi dengan {len(data['all_candles_list'])} candle...", pair_name=pair_name)
                          data["strategy_state"] = run_strategy_logic(data["all_candles_list"], config, data["strategy_state"], global_settings_dict)
-                    elif not data["big_data_collection_phase_active"]: 
+                    elif not data["big_data_collection_phase_active"]:
                          last_c_time_str = data["all_candles_list"][-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if data["all_candles_list"] else "N/A"
                          log_info(f"Tidak ada candle baru untuk diproses untuk {pair_name}. Data terakhir @ {last_c_time_str}.", pair_name=pair_name)
-                else: 
+
+                    # --- DISPLAY CHART OR LOGS ---
+                    if TERMUX_CHART_ENABLED and current_view_mode == "chart":
+                        # os.system('cls' if os.name == 'nt' else 'clear') # Option: clear before each pair's chart
+                        display_chart_plotext(data["all_candles_list"], config, data["strategy_state"])
+                    # Logs will be printed if current_view_mode == "log" due to ChartAwareStreamHandler
+                else:
                     log_info(f"Data ({len(data['all_candles_list'])}) untuk {pair_name} belum cukup utk analisa (min: {min_len_for_pivots}).", pair_name=pair_name)
-                
+
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-            
-            sleep_duration = 15 
+            # --- End of loop for crypto_data_manager.items() ---
+
+            sleep_duration = 15 # Default sleep
+            sleep_message_prefix = "Menunggu"
 
             if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None:
                 log_error("Semua API key gagal secara global dan tidak ada data berhasil di-fetch. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
-                sleep_duration = 3600 
+                sleep_duration = 3600 # 1 hour
             elif active_cryptos_still_in_big_data_collection > 0:
                 min_big_data_interval = float('inf')
                 for pid_loop, pdata_loop in crypto_data_manager.items():
@@ -1319,25 +1537,30 @@ def start_trading(global_settings_dict):
                         pconfig_loop = pdata_loop["config"]
                         interval_bd = 55 if pconfig_loop.get('timeframe') == "minute" else (3600 * 23.8 if pconfig_loop.get('timeframe') == "day" else 3580)
                         min_big_data_interval = min(min_big_data_interval, interval_bd)
-                
-                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30) 
-                log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
-            else: 
+
+                sleep_duration = min(min_big_data_interval if min_big_data_interval != float('inf') else 30, 30)
+                if logger.isEnabledFor(logging.DEBUG): log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep {sleep_duration}s.", pair_name="SYSTEM")
+                sleep_message_prefix = f"BIG DATA ({active_cryptos_still_in_big_data_collection} pairs)"
+
+            else: # All pairs are live
                 if min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0 :
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
-                else: 
+                    if logger.isEnabledFor(logging.DEBUG): log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya.", pair_name="SYSTEM")
+                    sleep_message_prefix = "Live Mode"
+                else:
                     default_refresh_from_config = 60
                     if all_crypto_configs :
                         default_refresh_from_config = all_crypto_configs[0].get('refresh_interval_seconds', 60)
-
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_config)
-                    log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama).", pair_name="SYSTEM")
+                    if logger.isEnabledFor(logging.DEBUG): log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama).", pair_name="SYSTEM")
+                    sleep_message_prefix = "Live Mode (default)"
+
 
             if sleep_duration > 0:
-                show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s...")
-            else:
-                log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
+                # show_spinner handles chart mode internally now
+                show_spinner(sleep_duration, f"{sleep_message_prefix}, {int(sleep_duration)}s...")
+            else: # Should not happen often
+                if logger.isEnabledFor(logging.DEBUG): log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
                 time.sleep(1)
 
     except KeyboardInterrupt:
@@ -1346,19 +1569,24 @@ def start_trading(global_settings_dict):
         log_error(f"{AnsiColors.RED}Error tak terduga di loop trading utama: {e}{AnsiColors.ENDC}", pair_name="SYSTEM")
         log_exception("Traceback Error:", pair_name="SYSTEM")
     finally:
+        if TERMUX_CHART_ENABLED:
+            restore_terminal_settings() # IMPORTANT: Restore terminal
+        
+        # Final animated text, respects chart mode
         animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
         animated_text_display("Tekan Enter untuk kembali ke menu utama...", color=AnsiColors.ORANGE, delay=0.01)
-        input()
+        input() # Normal input is fine here, terminal settings restored
 
-# --- MENU UTAMA ---
+
+# --- MENU UTAMA (no changes needed for charting logic) ---
 def main_menu():
     settings = load_settings()
 
     while True:
-        clear_screen_animated() 
+        clear_screen_animated()
         animated_text_display("========= Crypto Strategy Runner (Multi + Key Recovery) =========", color=AnsiColors.HEADER, delay=0.005)
 
-        pick_title_main = "" 
+        pick_title_main = ""
         active_configs = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
         if active_configs:
             pick_title_main += f"--- Crypto Aktif ({len(active_configs)}) ---\n"
@@ -1373,11 +1601,14 @@ def main_menu():
              primary_key_display = primary_key_display[:5] + "..." + primary_key_display[-3:]
         num_recovery_keys = len([k for k in api_s.get('recovery_keys',[]) if k])
         termux_notif_main_status = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
+        chart_status_main = "Aktif" if TERMUX_CHART_ENABLED else "Nonaktif (Dependencies Missing)"
+
 
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
         pick_title_main += f"Primary API Key: {primary_key_display} | Recovery Keys: {num_recovery_keys}\n"
         pick_title_main += f"Notifikasi Termux: {termux_notif_main_status}\n"
+        pick_title_main += f"Fitur Chart Teks: {AnsiColors.CYAN}{chart_status_main}{AnsiColors.ENDC} (Toggle dengan 't' saat analisa)\n" # Info Chart
         pick_title_main += "-----------------------------------------------\n"
         pick_title_main += "Pilih Opsi:"
 
@@ -1386,13 +1617,13 @@ def main_menu():
             "Pengaturan",
             "Keluar"
         ]
-        
+
         selected_index = -1
         try:
             _option_text, selected_index = pick(options_plain, pick_title_main, indicator='=>', default_index=0)
         except Exception as e_pick_main:
             log_error(f"Error dengan library 'pick' di menu utama: {e_pick_main}. Gunakan input manual.")
-            print(pick_title_main) 
+            print(pick_title_main)
             for idx_main, opt_text_main in enumerate(options_plain):
                 print(f"  {idx_main + 1}. {opt_text_main}")
             try:
@@ -1409,9 +1640,14 @@ def main_menu():
                 continue
 
         if selected_index == 0:
+            # Pastikan current_view_mode kembali ke log jika pengguna keluar dari trading loop
+            # dan masuk lagi, agar tidak terjebak di mode chart dari sesi sebelumnya.
+            global current_view_mode
+            current_view_mode = "log" # Default to log mode when starting new session
+            clear_screen_animated() # Clear menu before starting trading
             start_trading(settings)
         elif selected_index == 1:
-            settings = settings_menu(settings) 
+            settings = settings_menu(settings)
         elif selected_index == 2:
             log_info("Aplikasi ditutup.", pair_name="SYSTEM")
             clear_screen_animated()
@@ -1423,12 +1659,13 @@ if __name__ == "__main__":
     try:
         main_menu()
     except KeyboardInterrupt:
+        if TERMUX_CHART_ENABLED: restore_terminal_settings() # Ensure terminal is restored on Ctrl+C
         clear_screen_animated()
         animated_text_display(f"{AnsiColors.ORANGE}Aplikasi dihentikan paksa. Bye!{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01)
     except Exception as e:
+        if TERMUX_CHART_ENABLED: restore_terminal_settings() # Ensure terminal is restored on any crash
         clear_screen_animated()
         print(f"{AnsiColors.RED}Terjadi error tak terduga di level utama: {e}{AnsiColors.ENDC}")
-        # Menggunakan logger yang sudah dikonfigurasi untuk traceback yang lebih baik
         log_exception("MAIN LEVEL UNHANDLED EXCEPTION:", pair_name="SYSTEM_CRITICAL")
         animated_text_display("Tekan Enter untuk keluar...", color=AnsiColors.RED, delay=0.01)
         input()
