@@ -124,7 +124,7 @@ def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra=
 
 SETTINGS_FILE = "settings_multiple_recovery.json"
 CRYPTOCOMPARE_MAX_LIMIT = 1999
-TARGET_BIG_DATA_CANDLES = 2500 # Minimal EMA length + beberapa buffer
+TARGET_BIG_DATA_CANDLES = 250 # Minimal MA/Stoch length + buffer
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
 
 # --- FUNGSI CLEAR SCREEN ---
@@ -214,7 +214,7 @@ def play_notification_sound():
             import winsound
             winsound.Beep(1000, 500)
         else:
-            print('\a', end='', flush=True)
+            print('\a', end='', flush=True) # Standar bell untuk sistem non-Windows
     except Exception as e:
         log_warning(f"Tidak bisa memainkan suara notifikasi: {e}")
 
@@ -252,7 +252,7 @@ def send_termux_notification(title, content_msg, global_settings, pair_name_for_
 
     try:
         subprocess.run(['termux-notification', '--title', title, '--content', content_msg],
-                       check=False,
+                       check=False, # Jangan error jika termux-notification gagal
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         log_info(f"{AnsiColors.CYAN}Notifikasi Termux dikirim: '{title}'{AnsiColors.ENDC}", pair_name=pair_name_for_log)
     except FileNotFoundError:
@@ -264,26 +264,29 @@ def send_termux_notification(title, content_msg, global_settings, pair_name_for_
 
 # --- FUNGSI PENGATURAN ---
 def get_default_crypto_config():
-    # Menggabungkan parameter dari strategi PineScript
     return {
         "id": str(uuid.uuid4()), "enabled": True,
         "symbol": "BTC", "currency": "USD", "exchange": "CCCAGG",
         "timeframe": "hour", "refresh_interval_seconds": 60,
 
-        # Parameter dari PineScript EMA GR1/GR2
-        "ema_length": 200,
-        "gr2_drop_percentage": 15.0, # % penurunan dari GR1 untuk aktivasi GR2
+        # Parameter dari PineScript (MA + Stochastic)
+        "ma_length": 50,
+        "stoch_length": 14,
+        "stoch_smooth_k": 3,
+        "stoch_smooth_d": 3,
+        "stoch_overbought": 80,
+        "stoch_oversold": 20,
 
-        # Parameter SL/TP yang sudah ada di Python, dipetakan dari PineScript
-        "profit_target_percent_activation": 10.0, # Mirip tp_activation_perc_input
-        "trailing_stop_gap_percent": 5.0,        # Mirip tp_trailing_gap_perc_input
-        "emergency_sl_percent": 5.0,             # Mirip sl_perc_input
+        # Parameter SL/TP yang sudah ada di Python
+        "profit_target_percent_activation": 10.0,
+        "trailing_stop_gap_percent": 5.0,
+        "emergency_sl_percent": 5.0,
 
-        # Parameter lama dari skrip Python (jika masih ada guna untuk fitur lain, jika tidak bisa dihapus)
-        "left_strength": 50, # Tidak digunakan oleh strategi EMA GR1/GR2
-        "right_strength": 150,# Tidak digunakan oleh strategi EMA GR1/GR2
-        "enable_secure_fib": True, # Tidak digunakan oleh strategi EMA GR1/GR2
-        "secure_fib_check_price": "Close", # Tidak digunakan oleh strategi EMA GR1/GR2
+        # Parameter lama dari skrip Python (tidak digunakan oleh strategi MA-Stoch)
+        "left_strength": 50,
+        "right_strength": 150,
+        "enable_secure_fib": True,
+        "secure_fib_check_price": "Close",
 
         "enable_email_notifications": False,
         "email_sender_address": "", "email_sender_app_password": "", "email_receiver_address": ""
@@ -313,7 +316,6 @@ def load_settings():
             if "cryptos" not in settings or not isinstance(settings["cryptos"], list):
                 settings["cryptos"] = []
             
-            # Pastikan semua config crypto memiliki semua field default
             default_crypto_template = get_default_crypto_config()
             for crypto_cfg in settings["cryptos"]:
                 if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
@@ -341,7 +343,7 @@ def save_settings(settings):
 
 def _prompt_crypto_config(current_config):
     clear_screen_animated()
-    new_config = current_config.copy() # Mulai dengan nilai yang ada
+    new_config = current_config.copy()
     animated_text_display(f"--- Konfigurasi Crypto Pair ({new_config.get('symbol','BARU')}-{new_config.get('currency','BARU')}) ---", color=AnsiColors.HEADER)
 
     enabled_input = input(f"Aktifkan analisa untuk pair ini? (true/false) [{new_config.get('enabled',True)}]: ").lower().strip()
@@ -363,14 +365,21 @@ def _prompt_crypto_config(current_config):
         print(f"{AnsiColors.RED}Input interval refresh tidak valid. Menggunakan default: {new_config.get('refresh_interval_seconds',60)}{AnsiColors.ENDC}")
         new_config["refresh_interval_seconds"] = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, new_config.get('refresh_interval_seconds',60))
 
-    animated_text_display("\n-- Parameter Strategi EMA GR1/GR2 --", color=AnsiColors.HEADER, delay=0.01)
+    animated_text_display("\n-- Parameter Strategi MA & Stochastic --", color=AnsiColors.HEADER, delay=0.01)
     try:
-        new_config["ema_length"] = int(input(f"{AnsiColors.BLUE}Panjang EMA [{new_config.get('ema_length',200)}]: {AnsiColors.ENDC}").strip() or new_config.get('ema_length',200))
-        new_config["gr2_drop_percentage"] = float(input(f"{AnsiColors.BLUE}GR2 - Min. Drop % dari GR1 [{new_config.get('gr2_drop_percentage',15.0)}]: {AnsiColors.ENDC}").strip() or new_config.get('gr2_drop_percentage',15.0))
+        new_config["ma_length"] = int(input(f"{AnsiColors.BLUE}Panjang MA [{new_config.get('ma_length',50)}]: {AnsiColors.ENDC}").strip() or new_config.get('ma_length',50))
+        new_config["stoch_length"] = int(input(f"{AnsiColors.BLUE}Panjang Stochastic [{new_config.get('stoch_length',14)}]: {AnsiColors.ENDC}").strip() or new_config.get('stoch_length',14))
+        new_config["stoch_smooth_k"] = int(input(f"{AnsiColors.BLUE}Stochastic Smooth K [{new_config.get('stoch_smooth_k',3)}]: {AnsiColors.ENDC}").strip() or new_config.get('stoch_smooth_k',3))
+        new_config["stoch_smooth_d"] = int(input(f"{AnsiColors.BLUE}Stochastic Smooth D [{new_config.get('stoch_smooth_d',3)}]: {AnsiColors.ENDC}").strip() or new_config.get('stoch_smooth_d',3))
+        new_config["stoch_overbought"] = int(input(f"{AnsiColors.BLUE}Stochastic Overbought Level [{new_config.get('stoch_overbought',80)}]: {AnsiColors.ENDC}").strip() or new_config.get('stoch_overbought',80))
+        new_config["stoch_oversold"] = int(input(f"{AnsiColors.BLUE}Stochastic Oversold Level [{new_config.get('stoch_oversold',20)}]: {AnsiColors.ENDC}").strip() or new_config.get('stoch_oversold',20))
     except ValueError:
-        print(f"{AnsiColors.RED}Input parameter EMA/GR2 tidak valid. Menggunakan default.{AnsiColors.ENDC}")
-        new_config["ema_length"] = new_config.get('ema_length',200)
-        new_config["gr2_drop_percentage"] = new_config.get('gr2_drop_percentage',15.0)
+        print(f"{AnsiColors.RED}Input parameter MA/Stochastic tidak valid. Menggunakan default.{AnsiColors.ENDC}")
+        # Ambil kembali dari new_config (yang merupakan copy dari current_config atau default jika baru)
+        default_cfg_temp = get_default_crypto_config()
+        for k_strat in ["ma_length", "stoch_length", "stoch_smooth_k", "stoch_smooth_d", "stoch_overbought", "stoch_oversold"]:
+            new_config[k_strat] = new_config.get(k_strat, default_cfg_temp[k_strat])
+
 
     animated_text_display("\n-- Parameter Stop Loss & Take Profit --", color=AnsiColors.HEADER, delay=0.01)
     try:
@@ -379,14 +388,9 @@ def _prompt_crypto_config(current_config):
         new_config["trailing_stop_gap_percent"] = float(input(f"{AnsiColors.BLUE}TP - Jarak Trailing % [{new_config.get('trailing_stop_gap_percent',5.0)}]: {AnsiColors.ENDC}").strip() or new_config.get('trailing_stop_gap_percent',5.0))
     except ValueError:
         print(f"{AnsiColors.RED}Input parameter SL/TP tidak valid. Menggunakan default.{AnsiColors.ENDC}")
-        new_config["emergency_sl_percent"] = new_config.get('emergency_sl_percent',5.0)
-        new_config["profit_target_percent_activation"] = new_config.get('profit_target_percent_activation',10.0)
-        new_config["trailing_stop_gap_percent"] = new_config.get('trailing_stop_gap_percent',5.0)
-
-    # Parameter lama yang tidak digunakan oleh strategi EMA GR1/GR2 dapat disembunyikan atau ditandai sebagai tidak relevan
-    # Untuk saat ini, saya akan membiarkannya agar struktur save/load tidak pecah, tapi Anda bisa menghapusnya jika mau.
-    # animated_text_display("\n-- Parameter Pivot (Tidak digunakan oleh EMA GR1/GR2) --", color=AnsiColors.ORANGE, delay=0.01)
-    # ... (input left_strength, right_strength, enable_secure_fib, secure_fib_check_price bisa di-skip/dihapus)
+        default_cfg_temp = get_default_crypto_config()
+        for k_sltp in ["emergency_sl_percent", "profit_target_percent_activation", "trailing_stop_gap_percent"]:
+            new_config[k_sltp] = new_config.get(k_sltp, default_cfg_temp[k_sltp])
 
     animated_text_display("\n-- Notifikasi Email (Gmail) untuk Pair Ini --", color=AnsiColors.HEADER, delay=0.01)
     print(f"{AnsiColors.ORANGE}Kosongkan jika ingin menggunakan pengaturan email global dari API Settings (jika notif global aktif).{AnsiColors.ENDC}")
@@ -416,7 +420,7 @@ def settings_menu(current_settings):
         pick_title_settings += f"Recovery API Keys: {num_recovery_keys} tersimpan\n"
         pick_title_settings += f"Notifikasi Termux: {termux_notif_status}\n"
         pick_title_settings += "------------------------------------\n"
-        pick_title_settings += "Strategi Aktif: EMA GR1/GR2 Entry\n"
+        pick_title_settings += "Strategi Aktif: MA + Stochastic Signal\n" # Diubah
         pick_title_settings += "------------------------------------\n"
         pick_title_settings += "Daftar Konfigurasi Crypto:\n"
 
@@ -598,7 +602,7 @@ def settings_menu(current_settings):
                 save_settings(current_settings)
                 show_spinner(2, "Menyimpan & Kembali...")
             elif action_choice == 4: # Tambah Konfigurasi Crypto
-                new_crypto_conf = get_default_crypto_config() # Ini sudah berisi parameter EMA GR1/GR2
+                new_crypto_conf = get_default_crypto_config()
                 new_crypto_conf = _prompt_crypto_config(new_crypto_conf)
                 current_settings.setdefault("cryptos", []).append(new_crypto_conf)
                 save_settings(current_settings)
@@ -811,11 +815,10 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
 # --- LOGIKA STRATEGI ---
 def get_initial_strategy_state():
     return {
-        # State untuk EMA GR1/GR2
-        "inGetReady1": False,
-        "inGetReady2": False,
-        "priceAtGR1Close": None,
-        "last_ema_value_for_chart": None, # Untuk plotting EMA di chart
+        # State untuk MA + Stochastic Strategy
+        "last_ma_value_for_chart": None,
+        "last_stoch_k_value_for_chart": None,
+        "last_stoch_d_value_for_chart": None,
 
         # State yang sudah ada untuk manajemen posisi
         "entry_price_custom": None,
@@ -823,9 +826,9 @@ def get_initial_strategy_state():
         "trailing_tp_active_custom": False,
         "current_trailing_stop_level": None,
         "emergency_sl_level_custom": None,
-        "position_size": 0, # 0 = no position, 1 = long position (atau qty jika diubah)
+        "position_size": 0, # 0 = no position, 1 = long position
         
-        # State lama (tidak digunakan oleh EMA GR1/GR2, bisa dihapus jika tidak ada strategi lain)
+        # State lama (tidak digunakan oleh strategi MA-Stoch, tapi dibiarkan)
         "last_signal_type": 0,
         "final_pivot_high_price_confirmed": None,
         "final_pivot_low_price_confirmed": None,
@@ -837,7 +840,7 @@ def get_initial_strategy_state():
         "active_fib_line_start_index": None,
     }
 
-# Fungsi find_pivots (tidak digunakan oleh EMA GR1/GR2, tapi dibiarkan sesuai permintaan "yg lain jangan diubah")
+# Fungsi find_pivots (tidak digunakan oleh strategi MA-Stoch, tapi dibiarkan)
 def find_pivots(series_list, left_strength, right_strength, is_high=True):
     pivots = [None] * len(series_list)
     if len(series_list) < left_strength + right_strength + 1:
@@ -866,197 +869,288 @@ def find_pivots(series_list, left_strength, right_strength, is_high=True):
             pivots[i] = series_list[i]
     return pivots
 
-def calculate_ema(prices, period):
-    if not prices or not any(p is not None for p in prices): # Cek jika semua None
+# Fungsi kalkulasi SMA yang lebih robust
+def calculate_sma(prices, period):
+    if not prices or period <= 0:
         return [None] * len(prices)
     
-    valid_prices_indices = [i for i, p in enumerate(prices) if p is not None]
-    if not valid_prices_indices:
-        return [None] * len(prices)
-
-    first_valid_index = valid_prices_indices[0]
+    ema_like_sma = [None] * len(prices) # Output list
     
-    # Hanya proses dari harga valid pertama
-    effective_prices = [p for p in prices[first_valid_index:] if p is not None]
-
-    if len(effective_prices) < period:
-        # Pad None di awal, dan None untuk sisa yang tidak cukup data
-        return [None] * first_valid_index + [None] * len(effective_prices) + [None] * (len(prices) - first_valid_index - len(effective_prices))
-
-
-    ema_values_effective = [None] * len(effective_prices)
+    # Cari index pertama harga yang valid
+    first_valid_price_index = -1
+    for i, p_val in enumerate(prices):
+        if p_val is not None:
+            first_valid_price_index = i
+            break
     
-    # Hitung SMA untuk nilai EMA pertama
-    sma = sum(effective_prices[:period]) / period
-    ema_values_effective[period - 1] = sma
-    
-    multiplier = 2 / (period + 1)
-    
-    for i in range(period, len(effective_prices)):
-        if ema_values_effective[i-1] is None: # Jika EMA sebelumnya tidak bisa dihitung
-             ema_values_effective[i] = None # Maka EMA saat ini juga tidak bisa
-        else:
-            ema_values_effective[i] = (effective_prices[i] - ema_values_effective[i-1]) * multiplier + ema_values_effective[i-1]
+    if first_valid_price_index == -1: # Tidak ada harga valid
+        return ema_like_sma
 
-    # Gabungkan dengan None di awal jika ada
-    final_ema_values = [None] * first_valid_index + ema_values_effective
-    # Pad dengan None di akhir jika panjang prices asli lebih besar
-    if len(final_ema_values) < len(prices):
-        final_ema_values.extend([None] * (len(prices) - len(final_ema_values)))
+    # Cek apakah ada cukup data valid setelah first_valid_price_index
+    valid_prices_count_after_first = sum(1 for p_val in prices[first_valid_price_index:] if p_val is not None)
+    
+    if valid_prices_count_after_first < period:
+        return ema_like_sma # Tidak cukup data valid untuk memulai SMA
+
+    # Hitung SMA pertama
+    window = []
+    current_sum = 0.0
+    idx_for_first_sma = -1
+
+    # Isi window awal sampai 'period' data valid terkumpul
+    temp_idx_walk = first_valid_price_index
+    while len(window) < period and temp_idx_walk < len(prices):
+        if prices[temp_idx_walk] is not None:
+            window.append(prices[temp_idx_walk])
+            current_sum += prices[temp_idx_walk]
         
-    return final_ema_values
+        if len(window) == period:
+            idx_for_first_sma = temp_idx_walk # Ini adalah index di 'prices' dimana SMA pertama dihitung
+            break
+        temp_idx_walk += 1
+
+    if idx_for_first_sma != -1 and len(window) == period :
+        ema_like_sma[idx_for_first_sma] = current_sum / period
+        
+        # Hitung SMA berikutnya
+        for i in range(idx_for_first_sma + 1, len(prices)):
+            old_val_idx = i - period
+            
+            # Cek apakah nilai lama (yang keluar window) dan nilai baru valid
+            # Serta nilai SMA sebelumnya harus valid
+            if prices[i] is not None and prices[old_val_idx] is not None and ema_like_sma[i-1] is not None:
+                # Ini adalah cara standar rolling sum
+                # current_sum = current_sum - prices[old_val_idx] + prices[i]
+                # ema_like_sma[i] = current_sum / period
+                
+                # Lebih robust: hitung ulang sum window jika ada None di antaranya
+                current_window_slice = prices[i - period + 1 : i + 1]
+                if None in current_window_slice:
+                    ema_like_sma[i] = None # Jika ada None dalam window, SMA jadi None
+                else:
+                    ema_like_sma[i] = sum(current_window_slice) / period
+            else:
+                # Jika ada None yang masuk atau keluar, atau SMA sebelumnya None,
+                # coba hitung ulang sum untuk window saat ini jika semua elemennya valid
+                current_window_slice = prices[i - period + 1 : i + 1]
+                if None not in current_window_slice and len(current_window_slice) == period:
+                     ema_like_sma[i] = sum(current_window_slice) / period
+                else:
+                    ema_like_sma[i] = None # Propagate None
+    
+    return ema_like_sma
+
+
+def calculate_stochastic(close_prices, high_prices, low_prices, stoch_length, smooth_k_period, smooth_d_period):
+    num_candles = len(close_prices)
+    if num_candles < stoch_length:
+        return ([None] * num_candles, [None] * num_candles)
+
+    # %K Dasar (Raw %K)
+    raw_k_values = [None] * num_candles
+    for i in range(stoch_length - 1, num_candles):
+        # Ambil slice data untuk periode stochastic
+        period_closes = close_prices[i - stoch_length + 1 : i + 1]
+        period_highs = high_prices[i - stoch_length + 1 : i + 1]
+        period_lows = low_prices[i - stoch_length + 1 : i + 1]
+        current_close = close_prices[i]
+
+        # Pastikan tidak ada None dalam slice yang diperlukan untuk min/max, dan current_close valid
+        if current_close is None or \
+           any(v is None for v in period_highs) or \
+           any(v is None for v in period_lows):
+            raw_k_values[i] = None
+            continue
+        
+        highest_high_in_period = max(period_highs)
+        lowest_low_in_period = min(period_lows)
+
+        if highest_high_in_period == lowest_low_in_period: # Hindari pembagian dengan nol
+            # PineScript: `na` jika (high - low) == 0.
+            # Kita akan gunakan None, yang akan diabaikan oleh SMA berikutnya jika terlalu banyak.
+            raw_k_values[i] = None 
+        else:
+            raw_k = 100 * (current_close - lowest_low_in_period) / (highest_high_in_period - lowest_low_in_period)
+            raw_k_values[i] = raw_k
+    
+    # %K (Smooth K) - Menghaluskan raw_k_values
+    # Kita gunakan calculate_sma yang sudah ada dan robust
+    smooth_k_values = calculate_sma(raw_k_values, smooth_k_period)
+    
+    # %D (Smooth D) - Menghaluskan smooth_k_values
+    smooth_d_values = calculate_sma(smooth_k_values, smooth_d_period)
+    
+    return smooth_k_values, smooth_d_values
 
 
 def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
 
-    # --- Parameter Strategi ---
-    ema_length = crypto_config.get('ema_length', 200)
-    gr2_required_drop_percent = crypto_config.get('gr2_drop_percentage', 15.0) / 100.0 # Jadi desimal
+    # --- Parameter Strategi dari Config ---
+    ma_length = crypto_config.get('ma_length', 50)
+    stoch_len = crypto_config.get('stoch_length', 14)
+    stoch_smooth_k = crypto_config.get('stoch_smooth_k', 3)
+    stoch_smooth_d = crypto_config.get('stoch_smooth_d', 3)
+    stoch_ob_level = crypto_config.get('stoch_overbought', 80)
+    stoch_os_level = crypto_config.get('stoch_oversold', 20)
+    
     sl_percentage = crypto_config.get('emergency_sl_percent', 5.0) / 100.0
     tp_activation_percentage = crypto_config.get('profit_target_percent_activation', 10.0) / 100.0
     tp_trailing_gap_percentage = crypto_config.get('trailing_stop_gap_percent', 5.0) / 100.0
 
-    # --- Pastikan data cukup ---
-    if len(candles_history) < max(2, ema_length): # Butuh min 2 candle untuk cross, dan ema_length untuk EMA
-        log_debug(f"Data candle tidak cukup ({len(candles_history)}) untuk EMA {ema_length}. Skip logic.", pair_name=pair_name)
+    # --- Minimal data yang dibutuhkan ---
+    # Untuk MA: ma_length. Untuk Stoch: stoch_len + stoch_smooth_k + stoch_smooth_d - 2 (kurang lebih)
+    # Kita ambil yang paling panjang sebagai batas bawah
+    min_data_needed = max(ma_length, stoch_len + stoch_smooth_k -1 + stoch_smooth_d -1) # Perkiraan kasar, SMA butuh periode penuh
+    min_data_needed = max(min_data_needed, 2) # Minimal 2 candle untuk cross
+
+    if len(candles_history) < min_data_needed:
+        log_debug(f"Data candle ({len(candles_history)}) tidak cukup untuk kalkulasi (MA: {ma_length}, Stoch: {stoch_len}+{stoch_smooth_k}+{stoch_smooth_d}). Min dibutuhkan: ~{min_data_needed}. Skip.", pair_name=pair_name)
         return strategy_state
 
-    # --- Ambil data candle & hitung EMA ---
+    # --- Ambil data harga ---
     close_prices = [c.get('close') for c in candles_history]
-    low_prices = [c.get('low') for c in candles_history] # Untuk GR2
+    high_prices = [c.get('high') for c in candles_history]
+    low_prices = [c.get('low') for c in candles_history]
     
-    ema_values = calculate_ema(close_prices, ema_length)
+    # --- Kalkulasi Indikator ---
+    ma_values = calculate_sma(close_prices, ma_length)
+    stoch_k_values, stoch_d_values = calculate_stochastic(
+        close_prices, high_prices, low_prices, 
+        stoch_len, stoch_smooth_k, stoch_smooth_d
+    )
 
     current_candle_idx = len(candles_history) - 1
     prev_candle_idx = current_candle_idx - 1
 
-    if current_candle_idx < 0: return strategy_state # Seharusnya tidak terjadi jika len_check di atas benar
-    
+    # Pastikan candle terbaru dan data indikator valid
     current_candle = candles_history[current_candle_idx]
-    # Pastikan semua field penting ada di candle terbaru
     if any(current_candle.get(k) is None for k in ['open', 'high', 'low', 'close', 'timestamp']):
-        log_warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp', 'N/A')}. Skip evaluasi.", pair_name=pair_name)
+        log_warning(f"Data OHLC tidak lengkap untuk candle terbaru @ {current_candle.get('timestamp', 'N/A')}. Skip.", pair_name=pair_name)
         return strategy_state
 
     current_close = current_candle['close']
-    current_low = current_candle['low']
-    current_ema = ema_values[current_candle_idx]
-    strategy_state["last_ema_value_for_chart"] = current_ema # Simpan untuk chart
+    current_low = current_candle['low'] # Untuk SL/TP
+    current_high = current_candle['high'] # Untuk SL/TP
 
-    # Butuh data sebelumnya untuk deteksi cross
-    if prev_candle_idx < 0 or ema_values[prev_candle_idx] is None or candles_history[prev_candle_idx].get('close') is None:
-        log_debug("Tidak cukup data candle/EMA sebelumnya untuk deteksi cross. Skip logic cross.", pair_name=pair_name)
-        # Jalankan exit logic jika dalam posisi
-        if strategy_state["position_size"] > 0:
-            pass # Exit logic akan jalan di bawah
-        else:
-            return strategy_state # Jika tidak dalam posisi dan tidak bisa cek cross, keluar
+    current_ma = ma_values[current_candle_idx]
+    current_stoch_k = stoch_k_values[current_candle_idx]
+    current_stoch_d = stoch_d_values[current_candle_idx]
+    
+    strategy_state["last_ma_value_for_chart"] = current_ma
+    strategy_state["last_stoch_k_value_for_chart"] = current_stoch_k
+    strategy_state["last_stoch_d_value_for_chart"] = current_stoch_d
 
-    prev_close = candles_history[prev_candle_idx]['close']
-    prev_ema = ema_values[prev_candle_idx]
 
-    # --- Deteksi Cross ---
-    is_cross_under_ema = False
-    is_cross_over_ema = False
+    # Data candle/indikator sebelumnya (untuk cross detection)
+    prev_close = None
+    prev_stoch_k = None
+    prev_stoch_d = None
 
-    if prev_close is not None and prev_ema is not None and current_close is not None and current_ema is not None:
-        is_cross_under_ema = prev_close > prev_ema and current_close < current_ema
-        is_cross_over_ema = prev_close < prev_ema and current_close > current_ema
-
-    # --- Logika Reset State (jika trade baru saja ditutup) ---
-    # Ini dilakukan di awal agar state bersih sebelum evaluasi kondisi baru
-    # Deteksi trade ditutup: jika posisi_size adalah 0 SEKARANG, tapi di state SEBELUM fungsi ini dipanggil adalah > 0
-    # Ini sedikit rumit karena kita memodifikasi state_strategy secara langsung.
-    # Cara PineScript: if strategy.closedtrades > strategy.closedtrades[1]
-    # Di Python, kita bisa cek jika posisi jadi 0 di akhir blok 'if strategy_state["position_size"] > 0'
-    # Untuk sekarang, reset akan ada di dalam blok exit.
-
-    # --- Get Ready 1 (GR1) Condition ---
-    if is_cross_under_ema and \
-       strategy_state["position_size"] == 0 and \
-       not strategy_state["inGetReady1"] and \
-       not strategy_state["inGetReady2"]:
+    if prev_candle_idx >= 0:
+        prev_close_val = candles_history[prev_candle_idx].get('close')
+        if prev_close_val is not None: prev_close = prev_close_val
         
-        strategy_state["inGetReady1"] = True
-        strategy_state["inGetReady2"] = False # Reset GR2 jika sinyal GR1 baru
-        strategy_state["priceAtGR1Close"] = current_close
-        log_info(f"{AnsiColors.ORANGE}GR1 AKTIF: EMA ({current_ema:.5f}) dilintasi KE BAWAH. Harga GR1: {current_close:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
-        # Notifikasi Termux/Email untuk GR1 (opsional, sesuai preferensi)
-        # send_termux_notification(f"GR1: {pair_name}", f"EMA Crossed DOWN @ {current_close:.5f}", global_settings, pair_name)
+        if stoch_k_values[prev_candle_idx] is not None: prev_stoch_k = stoch_k_values[prev_candle_idx]
+        if stoch_d_values[prev_candle_idx] is not None: prev_stoch_d = stoch_d_values[prev_candle_idx]
 
-    # --- Get Ready 2 (GR2) Condition ---
-    if strategy_state["inGetReady1"] and \
-       not strategy_state["inGetReady2"] and \
-       strategy_state["priceAtGR1Close"] is not None and \
-       current_low is not None:
+
+    # --- Kondisi Entry ---
+    # Semua nilai yang dibutuhkan harus valid
+    can_check_entry = all(v is not None for v in [
+        current_close, current_ma, current_stoch_k, current_stoch_d,
+        prev_stoch_k, prev_stoch_d # Untuk cross
+    ])
+
+    if can_check_entry and strategy_state["position_size"] == 0: # Hanya jika tidak ada posisi
+        # Entry Long
+        is_close_above_ma_long = current_close > current_ma
+        is_stoch_crossunder_long = prev_stoch_k > prev_stoch_d and current_stoch_k < current_stoch_d
+        is_stoch_k_oversold_long = current_stoch_k < stoch_os_level
         
-        price_at_gr1 = strategy_state["priceAtGR1Close"]
-        if price_at_gr1 > 0: # Hindari pembagian dengan nol
-            current_drop_from_gr1_price_abs = price_at_gr1 - current_low
-            current_drop_percentage = current_drop_from_gr1_price_abs / price_at_gr1
+        entry_long_condition = is_close_above_ma_long and is_stoch_crossunder_long and is_stoch_k_oversold_long
+
+        if entry_long_condition:
+            entry_price = current_close
+            strategy_state["position_size"] = 1 
+            strategy_state["entry_price_custom"] = entry_price
+            strategy_state["emergency_sl_level_custom"] = entry_price * (1 - sl_percentage)
+            strategy_state["highest_price_for_trailing"] = entry_price # Atau current_high
+            strategy_state["trailing_tp_active_custom"] = False
+            strategy_state["current_trailing_stop_level"] = None
             
-            if current_drop_percentage >= gr2_required_drop_percent:
-                strategy_state["inGetReady2"] = True
-                strategy_state["inGetReady1"] = False # GR1 terpenuhi, sekarang di GR2
-                log_info(f"{AnsiColors.YELLOW_BG}{AnsiColors.RED}GR2 AKTIF: Harga turun {current_drop_percentage*100:.2f}% dari GR1 ({price_at_gr1:.5f}) ke {current_low:.5f}. EMA: {current_ema:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
-                # send_termux_notification(f"GR2: {pair_name}", f"Drop {current_drop_percentage*100:.2f}% from GR1. Price: {current_low:.5f}", global_settings, pair_name)
+            log_msg = (f"BUY ENTRY @ {entry_price:.5f}. "
+                       f"Close({current_close:.5f}) > MA({current_ma:.5f}), "
+                       f"Stoch K({current_stoch_k:.2f}) < D({current_stoch_d:.2f}) & K prev({prev_stoch_k:.2f}) > D prev({prev_stoch_d:.2f}) (Crossunder), "
+                       f"K({current_stoch_k:.2f}) < OS({stoch_os_level}). "
+                       f"SL: {strategy_state['emergency_sl_level_custom']:.5f}")
+            log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
+            play_notification_sound()
+            
+            termux_title = f"BUY Signal: {pair_name}"
+            termux_content = (f"Entry @ {entry_price:.5f}. MA: {current_ma:.5f}, Stoch K:{current_stoch_k:.2f}, D:{current_stoch_d:.2f}. "
+                              f"SL: {strategy_state['emergency_sl_level_custom']:.5f}")
+            send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
 
+            email_subject = f"BUY Signal: {pair_name}"
+            email_body = (f"New BUY signal for {pair_name} on {crypto_config['exchange']}.\n\n"
+                          f"Entry Price: {entry_price:.5f}\n"
+                          f"Close: {current_close:.5f}\nMA ({ma_length}): {current_ma:.5f}\n"
+                          f"Stochastic K: {current_stoch_k:.2f} (Prev: {prev_stoch_k:.2f})\n"
+                          f"Stochastic D: {current_stoch_d:.2f} (Prev: {prev_stoch_d:.2f})\n"
+                          f"Condition: Close > MA, K crossunder D, K < Oversold ({stoch_os_level})\n"
+                          f"Stop Loss: {strategy_state['emergency_sl_level_custom']:.5f}\n"
+                          f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+            send_email_notification(email_subject, email_body, {**crypto_config, 'pair_name': pair_name})
 
-    # --- Entry Condition ---
-    if strategy_state["inGetReady2"] and \
-       is_cross_over_ema and \
-       strategy_state["position_size"] == 0:
-        
-        entry_price = current_close
-        strategy_state["position_size"] = 1 # Atau qty berdasarkan equity jika diimplementasikan
-        strategy_state["entry_price_custom"] = entry_price
-        
-        # Hitung SL dan inisialisasi TP
-        strategy_state["emergency_sl_level_custom"] = entry_price * (1 - sl_percentage)
-        strategy_state["highest_price_for_trailing"] = entry_price
-        strategy_state["trailing_tp_active_custom"] = False
-        strategy_state["current_trailing_stop_level"] = None
-        
-        strategy_state["inGetReady2"] = False # Reset GR2 setelah entry
+        # Sinyal Jual (Entry Short - hanya notifikasi)
+        is_close_below_ma_short = current_close < current_ma
+        is_stoch_crossover_short = prev_stoch_k < prev_stoch_d and current_stoch_k > current_stoch_d
+        is_stoch_k_overbought_short = current_stoch_k > stoch_ob_level
 
-        log_msg = f"BUY ENTRY @ {entry_price:.5f} (EMA: {current_ema:.5f}). SL: {strategy_state['emergency_sl_level_custom']:.5f}"
-        log_info(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
-        play_notification_sound()
+        entry_short_condition = is_close_below_ma_short and is_stoch_crossover_short and is_stoch_k_overbought_short
         
-        termux_title = f"BUY Signal: {pair_name}"
-        termux_content = f"Entry @ {entry_price:.5f}. EMA: {current_ema:.5f}. SL: {strategy_state['emergency_sl_level_custom']:.5f}"
-        send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
+        if entry_short_condition: # Tidak membuka posisi, hanya notif
+            log_msg_short = (f"SINYAL JUAL TERDETEKSI @ Close {current_close:.5f}. "
+                             f"Close({current_close:.5f}) < MA({current_ma:.5f}), "
+                             f"Stoch K({current_stoch_k:.2f}) > D({current_stoch_d:.2f}) & K prev({prev_stoch_k:.2f}) < D prev({prev_stoch_d:.2f}) (Crossover), "
+                             f"K({current_stoch_k:.2f}) > OB({stoch_ob_level}).")
+            log_info(f"{AnsiColors.MAGENTA}{AnsiColors.BOLD}{log_msg_short}{AnsiColors.ENDC}", pair_name=pair_name)
+            play_notification_sound()
 
-        email_subject = f"BUY Signal: {pair_name}"
-        email_body = (f"New BUY signal for {pair_name} on {crypto_config['exchange']}.\n\n"
-                      f"Entry Price: {entry_price:.5f}\n"
-                      f"EMA ({ema_length}): {current_ema:.5f}\n"
-                      f"Stop Loss: {strategy_state['emergency_sl_level_custom']:.5f}\n"
-                      f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-        send_email_notification(email_subject, email_body, {**crypto_config, 'pair_name': pair_name})
+            termux_title_short = f"SELL Signal (Alert): {pair_name}"
+            termux_content_short = (f"SELL Signal @ {current_close:.5f}. MA: {current_ma:.5f}, Stoch K:{current_stoch_k:.2f}, D:{current_stoch_d:.2f}")
+            send_termux_notification(termux_title_short, termux_content_short, global_settings, pair_name_for_log=pair_name)
+
+            email_subject_short = f"SELL Signal (Alert): {pair_name}"
+            email_body_short = (f"New SELL signal alert for {pair_name} on {crypto_config['exchange']}.\n\n"
+                                f"Current Close: {current_close:.5f}\nMA ({ma_length}): {current_ma:.5f}\n"
+                                f"Stochastic K: {current_stoch_k:.2f} (Prev: {prev_stoch_k:.2f})\n"
+                                f"Stochastic D: {current_stoch_d:.2f} (Prev: {prev_stoch_d:.2f})\n"
+                                f"Condition: Close < MA, K crossover D, K > Overbought ({stoch_ob_level})\n"
+                                f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                f"Ini adalah notifikasi sinyal, tidak ada posisi short yang dibuka oleh skrip ini.")
+            send_email_notification(email_subject_short, email_body_short, {**crypto_config, 'pair_name': pair_name})
+
 
     # --- Exit Conditions (Menggunakan Logika SL/TP yang sudah ada di Python) ---
     if strategy_state["position_size"] > 0:
         entry_price_val = strategy_state["entry_price_custom"]
         
-        # Update harga tertinggi untuk trailing
-        if current_candle.get('high') is not None:
-            if strategy_state["highest_price_for_trailing"] is None: # Harusnya sudah di-set saat entry
-                 strategy_state["highest_price_for_trailing"] = current_candle['high']
+        if current_high is not None:
+            if strategy_state["highest_price_for_trailing"] is None:
+                 strategy_state["highest_price_for_trailing"] = current_high
             else:
-                 strategy_state["highest_price_for_trailing"] = max(strategy_state["highest_price_for_trailing"], current_candle['high'])
+                 strategy_state["highest_price_for_trailing"] = max(strategy_state["highest_price_for_trailing"], current_high)
 
-        # Aktivasi Trailing TP
         if not strategy_state["trailing_tp_active_custom"] and entry_price_val is not None and entry_price_val > 0:
             highest_price = strategy_state["highest_price_for_trailing"]
             if highest_price is not None:
-                profit_perc = ((highest_price - entry_price_val) / entry_price_val) # Sudah desimal
+                profit_perc = ((highest_price - entry_price_val) / entry_price_val)
                 if profit_perc >= tp_activation_percentage:
                     strategy_state["trailing_tp_active_custom"] = True
                     log_info(f"{AnsiColors.BLUE}Trailing TP Aktif. Profit: {profit_perc*100:.2f}%, High Sejak Entry: {highest_price:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
 
-        # Update Trailing Stop Level
         if strategy_state["trailing_tp_active_custom"]:
             highest_price = strategy_state["highest_price_for_trailing"]
             if highest_price is not None:
@@ -1065,7 +1159,6 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
                     strategy_state["current_trailing_stop_level"] = potential_new_stop
                     log_debug(f"Trailing SL update: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
 
-        # Tentukan SL yang berlaku (Emergency SL atau Trailing SL)
         effective_sl_level = strategy_state["emergency_sl_level_custom"]
         exit_reason = "Stop Loss"
         exit_color = AnsiColors.RED
@@ -1074,59 +1167,48 @@ def run_strategy_logic(candles_history, crypto_config, strategy_state, global_se
             if effective_sl_level is None or strategy_state["current_trailing_stop_level"] > effective_sl_level:
                 effective_sl_level = strategy_state["current_trailing_stop_level"]
                 exit_reason = "Trailing TP"
-                exit_color = AnsiColors.BLUE # Biru untuk Trailing TP yang profit
+                exit_color = AnsiColors.BLUE 
 
-        # Cek jika SL/Trailing TP kena
         if effective_sl_level is not None and current_low is not None and current_low <= effective_sl_level:
-            # Untuk exit, kita bisa asumsikan dieksekusi pada open candle berikutnya atau pada level SL itu sendiri.
-            # PineScript strategy.exit biasanya di bar berikutnya, atau di harga SL jika itu yang kena duluan.
-            # Kita pakai harga SL sebagai harga exit untuk simplisitas.
             exit_price = effective_sl_level 
-            
             pnl = 0.0
             if entry_price_val is not None and entry_price_val != 0:
-                pnl = ((exit_price - entry_price_val) / entry_price_val) * 100.0 # PnL dalam %
+                pnl = ((exit_price - entry_price_val) / entry_price_val) * 100.0
 
-            if exit_reason == "Trailing TP" and pnl < 0: # Jika Trailing TP tapi rugi (misal gap besar)
+            if exit_reason == "Trailing TP" and pnl < 0: 
                 exit_color = AnsiColors.RED
                 exit_reason = "Trailing SL (Loss)"
 
-
-            log_msg = f"EXIT ORDER @ {exit_price:.5f} by {exit_reason}. PnL: {pnl:.2f}%"
-            log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg}{AnsiColors.ENDC}", pair_name=pair_name)
+            log_msg_exit = f"EXIT ORDER @ {exit_price:.5f} by {exit_reason}. PnL: {pnl:.2f}%"
+            log_info(f"{exit_color}{AnsiColors.BOLD}{log_msg_exit}{AnsiColors.ENDC}", pair_name=pair_name)
             play_notification_sound()
 
             termux_title_exit = f"EXIT Signal: {pair_name}"
             termux_content_exit = f"{exit_reason} @ {exit_price:.5f}. PnL: {pnl:.2f}%"
             send_termux_notification(termux_title_exit, termux_content_exit, global_settings, pair_name_for_log=pair_name)
 
-            email_subject = f"Trade Closed: {pair_name} ({exit_reason})"
-            email_body = (f"Trade closed for {pair_name} on {crypto_config['exchange']}.\n\n"
-                          f"Exit Price: {exit_price:.5f}\n"
-                          f"Reason: {exit_reason}\n"
-                          f"Entry Price: {entry_price_val:.5f}\n"
-                          f"PnL: {pnl:.2f}%\n"
-                          f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-            send_email_notification(email_subject, email_body, {**crypto_config, 'pair_name': pair_name})
+            email_subject_exit = f"Trade Closed: {pair_name} ({exit_reason})"
+            email_body_exit = (f"Trade closed for {pair_name} on {crypto_config['exchange']}.\n\n"
+                               f"Exit Price: {exit_price:.5f}\n"
+                               f"Reason: {exit_reason}\n"
+                               f"Entry Price: {entry_price_val:.5f}\n"
+                               f"PnL: {pnl:.2f}%\n"
+                               f"Time: {current_candle['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+            send_email_notification(email_subject_exit, email_body_exit, {**crypto_config, 'pair_name': pair_name})
             
-            # Reset state posisi
             strategy_state["position_size"] = 0
             strategy_state["entry_price_custom"] = None
             strategy_state["highest_price_for_trailing"] = None
             strategy_state["trailing_tp_active_custom"] = False
             strategy_state["current_trailing_stop_level"] = None
             strategy_state["emergency_sl_level_custom"] = None
-
-            # Reset state GR1/GR2 karena trade sudah selesai
-            strategy_state["inGetReady1"] = False
-            strategy_state["inGetReady2"] = False
-            strategy_state["priceAtGR1Close"] = None
-            log_info("Status GR1/GR2 direset setelah trade ditutup.", pair_name=pair_name)
+            log_info("State posisi direset setelah trade ditutup.", pair_name=pair_name)
             
-        elif strategy_state["position_size"] > 0 : # Jika masih dalam posisi & SL/TP tidak kena
+        elif strategy_state["position_size"] > 0 : 
             entry_display = strategy_state.get('entry_price_custom', 0)
             sl_display_str = f'{effective_sl_level:.5f} ({exit_reason})' if effective_sl_level is not None else 'N/A'
-            log_debug(f"Posisi Aktif. Entry: {entry_display:.5f}, SL Saat Ini: {sl_display_str}, High: {strategy_state.get('highest_price_for_trailing',0):.5f}", pair_name=pair_name)
+            high_trail_display = strategy_state.get('highest_price_for_trailing', 0)
+            log_debug(f"Posisi Aktif. Entry: {entry_display:.5f}, SL Saat Ini: {sl_display_str}, High: {high_trail_display:.5f}", pair_name=pair_name)
 
     return strategy_state
 
@@ -1144,20 +1226,20 @@ def prepare_chart_data_for_pair(pair_id_to_display, current_data_manager_snapsho
     current_strategy_state = pair_specific_data.get("strategy_state", {})
     pair_config = pair_specific_data.get("config", {})
 
-    candles_for_chart_display = candles_full_history[-TARGET_BIG_DATA_CANDLES:]
+    candles_for_chart_display = candles_full_history[-TARGET_BIG_DATA_CANDLES:] # Ambil N candle terakhir
 
     ohlc_data_points = []
-    ema_series_data = [] # Untuk plot EMA
+    ma_series_data = [] # Untuk plot MA
     
     if not candles_for_chart_display:
         log_warning(f"Tidak ada candle di `candles_for_chart_display` untuk {pair_id_to_display}.", pair_name="SYSTEM_CHART")
-        return {"ohlc": [], "ema_series": [], "annotations_yaxis": [], "annotations_points": [], "pair_name": pair_config.get('pair_name', pair_id_to_display), "last_updated_tv": None, "background_colors": []}
+        return {"ohlc": [], "ma_series": [], "annotations_yaxis": [], "annotations_points": [], "pair_name": pair_config.get('pair_name', pair_id_to_display), "last_updated_tv": None}
 
 
-    # Hitung ulang EMA untuk data yang akan ditampilkan di chart
+    # Hitung ulang MA untuk data yang akan ditampilkan di chart
     chart_close_prices = [c.get('close') for c in candles_for_chart_display]
-    chart_ema_length = pair_config.get('ema_length', 200)
-    chart_ema_values = calculate_ema(chart_close_prices, chart_ema_length)
+    chart_ma_length = pair_config.get('ma_length', 50) # Gunakan ma_length dari config
+    chart_ma_values = calculate_sma(chart_close_prices, chart_ma_length)
 
     for i, candle in enumerate(candles_for_chart_display):
         required_candle_keys = ['timestamp', 'open', 'high', 'low', 'close']
@@ -1167,23 +1249,23 @@ def prepare_chart_data_for_pair(pair_id_to_display, current_data_manager_snapsho
                 'x': ts_ms,
                 'y': [candle['open'], candle['high'], candle['low'], candle['close']]
             })
-            if chart_ema_values[i] is not None:
-                ema_series_data.append({'x': ts_ms, 'y': chart_ema_values[i]})
+            if i < len(chart_ma_values) and chart_ma_values[i] is not None: # Pastikan index valid
+                ma_series_data.append({'x': ts_ms, 'y': chart_ma_values[i]})
         else:
             log_debug(f"Skipping incomplete candle for chart: {candle.get('timestamp')}", pair_name="SYSTEM_CHART")
 
 
     chart_annotations_yaxis = []
-    chart_annotations_points = [] # Tidak ada anotasi titik dari strategi EMA GR1/GR2 (seperti Pivot)
+    chart_annotations_points = []
     
     # Anotasi untuk SL & Entry Price
     if current_strategy_state.get("position_size", 0) > 0 and current_strategy_state.get("entry_price_custom") is not None:
         entry_price_val = current_strategy_state.get("entry_price_custom")
         
-        if ohlc_data_points: # Hanya tambah jika ada data candle
+        if ohlc_data_points: 
              chart_annotations_yaxis.append({
                 'y': entry_price_val,
-                'borderColor': '#2698FF', # Biru untuk entry
+                'borderColor': '#2698FF', 
                 'strokeDashArray': 4,
                 'label': {
                     'borderColor': '#2698FF',
@@ -1203,7 +1285,7 @@ def prepare_chart_data_for_pair(pair_id_to_display, current_data_manager_snapsho
         if sl_level_val and ohlc_data_points:
             chart_annotations_yaxis.append({
                 'y': sl_level_val,
-                'borderColor': '#FF4560', # Merah untuk SL
+                'borderColor': '#FF4560', 
                 'label': {
                     'borderColor': '#FF4560',
                     'style': {'color': '#fff', 'background': '#FF4560', 'fontSize': '10px', 'padding': {'left': '3px', 'right': '3px', 'top':'1px', 'bottom':'1px'}},
@@ -1211,31 +1293,22 @@ def prepare_chart_data_for_pair(pair_id_to_display, current_data_manager_snapsho
                 }
             })
     
-    # Background colors for GR1/GR2 (simplified, just for the last known state if active)
-    # Ini memerlukan modifikasi signifikan di frontend untuk render per bar.
-    # Untuk simplifikasi, kita bisa kirim state GR1/GR2 dan biarkan frontend menampilkannya sebagai label, bukan background.
-    # Atau, kita bisa tandai bar terakhir jika GR1/GR2 aktif.
-    # PineScript: bgcolor(inGetReady1 ? color.new(color.orange, 80) : na, title="GR1 Active")
-    # PineScript: bgcolor(inGetReady2 ? color.new(color.yellow, 70) : na, title="GR2 Active")
-    # Ini akan saya skip untuk saat ini karena kompleksitas di frontend. Label status GR1/GR2 bisa ditambahkan di judul chart atau info teks.
-
     last_updated_tv_val = None
     if candles_for_chart_display and candles_for_chart_display[-1].get('timestamp'):
         last_updated_tv_val = candles_for_chart_display[-1]['timestamp'].timestamp() * 1000
 
-
     return {
         "ohlc": ohlc_data_points,
-        "ema_series": ema_series_data, # Data EMA untuk diplot sebagai garis
-        "ema_length_for_label": chart_ema_length,
+        "ma_series": ma_series_data, 
+        "ma_length_for_label": chart_ma_length,
         "annotations_yaxis": chart_annotations_yaxis,
         "annotations_points": chart_annotations_points,
         "pair_name": pair_config.get('pair_name', pair_id_to_display),
         "last_updated_tv": last_updated_tv_val,
-        "strategy_state_info": { # Info tambahan untuk ditampilkan di chart
-            "inGetReady1": current_strategy_state.get("inGetReady1", False),
-            "inGetReady2": current_strategy_state.get("inGetReady2", False),
-            "priceAtGR1Close": current_strategy_state.get("priceAtGR1Close")
+        "strategy_state_info": { # Info tambahan, bisa ditambahkan stoch K/D jika perlu
+            "stoch_k": current_strategy_state.get("last_stoch_k_value_for_chart"),
+            "stoch_d": current_strategy_state.get("last_stoch_d_value_for_chart"),
+            "ma": current_strategy_state.get("last_ma_value_for_chart")
         }
     }
 
@@ -1258,19 +1331,18 @@ HTML_CHART_TEMPLATE = """
         #chart-container { width: 100%; max-width: 1200px; background-color: #2a2a2a; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
         h1 { text-align: center; color: #00bcd4; margin-top: 0; margin-bottom:10px; font-size:1.5em; }
         #lastUpdatedLabel { font-size: 0.8em; color: #aaa; margin-left: auto; padding-right: 5px; }
-        #strategyStateLabel { font-size: 0.8em; color: #FFD700; /* Gold */ margin-left: 10px; }
+        #strategyInfoLabel { font-size: 0.8em; color: #FFD700; margin-left: 10px; white-space: pre; }
         .apexcharts-tooltip-candlestick { background: #333 !important; color: #fff !important; border: 1px solid #555 !important;}
         .apexcharts-tooltip-candlestick .value { font-weight: bold; }
-        .apexcharts-marker-inverted .apexcharts-marker-poly { transform: rotate(180deg); transform-origin: center; }
     </style>
 </head>
 <body>
-    <h1>EMA GR1/GR2 Strategy Chart</h1>
+    <h1>MA + Stochastic Strategy Chart</h1>
     <div id="controls">
         <label for="pairSelector">Pilih Pair:</label>
         <select id="pairSelector" onchange="handlePairSelectionChange()"></select>
         <button onclick="loadChartDataForCurrentPair()">Refresh Manual</button>
-        <span id="strategyStateLabel">Status: -</span>
+        <span id="strategyInfoLabel">Status: -</span>
         <span id="lastUpdatedLabel">Memuat...</span>
     </div>
     <div id="chart-container">
@@ -1287,10 +1359,10 @@ HTML_CHART_TEMPLATE = """
         const initialChartOptions = {
             series: [
                 { name: 'Candlestick', type: 'candlestick', data: [] },
-                { name: 'EMA', type: 'line', data: [] }
+                { name: 'MA', type: 'line', data: [] } // Diubah dari EMA ke MA
             ],
             chart: { 
-                type: 'candlestick', // Default, akan di-override oleh series type
+                type: 'candlestick', 
                 height: 550,
                 id: 'mainStrategyChart',
                 background: '#2a2a2a',
@@ -1304,34 +1376,31 @@ HTML_CHART_TEMPLATE = """
                 tooltip: { enabled: true }, 
                 labels: { style: { colors: '#aaa'}, formatter: function (value) { return value ? value.toFixed(5) : ''; } } 
             },
-            stroke: { // Untuk garis EMA
-              width: [1, 2], // Lebar stroke untuk candlestick dan EMA
+            stroke: { 
+              width: [1, 2], 
               curve: 'smooth'
             },
-            markers: { // Untuk garis EMA (jika diinginkan marker di tiap titik)
-                size: 0 // Sembunyikan marker default untuk line
-            },
-            colors: ['#FEB019', '#008FFB'], // Warna untuk Candlestick (tidak berlaku langsung) dan EMA (biru)
+            markers: { size: 0 },
+            colors: ['#FEB019', '#008FFB'], // Warna Candlestick (tidak langsung) dan MA (biru)
             grid: { borderColor: '#444' },
             annotations: { yaxis: [], points: [] },
             tooltip: { 
                 theme: 'dark', 
                 shared: true, 
-                intersect: false, // Biar tooltip muncul walau tidak tepat di atas candle/line
+                intersect: false,
                 y: {
                     formatter: function(value, { series, seriesIndex, dataPointIndex, w }) {
                         if (w.config.series[seriesIndex].type === 'candlestick') {
-                            // Ini tidak akan terpanggil karena custom tooltip di bawah
                             return value ? value.toFixed(5) : '';
                         }
-                        return value ? value.toFixed(5) : ''; // Untuk EMA dan y-axis annotations
+                        return value ? value.toFixed(5) : ''; 
                     }
                 },
                 custom: function({series, seriesIndex, dataPointIndex, w}) {
                     let o, h, l, c;
-                    let emaVal;
+                    let maVal; // Diubah dari emaVal
                     const candlestickSeriesIndex = w.globals.series.findIndex(s => s.type === 'candlestick' || w.config.series.findIndex(cs => cs.name === 'Candlestick'));
-                    const emaSeriesIndex = w.globals.series.findIndex(s => s.name === 'EMA');
+                    const maSeriesIndex = w.globals.series.findIndex(s => s.name.startsWith('MA')); // Diubah dari EMA
 
                     if (candlestickSeriesIndex !== -1 && w.globals.seriesCandleO[candlestickSeriesIndex] && w.globals.seriesCandleO[candlestickSeriesIndex][dataPointIndex] !== undefined) {
                         o = w.globals.seriesCandleO[candlestickSeriesIndex][dataPointIndex];
@@ -1339,10 +1408,9 @@ HTML_CHART_TEMPLATE = """
                         l = w.globals.seriesCandleL[candlestickSeriesIndex][dataPointIndex];
                         c = w.globals.seriesCandleC[candlestickSeriesIndex][dataPointIndex];
                     }
-                    if (emaSeriesIndex !== -1 && series[emaSeriesIndex] && series[emaSeriesIndex][dataPointIndex] !== undefined) {
-                         // Cek jika data point ada di series EMA
-                         if (w.globals.series[emaSeriesIndex] && w.globals.series[emaSeriesIndex][dataPointIndex] !== undefined) {
-                            emaVal = w.globals.series[emaSeriesIndex][dataPointIndex];
+                    if (maSeriesIndex !== -1 && series[maSeriesIndex] && series[maSeriesIndex][dataPointIndex] !== undefined) {
+                         if (w.globals.series[maSeriesIndex] && w.globals.series[maSeriesIndex][dataPointIndex] !== undefined) {
+                            maVal = w.globals.series[maSeriesIndex][dataPointIndex];
                          }
                     }
                     
@@ -1353,11 +1421,11 @@ HTML_CHART_TEMPLATE = """
                                 '<div>L: <span class="value">' + l.toFixed(5) + '</span></div>' +
                                 '<div>C: <span class="value">' + c.toFixed(5) + '</span></div>';
                     }
-                    if (emaVal !== undefined) {
-                        html += '<div>EMA: <span class="value">' + emaVal.toFixed(5) + '</span></div>';
+                    if (maVal !== undefined) {
+                        html += '<div>MA: <span class="value">' + maVal.toFixed(5) + '</span></div>'; // Diubah dari EMA
                     }
                     html += '</div>';
-                    return (o !== undefined || emaVal !== undefined) ? html : '';
+                    return (o !== undefined || maVal !== undefined) ? html : '';
                 }
             },
             noData: { text: 'Tidak ada data untuk ditampilkan.', align: 'center', verticalAlign: 'middle', style: { color: '#ccc', fontSize: '14px' } }
@@ -1385,7 +1453,7 @@ HTML_CHART_TEMPLATE = """
                      activeChart = null; 
                      document.getElementById('chart').innerHTML = '<p style="text-align:center; color:#aaa;">Tidak ada pair aktif yang dikonfigurasi di server.</p>';
                      document.getElementById('lastUpdatedLabel').textContent = "Tidak ada pair";
-                     document.getElementById('strategyStateLabel').textContent = "Status: -";
+                     document.getElementById('strategyInfoLabel').textContent = "Status: -";
                 }
             } catch (error) {
                 console.error("Error fetching pair list:", error);
@@ -1394,7 +1462,7 @@ HTML_CHART_TEMPLATE = """
                 activeChart = null;
                 document.getElementById('chart').innerHTML = `<p style="text-align:center; color:red;">Error: ${error.message}</p>`;
                 document.getElementById('lastUpdatedLabel').textContent = "Error";
-                document.getElementById('strategyStateLabel').textContent = "Status: Error";
+                document.getElementById('strategyInfoLabel').textContent = "Status: Error";
             }
         }
 
@@ -1406,10 +1474,9 @@ HTML_CHART_TEMPLATE = """
 
         async function loadChartDataForCurrentPair() {
             if (!currentSelectedPairId) {
-                console.log("Tidak ada pair ID yang dipilih.");
-                if(activeChart) activeChart.updateOptions(initialChartOptions); // Reset ke opsi awal
+                if(activeChart) activeChart.updateOptions(initialChartOptions);
                 document.getElementById('lastUpdatedLabel').textContent = "Pilih pair";
-                document.getElementById('strategyStateLabel').textContent = "Status: Pilih Pair";
+                document.getElementById('strategyInfoLabel').textContent = "Status: Pilih Pair";
                 return;
             }
             if (isLoadingData) {
@@ -1419,7 +1486,7 @@ HTML_CHART_TEMPLATE = """
 
             isLoadingData = true;
             document.getElementById('lastUpdatedLabel').textContent = `Sinkronisasi ${currentSelectedPairId}...`;
-            document.getElementById('strategyStateLabel').textContent = "Status: Memuat...";
+            document.getElementById('strategyInfoLabel').textContent = "Status: Memuat...";
             
             try {
                 const fetchResponse = await fetch(`/api/chart_data/${currentSelectedPairId}`);
@@ -1436,7 +1503,7 @@ HTML_CHART_TEMPLATE = """
                     const noDataOpts = {
                         ...initialChartOptions,
                         title: { ...initialChartOptions.title, text: `${pairDisplayName} - Tidak Ada Data Candle` },
-                        series: [{ name: 'Candlestick', type: 'candlestick', data: [] }, { name: 'EMA', type: 'line', data: [] }],
+                        series: [{ name: 'Candlestick', type: 'candlestick', data: [] }, { name: 'MA', type: 'line', data: [] }],
                         annotations: { yaxis: [], points: [] },
                         noData: { text: 'Tidak ada data candle terbaru dari server.' }
                     };
@@ -1448,7 +1515,7 @@ HTML_CHART_TEMPLATE = """
                     }
                     lastKnownDataTimestamp = chartDataPayload.last_updated_tv || null;
                     document.getElementById('lastUpdatedLabel').textContent = lastKnownDataTimestamp ? `Data (kosong) @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}` : "Tidak ada data";
-                    document.getElementById('strategyStateLabel').textContent = "Status: Data Kosong";
+                    document.getElementById('strategyInfoLabel').textContent = "Status: Data Kosong";
                     isLoadingData = false; 
                     return; 
                 }
@@ -1456,14 +1523,13 @@ HTML_CHART_TEMPLATE = """
                 if (chartDataPayload.last_updated_tv && chartDataPayload.last_updated_tv === lastKnownDataTimestamp) {
                     console.log("Data chart tidak berubah, tidak perlu update render.");
                     document.getElementById('lastUpdatedLabel').textContent = `Data terakhir @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;
-                    // Update status GR1/GR2 meskipun data candle tidak berubah
+                    // Update info strategi meskipun data candle tidak berubah
                     const stateInfo = chartDataPayload.strategy_state_info || {};
-                    let statusText = "Status: ";
-                    if (stateInfo.inGetReady2) statusText += "GR2 Aktif";
-                    else if (stateInfo.inGetReady1) statusText += "GR1 Aktif";
-                    else statusText += "Idle";
-                    if (stateInfo.priceAtGR1Close) statusText += ` (GR1 Price: ${stateInfo.priceAtGR1Close.toFixed(5)})`;
-                    document.getElementById('strategyStateLabel').textContent = statusText;
+                    let infoText = "Status: Idle"; // Default
+                    if (stateInfo.ma !== null && stateInfo.stoch_k !== null && stateInfo.stoch_d !== null) {
+                        infoText = `MA: ${stateInfo.ma.toFixed(3)}\nK: ${stateInfo.stoch_k.toFixed(2)}\nD: ${stateInfo.stoch_d.toFixed(2)}`;
+                    }
+                    document.getElementById('strategyInfoLabel').textContent = infoText;
                     isLoadingData = false; 
                     return;
                 }
@@ -1471,27 +1537,31 @@ HTML_CHART_TEMPLATE = """
                 document.getElementById('lastUpdatedLabel').textContent = lastKnownDataTimestamp ? `Data terakhir @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}` : "N/A";
 
                 const stateInfo = chartDataPayload.strategy_state_info || {};
-                let statusText = "Status: ";
-                if (stateInfo.inGetReady2) statusText += "GR2 Aktif";
-                else if (stateInfo.inGetReady1) statusText += "GR1 Aktif";
-                else statusText += "Idle";
-                if (stateInfo.priceAtGR1Close) statusText += ` (GR1 @ ${stateInfo.priceAtGR1Close.toFixed(5)})`;
-                document.getElementById('strategyStateLabel').textContent = statusText;
+                let infoText = "Status: Idle"; // Default
+                if (stateInfo.ma !== null && stateInfo.ma !== undefined && 
+                    stateInfo.stoch_k !== null && stateInfo.stoch_k !== undefined && 
+                    stateInfo.stoch_d !== null && stateInfo.stoch_d !== undefined) {
+                    infoText = `MA: ${Number(stateInfo.ma).toFixed(3)}\nK: ${Number(stateInfo.stoch_k).toFixed(2)}\nD: ${Number(stateInfo.stoch_d).toFixed(2)}`;
+                } else {
+                    infoText = "Status: Indikator N/A";
+                }
+                document.getElementById('strategyInfoLabel').textContent = infoText;
 
-                const emaLabel = chartDataPayload.ema_length_for_label ? `EMA (${chartDataPayload.ema_length_for_label})` : 'EMA';
+
+                const maLabel = chartDataPayload.ma_length_for_label ? `MA (${chartDataPayload.ma_length_for_label})` : 'MA'; // Diubah
 
                 const newChartOptions = {
                     ...initialChartOptions, 
-                    title: { ...initialChartOptions.title, text: `${chartDataPayload.pair_name} - EMA GR1/GR2 Strategy` },
+                    title: { ...initialChartOptions.title, text: `${chartDataPayload.pair_name} - MA + Stochastic Strategy` }, // Diubah
                     series: [
                         { name: 'Candlestick', type: 'candlestick', data: chartDataPayload.ohlc || [] },
-                        { name: emaLabel, type: 'line', data: chartDataPayload.ema_series || [] }
+                        { name: maLabel, type: 'line', data: chartDataPayload.ma_series || [] } // Diubah
                     ],
                     annotations: { 
                         yaxis: chartDataPayload.annotations_yaxis || [], 
                         points: chartDataPayload.annotations_points || [] 
                     },
-                    colors: ['#FEB019', '#008FFB'] // Warna default, bisa diatur lebih spesifik
+                    colors: ['#FEB019', '#008FFB'] 
                 };
                 
                 if (!activeChart) {
@@ -1511,13 +1581,13 @@ HTML_CHART_TEMPLATE = """
                 const errorChartOpts = { 
                     ...initialChartOptions, 
                     title: { ...initialChartOptions.title, text: `Error: ${pairDisplayNameError}` }, 
-                    series: [{ name: 'Candlestick', type: 'candlestick', data: [] }, { name: 'EMA', type: 'line', data: [] }], 
+                    series: [{ name: 'Candlestick', type: 'candlestick', data: [] }, { name: 'MA', type: 'line', data: [] }], 
                     noData: { text: `Gagal memuat data: ${error.message}` } 
                 };
                 activeChart = new ApexCharts(document.querySelector("#chart"), errorChartOpts);
                 activeChart.render();
                 document.getElementById('lastUpdatedLabel').textContent = "Error update";
-                document.getElementById('strategyStateLabel').textContent = "Status: Error Update";
+                document.getElementById('strategyInfoLabel').textContent = "Status: Error Update";
             } finally {
                 isLoadingData = false; 
             }
@@ -1537,7 +1607,7 @@ HTML_CHART_TEMPLATE = """
                     console.log(`Auto-refresh chart untuk ${currentSelectedPairId}`);
                     await loadChartDataForCurrentPair();
                 }
-            }, 15000); // Refresh chart lebih sering, misal 15 detik
+            }, 15000); 
         });
 
     </script>
@@ -1571,37 +1641,32 @@ def get_chart_data_for_frontend(pair_id_from_request):
         if pair_id_from_request not in shared_crypto_data_manager:
              return jsonify({"error": f"Data untuk pair {pair_id_from_request} tidak ditemukan di server."}), 404
         
-        # Deep copy untuk thread safety saat memproses
         pair_data_snapshot = copy.deepcopy(shared_crypto_data_manager.get(pair_id_from_request, {}))
 
-    if not pair_data_snapshot: # Jika pair_id ada tapi datanya kosong (misal setelah gagal fetch awal)
+    if not pair_data_snapshot: 
         return jsonify({
             "error": f"Data untuk pair {pair_id_from_request} kosong (snapshot kosong).",
-            "ohlc": [], "ema_series": [], "annotations_yaxis": [], "annotations_points": [],
+            "ohlc": [], "ma_series": [], "annotations_yaxis": [], "annotations_points": [],
             "pair_name": pair_id_from_request, "last_updated_tv": None,
-            "strategy_state_info": get_initial_strategy_state() # Kirim state default
-        }), 200 # Kirim 200 agar frontend bisa handle sebagai "tidak ada data"
+            "strategy_state_info": get_initial_strategy_state() 
+        }), 200 
 
-    # Buat struktur sementara yang diharapkan oleh prepare_chart_data_for_pair
     temp_data_manager_for_prep = {pair_id_from_request: pair_data_snapshot}
-    
     prepared_data = prepare_chart_data_for_pair(pair_id_from_request, temp_data_manager_for_prep)
 
-    if not prepared_data: # Jika prepare_chart_data_for_pair return None
+    if not prepared_data: 
          return jsonify({
             "error": f"Gagal memproses data chart untuk {pair_id_from_request}.",
-            "ohlc": [], "ema_series": [], "annotations_yaxis": [], "annotations_points": [],
+            "ohlc": [], "ma_series": [], "annotations_yaxis": [], "annotations_points": [],
             "pair_name": pair_id_from_request, "last_updated_tv": None,
             "strategy_state_info": get_initial_strategy_state()
         }), 500
 
-    # Jika prepare_chart_data_for_pair berhasil tapi tidak ada ohlc (misal histori pendek)
     if not prepared_data.get("ohlc"):
         log_warning(f"Tidak ada data OHLC yang cukup untuk ditampilkan untuk {pair_id_from_request} setelah diproses.", pair_name="SYSTEM_CHART")
-        # Kirim data parsial agar frontend bisa menampilkan judul dan status "tidak ada data"
         return jsonify({
             "error": f"Tidak ada data candle yang cukup untuk ditampilkan untuk {pair_id_from_request} (setelah proses).",
-            **prepared_data # Kirim apa pun yang berhasil disiapkan
+            **prepared_data 
         }), 200 
     
     return jsonify(prepared_data)
@@ -1610,7 +1675,6 @@ def get_chart_data_for_frontend(pair_id_from_request):
 def run_flask_server_thread():
     log_info("Memulai Flask server di http://localhost:5001 (atau IP Termux-mu)", pair_name="SYSTEM_CHART")
     try:
-        # Menonaktifkan logging standar Flask karena kita punya logging sendiri
         flask_log = logging.getLogger('werkzeug')
         flask_log.setLevel(logging.ERROR) 
         flask_app_instance.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
@@ -1644,7 +1708,7 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
         input()
         return
 
-    animated_text_display("=========== EMA GR1/GR2 STRATEGY START (Multi-Pair) ===========", color=AnsiColors.HEADER, delay=0.005)
+    animated_text_display("=========== MA + STOCHASTIC STRATEGY START (Multi-Pair) ===========", color=AnsiColors.HEADER, delay=0.005) # Diubah
     current_key_display_val = api_key_manager.get_current_key()
     current_key_display = "N/A"
     if current_key_display_val:
@@ -1662,17 +1726,21 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
         local_crypto_data_manager[pair_id] = {
             "config": config,
             "all_candles_list": [],
-            "strategy_state": get_initial_strategy_state(), # Ini sudah berisi state untuk EMA GR1/GR2
+            "strategy_state": get_initial_strategy_state(),
             "big_data_collection_phase_active": True,
             "big_data_email_sent": False,
             "last_candle_fetch_time": datetime.min,
             "data_fetch_failed_consecutively": 0
         }
         
-        with lock_ref: # Update shared manager untuk chart
+        with lock_ref: 
             shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
 
-        initial_candles_target = TARGET_BIG_DATA_CANDLES
+        initial_candles_target = TARGET_BIG_DATA_CANDLES 
+        # Perkirakan min data untuk indikator
+        min_len_for_indicators_init = max(config.get('ma_length', 50), config.get('stoch_length',14) + config.get('stoch_smooth_k',3) -1 + config.get('stoch_smooth_d',3) -1, 2)
+        initial_candles_target = max(initial_candles_target, min_len_for_indicators_init + 50) # + buffer
+
         initial_candles = []
         max_retries_initial = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
         retries_done_initial = 0
@@ -1685,7 +1753,7 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 break
 
             try:
-                log_info(f"BIG DATA: Mengambil data awal (target {initial_candles_target} candle, EMA {config.get('ema_length',200)}) dengan key index {api_key_manager.get_current_key_index()}...", pair_name=config['pair_name'])
+                log_info(f"BIG DATA: Mengambil data awal (target {initial_candles_target} candle) dengan key index {api_key_manager.get_current_key_index()}...", pair_name=config['pair_name'])
                 initial_candles = fetch_candles(
                     config['symbol'], config['currency'], initial_candles_target,
                     config['exchange'], current_api_key, config['timeframe'],
@@ -1697,7 +1765,7 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 if not api_key_manager.switch_to_next_key(): break
                 retries_done_initial +=1 
             except requests.exceptions.RequestException as e:
-                log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key, akan coba lagi nanti jika loop utama mengizinkan.", pair_name=config['pair_name'])
+                log_error(f"BIG DATA: Error jaringan saat mengambil data awal {config['pair_name']}: {e}. Tidak mengganti key.", pair_name=config['pair_name'])
                 break 
             except Exception as e_gen:
                 log_error(f"BIG DATA: Error umum saat mengambil data awal {config['pair_name']}: {e_gen}. Tidak mengganti key.", pair_name=config['pair_name'])
@@ -1706,69 +1774,59 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
         
         if not initial_candles and not initial_fetch_successful :
             log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini mungkin tidak diproses dengan benar.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False # Tandai gagal agar tidak terus mencoba big data
-            local_crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now() # Update waktu agar tidak langsung dicoba lagi
+            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False 
+            local_crypto_data_manager[pair_id]["last_candle_fetch_time"] = datetime.now() 
             with lock_ref:
                 shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
-            continue # Lanjut ke pair berikutnya
+            continue 
 
         local_crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
         log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima untuk {config['pair_name']}.", pair_name=config['pair_name'])
 
-        # Warm-up state dengan data historis (jalankan logic tanpa trading)
         if initial_candles:
-            min_len_for_logic = max(2, config.get('ema_length', 200)) # Minimal data untuk EMA dan cross
-            if len(initial_candles) >= min_len_for_logic:
+            min_len_for_logic_warmup = max(config.get('ma_length', 50), config.get('stoch_length',14) + config.get('stoch_smooth_k',3) -1 + config.get('stoch_smooth_d',3) -1, 2)
+            
+            if len(initial_candles) >= min_len_for_logic_warmup:
                 log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state {config['pair_name']}...", pair_name=config['pair_name'])
                 
-                # Jalankan logic untuk setiap bar historis, tapi hanya update state, jangan trade
-                for i in range(min_len_for_logic -1, len(initial_candles) - 1): # -1 karena logic jalan di bar terakhir slice
-                    historical_slice = initial_candles[:i+1] # Slice sampai bar ke-i (inklusif)
-                    if len(historical_slice) < min_len_for_logic: continue
+                for i in range(min_len_for_logic_warmup -1, len(initial_candles) - 1): 
+                    historical_slice = initial_candles[:i+1]
+                    if len(historical_slice) < min_len_for_logic_warmup: continue
 
-                    # Buat temporary state, pastikan tidak ada posisi
                     temp_state_for_warmup = local_crypto_data_manager[pair_id]["strategy_state"].copy()
                     temp_state_for_warmup["position_size"] = 0 
-                    # Reset state lain yang mungkin terpengaruh oleh "trade" palsu
                     temp_state_for_warmup["entry_price_custom"] = None
                     temp_state_for_warmup["emergency_sl_level_custom"] = None
-                    temp_state_for_warmup["highest_price_for_trailing"] = None
-                    temp_state_for_warmup["trailing_tp_active_custom"] = False
-                    temp_state_for_warmup["current_trailing_stop_level"] = None
-                    # GR1/GR2 akan di-update oleh logic itu sendiri
+                    # ... (reset state posisi lainnya)
                     
                     local_crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(
                         historical_slice, config, temp_state_for_warmup, global_settings_dict
                     )
                     
-                    # Pastikan tidak ada posisi yang "terbuka" selama warm-up
                     if local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: 
                         log_debug(f"Warm-up: Posisi terdeteksi @ {historical_slice[-1]['timestamp']}, direset.", pair_name=config['pair_name'])
                         local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] = 0
                         local_crypto_data_manager[pair_id]["strategy_state"]["entry_price_custom"] = None
-                        # Reset state GR juga jika entry terpicu, agar siap untuk data live
-                        local_crypto_data_manager[pair_id]["strategy_state"]["inGetReady2"] = False
-
-
                 log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) dengan data awal untuk {config['pair_name']} selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
             else:
-                log_warning(f"Data awal ({len(initial_candles)}) untuk {config['pair_name']} tidak cukup untuk warm-up EMA (min: {min_len_for_logic}). State mungkin tidak optimal.", pair_name=config['pair_name'])
+                log_warning(f"Data awal ({len(initial_candles)}) untuk {config['pair_name']} tidak cukup untuk warm-up (min: {min_len_for_logic_warmup}).", pair_name=config['pair_name'])
         else:
             log_warning(f"Tidak ada data awal untuk warm-up state {config['pair_name']}.", pair_name=config['pair_name'])
 
+        # Cek TARGET_BIG_DATA_CANDLES (yang lebih ke UI/display) setelah fetch awal
         if len(local_crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
             local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {config['pair_name']} setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE (untuk display) TERCAPAI untuk {config['pair_name']} setelah pengambilan awal!{AnsiColors.ENDC}", pair_name=config['pair_name'])
             if not local_crypto_data_manager[pair_id]["big_data_email_sent"]:
                 send_email_notification(
                     f"Data Downloading Complete: {config['pair_name']}", 
-                    f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", 
+                    f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now analyzing on {config['pair_name']}.", 
                     {**config, 'pair_name': config['pair_name']}
                 )
                 local_crypto_data_manager[pair_id]["big_data_email_sent"] = True
             log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(local_crypto_data_manager[pair_id]['all_candles_list'])} candles) untuk {config['pair_name']} ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
         
-        with lock_ref: # Update shared manager untuk chart setelah warm-up
+        with lock_ref: 
             shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
 
     animated_text_display(f"{AnsiColors.HEADER}----------------- SEMUA PAIR DIINISIALISASI -----------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
@@ -1783,14 +1841,13 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 config_for_pair = data_per_pair["config"]
                 pair_name_for_log = config_for_pair['pair_name']
 
-                # Cooldown jika semua key gagal untuk pair ini
                 if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 : 
-                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # Cooldown 1 jam
+                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600:
                         log_debug(f"Pair {pair_name_for_log} sedang dalam cooldown 1 jam setelah semua key gagal.", pair_name=pair_name_for_log)
-                        min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, 3600) # Perhitungkan cooldown
+                        min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, 3600) 
                         continue
-                    else: # Cooldown selesai
-                        data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset counter gagal
+                    else: 
+                        data_per_pair["data_fetch_failed_consecutively"] = 0 
                         log_info(f"Cooldown 1 jam untuk {pair_name_for_log} selesai. Mencoba fetch lagi.", pair_name=pair_name_for_log)
 
 
@@ -1798,52 +1855,51 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 time_since_last_fetch_seconds = (current_loop_time - data_per_pair["last_candle_fetch_time"]).total_seconds()
 
                 required_interval_for_this_pair = 0
-                if data_per_pair["big_data_collection_phase_active"]:
+                if data_per_pair["big_data_collection_phase_active"]: # Untuk TARGET_BIG_DATA_CANDLES (display)
                     active_cryptos_still_in_big_data_collection += 1
-                    # Selama big data, fetch lebih agresif, misal tiap ~1 menit untuk TF menit, ~jam untuk TF jam/hari
                     if config_for_pair.get('timeframe') == "minute": required_interval_for_this_pair = 55 
-                    elif config_for_pair.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 2 # Tiap 2 jam untuk TF hari
-                    else: required_interval_for_this_pair = 3580 # Hampir 1 jam untuk TF jam
-                else: # Setelah big data, gunakan interval dari config
+                    elif config_for_pair.get('timeframe') == "day": required_interval_for_this_pair = 3600 * 2 
+                    else: required_interval_for_this_pair = 3580 
+                else: 
                     required_interval_for_this_pair = config_for_pair.get('refresh_interval_seconds', 60) 
 
                 if time_since_last_fetch_seconds < required_interval_for_this_pair:
                     remaining_time_for_this_pair = required_interval_for_this_pair - time_since_last_fetch_seconds
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, remaining_time_for_this_pair)
-                    continue # Belum waktunya refresh pair ini
+                    continue 
 
                 log_info(f"Memproses {pair_name_for_log} (Interval: {required_interval_for_this_pair}s)...", pair_name=pair_name_for_log)
-                data_per_pair["last_candle_fetch_time"] = current_loop_time # Update waktu fetch SEKARANG
+                data_per_pair["last_candle_fetch_time"] = current_loop_time 
                 num_candles_before_fetch = len(data_per_pair["all_candles_list"])
 
                 if data_per_pair["big_data_collection_phase_active"]:
-                    animated_text_display(f"\n--- PENGUMPULAN BIG DATA {pair_name_for_log} ({len(data_per_pair['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005, new_line=True)
+                    animated_text_display(f"\n--- PENGUMPULAN BIG DATA (DISPLAY) {pair_name_for_log} ({len(data_per_pair['all_candles_list'])}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD + AnsiColors.MAGENTA, delay=0.005, new_line=True)
                 else:
                     animated_text_display(f"\n--- ANALISA LIVE {pair_name_for_log} ({current_loop_time.strftime('%H:%M:%S')}) | {len(data_per_pair['all_candles_list'])} candles ---", color=AnsiColors.BOLD + AnsiColors.CYAN, delay=0.005, new_line=True)
 
                 new_candles_batch = []
                 fetch_update_successful_for_this_pair = False
                 
-                limit_fetch_for_update = 3 # Default untuk update live (ambil beberapa candle terakhir)
+                limit_fetch_for_update = 3 
                 if data_per_pair["big_data_collection_phase_active"]:
                     limit_fetch_needed = TARGET_BIG_DATA_CANDLES - len(data_per_pair["all_candles_list"])
-                    if limit_fetch_needed <=0 : # Harusnya sudah ditangani saat inisialisasi
-                         fetch_update_successful_for_this_pair = True # Tidak perlu fetch lagi untuk big data
-                         new_candles_batch = [] # Tidak ada candle baru dari fetch
-                    else: # Masih butuh candle untuk big data
+                    if limit_fetch_needed <=0 : 
+                         fetch_update_successful_for_this_pair = True 
+                         new_candles_batch = [] 
+                    else: 
                         limit_fetch_for_update = min(limit_fetch_needed, CRYPTOCOMPARE_MAX_LIMIT)
-                        limit_fetch_for_update = max(limit_fetch_for_update, 1) # Minimal 1
+                        limit_fetch_for_update = max(limit_fetch_for_update, 1)
 
-                if limit_fetch_for_update > 0 or data_per_pair["big_data_collection_phase_active"]: # Hanya fetch jika perlu
+                if limit_fetch_for_update > 0 or data_per_pair["big_data_collection_phase_active"]: 
                     max_retries_for_this_pair_update = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                     retries_done_for_this_pair_update = 0
-                    original_api_key_index_for_this_fetch = api_key_manager.get_current_key_index() # Simpan index awal untuk fetch ini
+                    original_api_key_index_for_this_fetch = api_key_manager.get_current_key_index() 
 
                     while retries_done_for_this_pair_update < max_retries_for_this_pair_update and not fetch_update_successful_for_this_pair:
                         current_api_key_for_attempt = api_key_manager.get_current_key()
                         if not current_api_key_for_attempt:
                             log_error(f"Semua API key habis (global) saat mencoba mengambil update untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
-                            break # Keluar dari loop retry untuk pair ini
+                            break 
 
                         log_info(f"Mengambil {limit_fetch_for_update} candle untuk {pair_name_for_log} (Key Idx: {api_key_manager.get_current_key_index()})...", pair_name=pair_name_for_log)
                         try:
@@ -1853,8 +1909,8 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                                 pair_name=pair_name_for_log
                             )
                             fetch_update_successful_for_this_pair = True
-                            data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset counter gagal jika berhasil
-                            any_data_fetched_this_cycle = True # Tandai bahwa ada fetch berhasil di siklus ini
+                            data_per_pair["data_fetch_failed_consecutively"] = 0 
+                            any_data_fetched_this_cycle = True 
                             if api_key_manager.get_current_key_index() != original_api_key_index_for_this_fetch :
                                 log_info(f"Fetch berhasil dengan key index {api_key_manager.get_current_key_index()} setelah retry untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
                         
@@ -1862,39 +1918,37 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                             log_warning(f"API Key (Idx: {api_key_manager.get_current_key_index()}) gagal untuk update {pair_name_for_log}. Mencoba key berikutnya.", pair_name=pair_name_for_log)
                             data_per_pair["data_fetch_failed_consecutively"] = data_per_pair.get("data_fetch_failed_consecutively", 0) + 1
                             
-                            if not api_key_manager.switch_to_next_key(): # Coba ganti key global
+                            if not api_key_manager.switch_to_next_key(): 
                                 log_error(f"Tidak ada lagi API key tersedia (global) setelah kegagalan pada {pair_name_for_log}.", pair_name=pair_name_for_log)
-                                break # Keluar dari loop retry untuk pair ini
+                                break 
                             retries_done_for_this_pair_update += 1 
 
                         except requests.exceptions.RequestException as e_req:
                             log_error(f"Error jaringan saat mengambil update {pair_name_for_log}: {e_req}. Tidak mengganti key.", pair_name=pair_name_for_log)
                             data_per_pair["data_fetch_failed_consecutively"] = data_per_pair.get("data_fetch_failed_consecutively", 0) + 1
-                            break # Keluar dari loop retry untuk pair ini, coba lagi di siklus berikutnya
+                            break 
                         except Exception as e_gen_update:
                             log_error(f"Error umum saat mengambil update {pair_name_for_log}: {e_gen_update}. Tidak mengganti key.", pair_name=pair_name_for_log)
                             log_exception("Traceback Error Update Fetch:", pair_name=pair_name_for_log)
                             data_per_pair["data_fetch_failed_consecutively"] = data_per_pair.get("data_fetch_failed_consecutively", 0) + 1
-                            break # Keluar dari loop retry
+                            break 
 
-                # Jika semua key gagal untuk pair ini di siklus ini
                 if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) +1 :
-                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() # Catat waktu agar bisa cooldown
+                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() 
                     log_warning(f"Semua API key telah dicoba dan gagal untuk {pair_name_for_log} di siklus ini. Akan masuk cooldown.", pair_name=pair_name_for_log)
 
                 if not fetch_update_successful_for_this_pair or not new_candles_batch:
                     if fetch_update_successful_for_this_pair and not new_candles_batch and not data_per_pair["big_data_collection_phase_active"]:
-                        log_info(f"Tidak ada data candle baru diterima untuk {pair_name_for_log} (fetch dianggap berhasil tapi batch kosong).", pair_name=pair_name_for_log)
+                        log_info(f"Tidak ada data candle baru diterima untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
                     elif not fetch_update_successful_for_this_pair:
                          log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name_for_log} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
                     
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
-                    with lock_ref: # Update shared manager (misal, last_candle_fetch_time, data_fetch_failed_consecutively)
+                    with lock_ref: 
                         shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
-                    continue # Lanjut ke pair berikutnya jika fetch gagal atau tidak ada candle baru
+                    continue 
 
 
-                # Merge candle baru ke list yang ada
                 merged_candles_dict = {c['timestamp']: c for c in data_per_pair["all_candles_list"]}
                 newly_added_count_this_batch = 0
                 updated_count_this_batch = 0
@@ -1904,7 +1958,7 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                     if ts not in merged_candles_dict:
                         merged_candles_dict[ts] = candle
                         newly_added_count_this_batch +=1
-                    elif merged_candles_dict[ts] != candle : # Jika timestamp sama tapi konten beda (misal candle belum final)
+                    elif merged_candles_dict[ts] != candle : 
                         merged_candles_dict[ts] = candle
                         updated_count_this_batch +=1
 
@@ -1914,100 +1968,95 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 actual_new_or_updated_count = newly_added_count_this_batch + updated_count_this_batch
                 if actual_new_or_updated_count > 0:
                      log_info(f"{actual_new_or_updated_count} candle baru/diupdate untuk {pair_name_for_log}. Total: {len(data_per_pair['all_candles_list'])}.", pair_name=pair_name_for_log)
-                elif new_candles_batch : # Jika fetch mengembalikan candle tapi tidak ada yang baru/berbeda
-                     log_info(f"Tidak ada candle dengan timestamp baru atau konten berbeda untuk {pair_name_for_log}. Data terakhir mungkin identik.", pair_name=pair_name_for_log)
+                elif new_candles_batch : 
+                     log_info(f"Tidak ada candle dengan timestamp baru atau konten berbeda untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
 
-                # Handle Big Data Collection
+                # Handle Big Data Collection (untuk display TARGET_BIG_DATA_CANDLES)
                 if data_per_pair["big_data_collection_phase_active"]:
                     if len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
-                        if len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: # Trim jika kelebihan
+                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE (display) TERCAPAI untuk {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                        if len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
                             data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:] 
                         
                         if not data_per_pair["big_data_email_sent"]:
                             send_email_notification(
                                 f"Data Downloading Complete: {pair_name_for_log}", 
-                                f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_name_for_log}.", 
+                                f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles (for display)! Now analyzing on {pair_name_for_log}.", 
                                 {**config_for_pair, 'pair_name': pair_name_for_log}
                             )
                             data_per_pair["big_data_email_sent"] = True
                         
-                        data_per_pair["big_data_collection_phase_active"] = False # Selesai big data
-                        active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) # Kurangi counter
+                        data_per_pair["big_data_collection_phase_active"] = False 
+                        active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) 
                         log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({len(data_per_pair['all_candles_list'])} candles) untuk {pair_name_for_log} ----------{AnsiColors.ENDC}", pair_name=pair_name_for_log)
-                else: # Jika sudah live, pastikan tidak melebihi target (misal karena fetch awal yang banyak)
+                else: 
                     if len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: 
                         data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
 
-                # Jalankan Logika Strategi
-                min_len_for_logic_run = max(2, config_for_pair.get('ema_length', 200))
-                if len(data_per_pair["all_candles_list"]) >= min_len_for_logic_run:
-                    # Proses logic jika: ada candle baru/update ATAU baru selesai big data ATAU big data & ada candle baru
+                min_len_for_logic_run_live = max(config_for_pair.get('ma_length', 50), config_for_pair.get('stoch_length',14) + config_for_pair.get('stoch_smooth_k',3) -1 + config_for_pair.get('stoch_smooth_d',3) -1, 2)
+                
+                if len(data_per_pair["all_candles_list"]) >= min_len_for_logic_run_live:
                     process_logic_now = (actual_new_or_updated_count > 0 or
-                                         (not data_per_pair["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or # Transisi dari big data ke live
-                                         (data_per_pair["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) ) # Masih big data tapi ada tambahan
+                                         (not data_per_pair["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) or 
+                                         (data_per_pair["big_data_collection_phase_active"] and newly_added_count_this_batch > 0) ) 
 
                     if process_logic_now:
-                         log_info(f"Menjalankan logika strategi EMA GR1/GR2 untuk {pair_name_for_log} dengan {len(data_per_pair['all_candles_list'])} candle...", pair_name=pair_name_for_log)
+                         log_info(f"Menjalankan logika strategi MA+Stoch untuk {pair_name_for_log} dengan {len(data_per_pair['all_candles_list'])} candle...", pair_name=pair_name_for_log)
                          data_per_pair["strategy_state"] = run_strategy_logic(
                              data_per_pair["all_candles_list"], 
                              config_for_pair, 
                              data_per_pair["strategy_state"],
                              global_settings_dict
                          )
-                    elif not data_per_pair["big_data_collection_phase_active"]: # Jika sudah live dan tidak ada candle baru
+                    elif not data_per_pair["big_data_collection_phase_active"]: 
                          last_c_time_str = data_per_pair["all_candles_list"][-1]['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if data_per_pair["all_candles_list"] else "N/A"
                          log_info(f"Tidak ada candle baru untuk diproses (strategi) untuk {pair_name_for_log}. Data terakhir @ {last_c_time_str}.", pair_name=pair_name_for_log)
                 else:
-                    log_info(f"Data ({len(data_per_pair['all_candles_list'])}) untuk {pair_name_for_log} belum cukup utk analisa EMA (min: {min_len_for_logic_run}).", pair_name=pair_name_for_log)
+                    log_info(f"Data ({len(data_per_pair['all_candles_list'])}) untuk {pair_name_for_log} belum cukup utk analisa (min: {min_len_for_logic_run_live}).", pair_name=pair_name_for_log)
                 
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval_for_this_pair)
             
-                with lock_ref: # Update shared manager untuk chart
+                with lock_ref: 
                     shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
 
-            # --- Penentuan Waktu Tidur ---
-            sleep_duration = 15 # Default sleep jika tidak ada info lain
+            sleep_duration = 15 
 
-            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: # Semua key gagal global
-                log_error("Semua API key gagal secara global dan tidak ada data berhasil di-fetch di siklus ini. Menunggu 1 jam sebelum mencoba lagi semua proses.", pair_name="SYSTEM")
+            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: 
+                log_error("Semua API key gagal global. Menunggu 1 jam.", pair_name="SYSTEM")
                 sleep_duration = 3600
             elif active_cryptos_still_in_big_data_collection > 0:
-                # Jika masih ada yang big data, sleep interval terpendek dari yang big data
                 min_big_data_interval_for_sleep = float('inf')
                 for _pid_loop, pdata_loop_item in local_crypto_data_manager.items():
                     if pdata_loop_item["big_data_collection_phase_active"]:
                         pconfig_loop = pdata_loop_item["config"]
-                        # Interval saat big data
                         interval_bd_sleep = 55 if pconfig_loop.get('timeframe') == "minute" else (3600 * 2 if pconfig_loop.get('timeframe') == "day" else 3580)
                         min_big_data_interval_for_sleep = min(min_big_data_interval_for_sleep, interval_bd_sleep)
                 
-                # Ambil nilai minimal antara interval big data dan interval refresh normal terpendek
                 effective_min_refresh = min_overall_next_refresh_seconds if min_overall_next_refresh_seconds != float('inf') else float('inf')
                 sleep_duration = min(min_big_data_interval_for_sleep if min_big_data_interval_for_sleep != float('inf') else 30, effective_min_refresh if effective_min_refresh > 0 else 30, 30) 
-                log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA. Sleep ~{sleep_duration}s.", pair_name="SYSTEM")
-            else: # Semua sudah live
+                log_debug(f"Masih ada {active_cryptos_still_in_big_data_collection} pair dalam pengumpulan BIG DATA (display). Sleep ~{sleep_duration}s.", pair_name="SYSTEM")
+            else: 
                 if min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0 :
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s sampai refresh berikutnya (min_next_refresh: {min_overall_next_refresh_seconds:.0f}s).", pair_name="SYSTEM")
-                else: # Fallback jika min_overall_next_refresh_seconds tidak valid
+                    log_debug(f"Semua pair live. Tidur ~{sleep_duration}s (min_next_refresh: {min_overall_next_refresh_seconds:.0f}s).", pair_name="SYSTEM")
+                else: 
                     default_refresh_from_first_config = 60
                     if all_crypto_configs :
                         default_refresh_from_first_config = all_crypto_configs[0].get('refresh_interval_seconds', 60)
                     sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, default_refresh_from_first_config)
-                    log_debug(f"Default sleep {sleep_duration}s (fallback atau interval pair pertama setelah live).", pair_name="SYSTEM")
+                    log_debug(f"Default sleep {sleep_duration}s.", pair_name="SYSTEM")
 
             if sleep_duration > 0:
                 show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s hingga siklus berikutnya...")
-            else: # Jika sleep_duration 0 atau negatif, beri jeda minimal
+            else: 
                 log_debug("Sleep duration 0 atau negatif, menggunakan 1s default.", pair_name="SYSTEM")
                 time.sleep(1)
 
     except KeyboardInterrupt:
-        animated_text_display(f"\n{AnsiColors.ORANGE}Proses trading dihentikan oleh pengguna (Ctrl+C).{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01, new_line=True)
+        animated_text_display(f"\n{AnsiColors.ORANGE}Proses dihentikan oleh pengguna (Ctrl+C).{AnsiColors.ENDC}", color=AnsiColors.ORANGE, delay=0.01, new_line=True)
     except Exception as e_main_loop:
-        log_error(f"{AnsiColors.RED}Error tak terduga di loop trading utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM")
-        log_exception("Traceback Error Loop Trading Utama:", pair_name="SYSTEM")
+        log_error(f"{AnsiColors.RED}Error tak terduga di loop utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM")
+        log_exception("Traceback Error Loop Utama:", pair_name="SYSTEM")
     finally:
         animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005, new_line=True)
         animated_text_display("Tekan Enter untuk kembali ke menu utama...", color=AnsiColors.ORANGE, delay=0.01)
@@ -2016,15 +2065,14 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
 
 # --- MENU UTAMA ---
 def main_menu():
-    settings = load_settings() # Memuat settings di awal
+    settings = load_settings() 
 
-    # Jalankan Flask server di thread terpisah
     flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True)
     flask_thread.start()
 
     while True:
         clear_screen_animated()
-        animated_text_display("========= Crypto Strategy Runner (EMA GR1/GR2) =========", color=AnsiColors.HEADER, delay=0.005)
+        animated_text_display("========= Crypto Strategy Runner (MA + Stochastic) =========", color=AnsiColors.HEADER, delay=0.005) # Diubah
 
         pick_title_main = ""
         active_configs_list = [cfg for cfg in settings.get("cryptos", []) if cfg.get("enabled", True)]
@@ -2043,7 +2091,7 @@ def main_menu():
         termux_notif_main_status = "Aktif" if api_s_main.get("enable_termux_notifications", False) else "Nonaktif"
 
         pick_title_main += "-----------------------------------------------\n"
-        pick_title_main += f"Target Data per Pair: {TARGET_BIG_DATA_CANDLES} candle\n"
+        pick_title_main += f"Target Data per Pair (Display): {TARGET_BIG_DATA_CANDLES} candle\n"
         pick_title_main += f"Primary API Key: {primary_key_display_main} | Recovery Keys: {num_recovery_keys_main}\n"
         pick_title_main += f"Notifikasi Termux: {termux_notif_main_status}\n"
         pick_title_main += f"Chart Server: http://localhost:5001 (atau IP Termux-mu)\n"
@@ -2081,18 +2129,16 @@ def main_menu():
                 show_spinner(1.5, "Kembali...")
                 continue
         
-        if selected_main_index == 0: # Mulai Trading
-            # Pastikan settings yang terbaru digunakan
-            settings = load_settings() # Reload settings terbaru sebelum memulai
+        if selected_main_index == 0: 
+            settings = load_settings() 
             start_trading(settings, shared_crypto_data_manager, shared_data_lock)
-        elif selected_main_index == 1: # Pengaturan
-            settings = settings_menu(settings) # settings_menu akan menyimpan jika ada perubahan
-        elif selected_main_index == 2: # Keluar
+        elif selected_main_index == 1: 
+            settings = settings_menu(settings) 
+        elif selected_main_index == 2: 
             log_info("Aplikasi ditutup.", pair_name="SYSTEM")
             clear_screen_animated()
             animated_text_display("Terima kasih telah menggunakan skrip ini! Sampai jumpa!", color=AnsiColors.MAGENTA, new_line=True)
             show_spinner(0.5, "Exiting")
-            # Tidak perlu sys.exit() eksplisit jika Flask thread adalah daemon
             break
 
 
@@ -2113,4 +2159,3 @@ if __name__ == "__main__":
     finally:
         sys.stdout.flush()
         sys.stderr.flush()
-        # os._exit(0) # Bisa digunakan untuk memastikan semua thread child (termasuk Flask jika non-daemon)
