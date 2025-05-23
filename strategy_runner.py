@@ -124,7 +124,7 @@ def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra=
 
 SETTINGS_FILE = "settings_supertrend.json"
 CRYPTOCOMPARE_MAX_LIMIT = 1999
-TARGET_BIG_DATA_CANDLES = 250 
+TARGET_BIG_DATA_CANDLES = 2500 
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
 
 # --- FUNGSI CLEAR SCREEN ---
@@ -368,36 +368,76 @@ def settings_menu(current_settings):
                 api_s["primary_key"] = (input(f"Primary API Key [{api_s.get('primary_key','')}]: ").strip() or api_s.get('primary_key',''))
             elif action_idx == 1: # Kelola Recovery (loop internal)
                 while True:
-                    # ... (sama seperti versi sebelumnya)
-                    # For brevity, this part is condensed. It allows adding/removing recovery keys.
-                    # Ensure save_settings is called appropriately within this sub-loop if changes are made.
-                    # This sub-menu would use pick as well.
-                    # Placeholder:
-                    print("Kelola Recovery Keys (placeholder for sub-menu logic)") 
-                    # Example: new_rec_key = input("Tambah key: "); if new_rec_key: api_s.setdefault('recovery_keys',[]).append(new_rec_key)
-                    break # Exit sub-menu for now
+                    clear_screen_animated()
+                    animated_text_display("--- Kelola Recovery API Keys ---", color=AnsiColors.HEADER)
+                    if not api_s.get('recovery_keys'):
+                        api_s['recovery_keys'] = []
+                    
+                    current_rec_keys_display = "\nKunci Recovery Saat Ini:\n"
+                    if api_s['recovery_keys']:
+                        for i_rec, rk in enumerate(api_s['recovery_keys']):
+                            rk_disp = rk[:5]+"..."+rk[-3:] if len(rk)>8 else rk
+                            current_rec_keys_display += f"  {i_rec+1}. {rk_disp}\n"
+                    else:
+                        current_rec_keys_display += "  (Kosong)\n"
+                    current_rec_keys_display += "-----------------------------\n"
+                    
+                    rec_opts = ["Tambah Recovery Key Baru", "Hapus Recovery Key", "Kembali ke Menu Pengaturan"]
+                    if not api_s['recovery_keys']:
+                        rec_opts.pop(1) # Hapus opsi "Hapus" jika tidak ada key
+                        
+                    _, rec_action_idx = pick(rec_opts, current_rec_keys_display + "Pilih tindakan:", indicator='=>')
+                    
+                    if rec_opts[rec_action_idx] == "Tambah Recovery Key Baru":
+                        new_rec_key = input("Masukkan Recovery API Key baru: ").strip()
+                        if new_rec_key:
+                            api_s['recovery_keys'].append(new_rec_key)
+                            log_info("Recovery key ditambahkan.", pair_name="SETTINGS")
+                        else:
+                            log_warning("Tidak ada input, key tidak ditambahkan.", pair_name="SETTINGS")
+                        show_spinner(1, "Memproses...")
+                    elif rec_opts[rec_action_idx] == "Hapus Recovery Key":
+                        if api_s['recovery_keys']:
+                            del_rec_key_opts = [f"{i_del+1}. {rk[:5]}...{rk[-3:] if len(rk)>8 else rk}" for i_del, rk in enumerate(api_s['recovery_keys'])] + ["Batal"]
+                            _, del_rec_key_choice_idx = pick(del_rec_key_opts, "Pilih key untuk dihapus:", indicator='=>')
+                            if del_rec_key_choice_idx < len(api_s['recovery_keys']):
+                                removed_key = api_s['recovery_keys'].pop(del_rec_key_choice_idx)
+                                log_info(f"Recovery key '{removed_key[:5]}...' dihapus.", pair_name="SETTINGS")
+                            show_spinner(1, "Memproses...")
+                    elif rec_opts[rec_action_idx] == "Kembali ke Menu Pengaturan":
+                        break # Keluar dari sub-menu recovery
+                    
+                    # Simpan pengaturan setelah setiap perubahan di sub-menu recovery
+                    current_settings["api_settings"] = api_s
+                    save_settings(current_settings)
+
             elif action_idx == 2:
-                api_s['enable_global_email_notifications_for_key_switch'] = input(f"Email Global Notif? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower() == 'true'
-                api_s['email_sender_address'] = input(f"Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address','')
-                # ... (sender_password, receiver_address_admin)
+                api_s['enable_global_email_notifications_for_key_switch'] = input(f"Aktifkan Notif Sistem via Email? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip() == 'true'
+                api_s['email_sender_address'] = (input(f"Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
+                api_s['email_sender_app_password'] = (input(f"App Password Pengirim Global [{api_s.get('email_sender_app_password','')}]: ").strip() or api_s.get('email_sender_app_password',''))
+                api_s['email_receiver_address_admin'] = (input(f"Email Penerima Admin (Global) [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
+
             elif action_idx == 3:
-                api_s['enable_termux_notifications'] = input(f"Notif Termux? (true/false) [{api_s.get('enable_termux_notifications',False)}]: ").lower() == 'true'
+                api_s['enable_termux_notifications'] = input(f"Aktifkan Notifikasi Termux (Global)? (true/false) [{api_s.get('enable_termux_notifications',False)}]: ").lower().strip() == 'true'
+
             elif action_idx == 4: current_settings.setdefault("cryptos", []).append(_prompt_crypto_config(get_default_crypto_config()))
             elif action_idx == 5:
-                if not current_settings.get("cryptos"): print("Tidak ada pair untuk diubah."); show_spinner(1,""); continue
-                edit_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')}" for c in current_settings["cryptos"]] + ["Batal"]
-                _, edit_c_idx = pick(edit_opts, "Pilih pair untuk diubah:")
+                if not current_settings.get("cryptos"): print(f"{AnsiColors.ORANGE}Tidak ada pair untuk diubah.{AnsiColors.ENDC}"); show_spinner(1.5,""); continue
+                edit_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')} ({'Aktif' if c.get('enabled',True) else 'Nonaktif'})" for c in current_settings["cryptos"]] + ["Batal"]
+                _, edit_c_idx = pick(edit_opts, "Pilih pair untuk diubah:", indicator='=>')
                 if edit_c_idx < len(current_settings["cryptos"]): current_settings["cryptos"][edit_c_idx] = _prompt_crypto_config(current_settings["cryptos"][edit_c_idx])
             elif action_idx == 6:
-                if not current_settings.get("cryptos"): print("Tidak ada pair untuk dihapus."); show_spinner(1,""); continue
+                if not current_settings.get("cryptos"): print(f"{AnsiColors.ORANGE}Tidak ada pair untuk dihapus.{AnsiColors.ENDC}"); show_spinner(1.5,""); continue
                 del_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')}" for c in current_settings["cryptos"]] + ["Batal"]
-                _, del_c_idx = pick(del_opts, "Pilih pair untuk dihapus:")
-                if del_c_idx < len(current_settings["cryptos"]): current_settings["cryptos"].pop(del_c_idx)
+                _, del_c_idx = pick(del_opts, "Pilih pair untuk dihapus:", indicator='=>')
+                if del_c_idx < len(current_settings["cryptos"]): 
+                    removed = current_settings["cryptos"].pop(del_c_idx)
+                    log_info(f"Pair {removed.get('symbol','?')}-{removed.get('currency','?')} dihapus.", pair_name="SETTINGS")
             elif action_idx == 7: break # Kembali
             current_settings["api_settings"] = api_s # Pastikan api_s disimpan kembali
             save_settings(current_settings)
-            if action_idx not in [1,7]: show_spinner(1, "Disimpan...") # Sub-menu recovery akan handle savenya sendiri
-        except Exception as e_menu: log_error(f"Error menu: {e_menu}"); show_spinner(1, "Error...")
+            if action_idx not in [1,7]: show_spinner(1, "Disimpan...") # Sub-menu recovery akan handle savenya sendiri, kembali tidak save
+        except Exception as e_menu: log_error(f"Error menu: {e_menu}"); show_spinner(1.5, "Terjadi error...")
     return current_settings
 
 # --- FUNGSI PENGAMBILAN DATA ---
@@ -421,16 +461,18 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         try:
             response = requests.get(url, params=params, timeout=20)
             if response.status_code in [401, 403, 429]: # Key-related HTTP errors
-                err_msg = response.json().get('Message', f"HTTP Error {response.status_code}") if response.content else f"HTTP Error {response.status_code}"
-                log_warning(f"API Key Error (HTTP {response.status_code}): {err_msg} | Key: ...{current_api_key_to_use[-5:]}", pair_name=pair_name)
-                raise APIKeyError(f"HTTP {response.status_code}: {err_msg}")
+                err_msg_detail = ""
+                try: err_msg_detail = response.json().get('Message', f"HTTP Error {response.status_code}")
+                except: err_msg_detail = f"HTTP Error {response.status_code}, no JSON body."
+                log_warning(f"API Key Error (HTTP {response.status_code}): {err_msg_detail} | Key: ...{current_api_key_to_use[-5:] if current_api_key_to_use and len(current_api_key_to_use) > 5 else 'INVALID_KEY'}", pair_name=pair_name)
+                raise APIKeyError(f"HTTP {response.status_code}: {err_msg_detail}")
             response.raise_for_status() # Other HTTP errors
             data = response.json()
             if data.get('Response') == 'Error':
                 err_msg = data.get('Message', 'Unknown API Error')
-                key_err_patterns = ["api key is invalid", "apikey_is_missing", "rate limit", "monthly_calls", "tier"]
+                key_err_patterns = ["api key is invalid", "apikey_is_missing", "rate limit", "monthly_calls", "tier", "you are not authorized"]
                 if any(p.lower() in err_msg.lower() for p in key_err_patterns):
-                    log_warning(f"API Key Error (JSON): {err_msg} | Key: ...{current_api_key_to_use[-5:]}", pair_name=pair_name)
+                    log_warning(f"API Key Error (JSON): {err_msg} | Key: ...{current_api_key_to_use[-5:] if current_api_key_to_use and len(current_api_key_to_use) > 5 else 'INVALID_KEY'}", pair_name=pair_name)
                     raise APIKeyError(f"JSON Error: {err_msg}")
                 else: log_error(f"API Error: {err_msg}", pair_name=pair_name); break 
             
@@ -462,11 +504,9 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     
     if len(all_accumulated_candles) > total_limit_desired: all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
     if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT : simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Selesai')
-    # log_info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} candle untuk {pair_name}.", pair_name=pair_name)
     return all_accumulated_candles
 
 # --- LOGIKA STRATEGI (Supertrend) ---
-# (Fungsi get_initial_strategy_state, calculate_atr, calculate_supertrend, run_strategy_logic SAMA seperti di respons Supertrend sebelumnya)
 def get_initial_strategy_state():
     return {
         "last_supertrend_value": None, "supertrend_direction": 0, "last_atr_value_for_chart": None,
@@ -477,6 +517,7 @@ def get_initial_strategy_state():
         "last_signal_type": 0, "final_pivot_high_price_confirmed": None, "final_pivot_low_price_confirmed": None,
         "last_pivot_high_display_info": None, "last_pivot_low_display_info": None,
         "high_price_for_fib": None, "high_bar_index_for_fib": None, "active_fib_level": None, "active_fib_line_start_index": None,
+        "last_notification_type": None, "last_notification_price": None, # Untuk mencegah notif berulang
     }
 
 def calculate_atr(high_prices, low_prices, close_prices, period):
@@ -505,27 +546,26 @@ def calculate_atr(high_prices, low_prices, close_prices, period):
 def calculate_supertrend(high_prices, low_prices, close_prices, atr_length, factor):
     n = len(close_prices)
     if n < atr_length + 1: return ([None]*n, [0]*n)
-    atr = calculate_atr(high_prices, low_prices, close_prices, atr_length)
+    atr_values = calculate_atr(high_prices, low_prices, close_prices, atr_length) # Renamed local var
     st, direction = [None]*n, [0]*n
     
     first_valid_idx = -1
     for i in range(atr_length, n): # Start where ATR might be valid
-        if all(x is not None for x in [close_prices[i], high_prices[i], low_prices[i], atr[i]]):
+        if all(x is not None for x in [close_prices[i], high_prices[i], low_prices[i], atr_values[i]]):
             first_valid_idx = i; break
     if first_valid_idx == -1: return (st, direction)
 
-    # Initial ST (simplified)
     mid_init = (high_prices[first_valid_idx] + low_prices[first_valid_idx]) / 2
-    st[first_valid_idx] = mid_init - factor * atr[first_valid_idx] if close_prices[first_valid_idx] > mid_init else mid_init + factor * atr[first_valid_idx]
+    st[first_valid_idx] = mid_init - factor * atr_values[first_valid_idx] if close_prices[first_valid_idx] > mid_init else mid_init + factor * atr_values[first_valid_idx]
     direction[first_valid_idx] = 1 if close_prices[first_valid_idx] > st[first_valid_idx] else -1
-    if close_prices[first_valid_idx] == st[first_valid_idx]: direction[first_valid_idx] = 1 # Default to up on exact match
+    if close_prices[first_valid_idx] == st[first_valid_idx]: direction[first_valid_idx] = 1 
 
     for i in range(first_valid_idx + 1, n):
-        if not all(x is not None for x in [close_prices[i], high_prices[i], low_prices[i], atr[i], close_prices[i-1], st[i-1]]):
+        if not all(x is not None for x in [close_prices[i], high_prices[i], low_prices[i], atr_values[i], close_prices[i-1], st[i-1]]):
             st[i] = st[i-1]; direction[i] = direction[i-1]; continue
 
-        basic_ub = ((high_prices[i] + low_prices[i]) / 2) + factor * atr[i]
-        basic_lb = ((high_prices[i] + low_prices[i]) / 2) - factor * atr[i]
+        basic_ub = ((high_prices[i] + low_prices[i]) / 2) + factor * atr_values[i]
+        basic_lb = ((high_prices[i] + low_prices[i]) / 2) - factor * atr_values[i]
         
         prev_st, prev_dir = st[i-1], direction[i-1]
         curr_st, curr_dir = prev_st, prev_dir
@@ -536,150 +576,309 @@ def calculate_supertrend(high_prices, low_prices, close_prices, atr_length, fact
         elif prev_dir == -1: # Downtrend
             curr_st = min(basic_ub, prev_st)
             if close_prices[i] > curr_st: curr_dir = 1; curr_st = basic_lb
-        else: # Initial or error state, re-evaluate
+        else: 
             mid = (high_prices[i] + low_prices[i]) / 2
             curr_st = basic_lb if close_prices[i] > mid else basic_ub
             curr_dir = 1 if close_prices[i] > curr_st else -1
             if close_prices[i] == curr_st : curr_dir = 1
 
-
         st[i], direction[i] = curr_st, curr_dir
     return st, direction
+
+def _send_and_log_trade_notification(event_type, price, pnl, pair_name, crypto_config, global_settings):
+    subject = f"Supertrend {event_type.upper()} Signal: {pair_name} @ {price:.5f}"
+    body = f"Supertrend {event_type.upper()} Signal for {pair_name} at price {price:.5f}.\n"
+    if "PnL" in event_type: body += f"Estimated PnL: {pnl:.2f}%\n"
+    body += f"Timeframe: {crypto_config.get('timeframe')}\n"
+    body += f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    log_info(f"{AnsiColors.GREEN if 'BUY' in event_type.upper() else AnsiColors.RED if 'EXIT' in event_type.upper() or 'SELL' in event_type.upper() else AnsiColors.BLUE}{event_type.upper()} @ {price:.5f}. {('PnL: ' + str(pnl) + '%' if pnl is not None else '')}{AnsiColors.ENDC}", pair_name=pair_name)
+    play_notification_sound()
+    send_email_notification(subject, body, {**crypto_config, 'pair_name': pair_name}) # merge crypto_config for email settings
+    send_termux_notification(f"{pair_name} {event_type.upper()}", f"Price: {price:.5f}{(', PnL: ' + str(pnl) + '%' if pnl is not None else '')}", global_settings, pair_name_for_log=pair_name)
+
 
 def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
     atr_len, st_factor = crypto_config.get('atr_length', 10), crypto_config.get('factor', 3.0)
-    sl_perc, tp_act_perc, tp_trail_perc = crypto_config.get('emergency_sl_percent',2.0)/100.0, crypto_config.get('profit_target_percent_activation',2.0)/100.0, crypto_config.get('trailing_stop_gap_percent',1.0)/100.0
+    sl_perc = crypto_config.get('emergency_sl_percent',2.0)/100.0
+    tp_act_perc = crypto_config.get('profit_target_percent_activation',2.0)/100.0
+    tp_trail_perc = crypto_config.get('trailing_stop_gap_percent',1.0)/100.0
     
-    min_data = atr_len + 2
-    if len(candles_history) < min_data: return strategy_state
+    min_data_needed_for_st = atr_len + 2
+    if len(candles_history) < min_data_needed_for_st: return strategy_state
 
     closes = [c.get('close') for c in candles_history]
     highs = [c.get('high') for c in candles_history]
     lows = [c.get('low') for c in candles_history]
     
     st_line, st_dir_signal = calculate_supertrend(highs, lows, closes, atr_len, st_factor)
-    curr_idx, prev_idx = len(candles_history)-1, len(candles_history)-2
+    curr_idx = len(candles_history)-1
+    prev_idx = curr_idx - 1
 
     curr_candle = candles_history[curr_idx]
-    if any(curr_candle.get(k) is None for k in ['open','high','low','close','timestamp']): return strategy_state
+    if any(curr_candle.get(k) is None for k in ['open','high','low','close','timestamp']): return strategy_state # Invalid current candle
     
     curr_c, curr_l, curr_h = curr_candle['close'], curr_candle['low'], curr_candle['high']
     curr_st_val, curr_st_dir = st_line[curr_idx], st_dir_signal[curr_idx]
+    
     strategy_state["last_supertrend_value"], strategy_state["supertrend_direction"] = curr_st_val, curr_st_dir
+    # strategy_state["last_atr_value_for_chart"] = calculate_atr(highs,lows,closes,atr_len)[-1] # For display if needed
 
-    prev_c, prev_st_val = (candles_history[prev_idx].get('close') if prev_idx >=0 else None), (st_line[prev_idx] if prev_idx >=0 else None)
+    # Ensure prev values are valid before using for cross logic
+    prev_c, prev_st_val, prev_st_dir = (None, None, None)
+    if prev_idx >= 0:
+        prev_candle = candles_history[prev_idx]
+        if all(prev_candle.get(k) is not None for k in ['close']):
+            prev_c = prev_candle['close']
+        if st_line[prev_idx] is not None:
+            prev_st_val = st_line[prev_idx]
+        prev_st_dir = st_dir_signal[prev_idx]
 
-    if curr_st_val is None or prev_st_val is None or prev_c is None: pass # Skip cross logic
-    else:
-        crossed_above = prev_c <= prev_st_val and curr_c > curr_st_val
-        crossed_below = prev_c >= prev_st_val and curr_c < curr_st_val
-        
-        if strategy_state["position_size"] > 0: # In position
-            if crossed_below: # Exit Long on ST cross down
-                entry_p = strategy_state["entry_price_custom"]
-                pnl = ((curr_c - entry_p) / entry_p) * 100.0 if entry_p else 0.0
-                log_info(f"{AnsiColors.BLUE}EXIT (ST Cross) @ {curr_c:.5f}. PnL: {pnl:.2f}%{AnsiColors.ENDC}", pair_name=pair_name)
-                # ... (Notifikasi & reset state posisi) ...
-                strategy_state["position_size"]=0; strategy_state["entry_price_custom"]=None; # etc.
-        elif strategy_state["position_size"] == 0: # Not in position
-            if crossed_above and curr_st_dir == 1: # Entry Long
-                strategy_state["position_size"]=1; strategy_state["entry_price_custom"]=curr_c
-                strategy_state["emergency_sl_level_custom"] = curr_c * (1-sl_perc)
-                strategy_state["highest_price_for_trailing"] = curr_h
-                log_info(f"{AnsiColors.GREEN}BUY (ST Cross) @ {curr_c:.5f}. SL: {strategy_state['emergency_sl_level_custom']:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
-                # ... (Notifikasi) ...
-            elif crossed_below: # Potential Sell Signal (alert only)
-                log_info(f"{AnsiColors.MAGENTA}SELL ALERT (ST Cross) @ {curr_c:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
+    # Check for valid values before processing signals
+    if curr_st_val is None or prev_st_val is None or prev_c is None:
+        # log_debug(f"Skipping signal check for {pair_name} due to None values (curr_st: {curr_st_val}, prev_st: {prev_st_val}, prev_c: {prev_c})", pair_name=pair_name)
+        return strategy_state 
 
-    # SL/TP Logic (jika masih dalam posisi)
+    # --- TRADE LOGIC ---
+    # Only process if the last notification was different or price is significantly different
+    def should_notify(event_type, price):
+        if strategy_state.get("last_notification_type") == event_type and \
+           strategy_state.get("last_notification_price") is not None and \
+           abs(price - strategy_state.get("last_notification_price")) / price < 0.001: # 0.1% change
+            return False
+        strategy_state["last_notification_type"] = event_type
+        strategy_state["last_notification_price"] = price
+        return True
+
+    # Exit Long Position (check first)
     if strategy_state["position_size"] > 0:
-        # ... (Logika SL/TP sama seperti sebelumnya) ...
         entry_p_val = strategy_state["entry_price_custom"]
-        if curr_h is not None: strategy_state["highest_price_for_trailing"] = max(strategy_state.get("highest_price_for_trailing", curr_h) or curr_h, curr_h)
+        
+        # 1. Trailing Stop Loss / Take Profit
+        if strategy_state["trailing_tp_active_custom"] and strategy_state["current_trailing_stop_level"]:
+            if curr_l <= strategy_state["current_trailing_stop_level"]:
+                exit_price_tsl = strategy_state["current_trailing_stop_level"]
+                pnl_tsl = ((exit_price_tsl - entry_p_val) / entry_p_val) * 100.0 if entry_p_val else 0.0
+                event_label = "Trailing TP Hit" if pnl_tsl >=0 else "Trailing SL Hit (Loss)"
+                if should_notify(event_label, exit_price_tsl):
+                    _send_and_log_trade_notification(event_label, exit_price_tsl, pnl_tsl, pair_name, crypto_config, global_settings)
+                strategy_state = get_initial_strategy_state() # Reset state
+                strategy_state["last_supertrend_value"], strategy_state["supertrend_direction"] = curr_st_val, curr_st_dir
+                return strategy_state
+
+        # 2. Fixed Emergency Stop Loss
+        if strategy_state["emergency_sl_level_custom"] and curr_l <= strategy_state["emergency_sl_level_custom"]:
+            exit_price_sl = strategy_state["emergency_sl_level_custom"]
+            pnl_sl = ((exit_price_sl - entry_p_val) / entry_p_val) * 100.0 if entry_p_val else 0.0
+            if should_notify("Emergency SL Hit", exit_price_sl):
+                _send_and_log_trade_notification("Emergency SL Hit", exit_price_sl, pnl_sl, pair_name, crypto_config, global_settings)
+            strategy_state = get_initial_strategy_state()
+            strategy_state["last_supertrend_value"], strategy_state["supertrend_direction"] = curr_st_val, curr_st_dir
+            return strategy_state
+        
+        # 3. Supertrend Cross Down for Exit
+        crossed_below_st = prev_st_dir == 1 and curr_st_dir == -1 # Cross from up to down
+        # Or more robust: prev_c >= prev_st_val and curr_c < curr_st_val (already in uptrend implies prev_c > prev_st_val usually)
+        # More precise cross check: (prev_c >= prev_st_val and curr_c < curr_st_val)
+        if crossed_below_st:
+            exit_price_st_cross = curr_c
+            pnl_st_cross = ((exit_price_st_cross - entry_p_val) / entry_p_val) * 100.0 if entry_p_val else 0.0
+            if should_notify("Exit Long (ST Cross Down)", exit_price_st_cross):
+                 _send_and_log_trade_notification("Exit Long (ST Cross Down)", exit_price_st_cross, pnl_st_cross, pair_name, crypto_config, global_settings)
+            strategy_state = get_initial_strategy_state()
+            strategy_state["last_supertrend_value"], strategy_state["supertrend_direction"] = curr_st_val, curr_st_dir
+            return strategy_state
+
+    # Entry Long Position
+    elif strategy_state["position_size"] == 0:
+        crossed_above_st = prev_st_dir == -1 and curr_st_dir == 1 # Cross from down to up
+        # Or more robust: (prev_c <= prev_st_val and curr_c > curr_st_val)
+        if crossed_above_st:
+            entry_price_new = curr_c
+            if should_notify("Enter Long (ST Cross Up)", entry_price_new):
+                _send_and_log_trade_notification("Enter Long (ST Cross Up)", entry_price_new, None, pair_name, crypto_config, global_settings)
+            strategy_state["position_size"] = 1
+            strategy_state["entry_price_custom"] = entry_price_new
+            strategy_state["emergency_sl_level_custom"] = entry_price_new * (1 - sl_perc)
+            strategy_state["highest_price_for_trailing"] = curr_h # Initialize with current high
+            strategy_state["trailing_tp_active_custom"] = False
+            strategy_state["current_trailing_stop_level"] = None
+            # No return here, let trailing logic update in the same candle if applicable
+
+    # Update Trailing SL if in position
+    if strategy_state["position_size"] > 0:
+        entry_p_val = strategy_state["entry_price_custom"]
+        if curr_h is not None:
+            strategy_state["highest_price_for_trailing"] = max(strategy_state.get("highest_price_for_trailing", curr_h) or curr_h, curr_h)
+        
         if not strategy_state["trailing_tp_active_custom"] and entry_p_val and strategy_state["highest_price_for_trailing"]:
             if ((strategy_state["highest_price_for_trailing"] - entry_p_val) / entry_p_val) >= tp_act_perc:
-                strategy_state["trailing_tp_active_custom"] = True; log_info(f"{AnsiColors.BLUE}Trailing TP Aktif.{AnsiColors.ENDC}",pair_name)
+                strategy_state["trailing_tp_active_custom"] = True
+                log_info(f"{AnsiColors.BLUE}Trailing TP Activated for {pair_name}. Highest price: {strategy_state['highest_price_for_trailing']:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
+        
         if strategy_state["trailing_tp_active_custom"] and strategy_state["highest_price_for_trailing"]:
-            new_tsl = strategy_state["highest_price_for_trailing"] * (1-tp_trail_perc)
-            strategy_state["current_trailing_stop_level"] = max(strategy_state.get("current_trailing_stop_level", new_tsl) or new_tsl, new_tsl)
-        
-        eff_sl = strategy_state["emergency_sl_level_custom"]
-        exit_r, exit_c = "Stop Loss", AnsiColors.RED
-        if strategy_state["trailing_tp_active_custom"] and strategy_state["current_trailing_stop_level"]:
-            if eff_sl is None or strategy_state["current_trailing_stop_level"] > eff_sl : 
-                eff_sl = strategy_state["current_trailing_stop_level"]; exit_r="Trailing TP"; exit_c=AnsiColors.BLUE
-        
-        if eff_sl and curr_l and curr_l <= eff_sl:
-            pnl_sltp = ((eff_sl - entry_p_val) / entry_p_val) * 100.0 if entry_p_val else 0.0
-            if exit_r=="Trailing TP" and pnl_sltp < 0: exit_c=AnsiColors.RED; exit_r="Trailing SL (Loss)"
-            log_info(f"{exit_c}EXIT ({exit_r}) @ {eff_sl:.5f}. PnL: {pnl_sltp:.2f}%{AnsiColors.ENDC}",pair_name)
-            # ... (Notifikasi & reset state posisi) ...
-            strategy_state["position_size"]=0; strategy_state["entry_price_custom"]=None; # etc.
+            new_potential_tsl = strategy_state["highest_price_for_trailing"] * (1 - tp_trail_perc)
+            # Only update if new TSL is higher than current, or if current TSL is None
+            if strategy_state["current_trailing_stop_level"] is None or new_potential_tsl > strategy_state["current_trailing_stop_level"]:
+                # Also ensure TSL doesn't go below entry
+                # strategy_state["current_trailing_stop_level"] = max(new_potential_tsl, entry_p_val) # Option: TSL cannot be below entry
+                strategy_state["current_trailing_stop_level"] = new_potential_tsl
+                # log_debug(f"Trailing SL for {pair_name} updated to: {strategy_state['current_trailing_stop_level']:.5f}", pair_name=pair_name)
+    
+    # Alert for potential short (if not in long position)
+    if strategy_state["position_size"] == 0:
+        crossed_below_st_alert = prev_st_dir == 1 and curr_st_dir == -1
+        if crossed_below_st_alert:
+            if should_notify("Potential Short (ST Cross Down)", curr_c):
+                _send_and_log_trade_notification("Potential Short (ST Cross Down)", curr_c, None, pair_name, crypto_config, global_settings)
+
     return strategy_state
 
-# CHART_INTEGRATION_START & Flask Endpoints (SAMA seperti di respons Supertrend sebelumnya)
-# ...
+
+# CHART_INTEGRATION_START & Flask Endpoints
 shared_crypto_data_manager = {}
 shared_data_lock = threading.Lock()
-# (Fungsi prepare_chart_data_for_pair, HTML_CHART_TEMPLATE, dan endpoint Flask sama)
-def prepare_chart_data_for_pair(pair_id, snapshot): # Simplified
-    if pair_id not in snapshot: return None
-    data = snapshot[pair_id]; hist = data.get("all_candles_list", [])[-TARGET_BIG_DATA_CANDLES:]
-    cfg = data.get("config", {}); state = data.get("strategy_state", {})
-    ohlc, st_series = [], []
-    if not hist: return {"ohlc":[], "supertrend_series":[], "pair_name": cfg.get('pair_name',pair_id)}
+
+def prepare_chart_data_for_pair(pair_id, snapshot_of_manager): 
+    if pair_id not in snapshot_of_manager: return None
+    data = snapshot_of_manager[pair_id]
     
-    chart_st, _ = calculate_supertrend([c.get('high') for c in hist], [c.get('low') for c in hist], [c.get('close') for c in hist], cfg.get('atr_length',10), cfg.get('factor',3.0))
-    for i, c in enumerate(hist):
-        if all(c.get(k) for k in ['timestamp','open','high','low','close']):
+    # Use a consistent number of candles for display, e.g., last 200-300
+    # TARGET_BIG_DATA_CANDLES might be too large (2500) for charting performance.
+    # Let's define a new constant or use a fixed number for charts.
+    CHART_DISPLAY_CANDLES = 300 
+    hist_full = data.get("all_candles_list", [])
+    hist_for_chart = hist_full[-CHART_DISPLAY_CANDLES:] if len(hist_full) > CHART_DISPLAY_CANDLES else hist_full
+
+    cfg = data.get("config", {})
+    state = data.get("strategy_state", {})
+    ohlc, st_series = [], []
+    
+    if not hist_for_chart: 
+        return {"ohlc":[], "supertrend_series":[], "pair_name": cfg.get('pair_name',pair_id), "last_updated_tv":None, "strategy_state_info":{}}
+
+    # Recalculate ST for the displayed segment of candles for accuracy on chart
+    chart_closes = [c.get('close') for c in hist_for_chart]
+    chart_highs = [c.get('high') for c in hist_for_chart]
+    chart_lows = [c.get('low') for c in hist_for_chart]
+    
+    chart_st_values, chart_st_directions = calculate_supertrend(
+        chart_highs, chart_lows, chart_closes, 
+        cfg.get('atr_length',10), cfg.get('factor',3.0)
+    )
+
+    for i, c in enumerate(hist_for_chart):
+        if all(c.get(k) is not None for k in ['timestamp','open','high','low','close']):
             tsms = c['timestamp'].timestamp()*1000
             ohlc.append({'x':tsms, 'y':[c['open'],c['high'],c['low'],c['close']]})
-            if i < len(chart_st) and chart_st[i] is not None: st_series.append({'x':tsms, 'y':chart_st[i]})
-    
-    # Annotations (SL/Entry)
-    ann_y = []
-    if state.get("position_size",0)>0 and state.get("entry_price_custom") is not None:
+            if i < len(chart_st_values) and chart_st_values[i] is not None:
+                # Color ST line based on direction from recalculation
+                st_color = '#00E396' if chart_st_directions[i] == 1 else ('#FF4560' if chart_st_directions[i] == -1 else '#888888')
+                st_series.append({'x':tsms, 'y':chart_st_values[i], 'color': st_color}) # Pass color for ApexCharts if needed
+        
+    annotations_yaxis = []
+    if state.get("position_size",0) > 0 and state.get("entry_price_custom") is not None:
         ep = state.get("entry_price_custom")
-        ann_y.append({'y':ep, 'borderColor':'#2698FF', 'label':{'text':f'Entry: {ep:.5f}'}})
-        sl_val = state.get("emergency_sl_level_custom")
-        sl_txt = "SL"
-        if state.get("trailing_tp_active_custom") and state.get("current_trailing_stop_level"):
-            tsl = state.get("current_trailing_stop_level")
-            if sl_val is None or (tsl and tsl > sl_val): sl_val = tsl; sl_txt = "Trail.SL"
-        if sl_val : ann_y.append({'y':sl_val, 'borderColor':'#FF4560', 'label':{'text':f'{sl_txt}: {sl_val:.5f}'}})
+        annotations_yaxis.append({
+            'y': ep, 'borderColor': '#2698FF', 'label': {
+                'borderColor': '#2698FF', 'style': {'color': '#fff', 'background': '#2698FF'},
+                'text': f'Entry: {ep:.5f}'
+            }
+        })
+        
+        # Emergency SL
+        sl_val_emergency = state.get("emergency_sl_level_custom")
+        if sl_val_emergency:
+             annotations_yaxis.append({
+                'y': sl_val_emergency, 'borderColor': '#FF4560', 'label': {
+                    'borderColor': '#FF4560', 'style': {'color': '#fff', 'background': '#FF4560'},
+                    'text': f'Fix SL: {sl_val_emergency:.5f}'
+                }
+            })
 
-    return {"ohlc":ohlc, "supertrend_series":st_series, "annotations_yaxis":ann_y, "pair_name":cfg.get('pair_name',pair_id), "last_updated_tv":hist[-1]['timestamp'].timestamp()*1000 if hist else None, "st_atr_len_label":cfg.get('atr_length'), "st_factor_label":cfg.get('factor'), "strategy_state_info": {"supertrend_value":state.get("last_supertrend_value"),"supertrend_direction":state.get("supertrend_direction")} }
+        # Trailing SL (if active and different from emergency SL or emergency SL is not set)
+        tsl_val = state.get("current_trailing_stop_level")
+        if state.get("trailing_tp_active_custom") and tsl_val:
+            # Only show if it's the effective SL
+            is_tsl_effective = True
+            if sl_val_emergency and tsl_val <= sl_val_emergency: # If emergency SL is tighter, don't show TSL
+                is_tsl_effective = False
+            
+            if is_tsl_effective:
+                annotations_yaxis.append({
+                    'y': tsl_val, 'borderColor': '#FEB019', 'label': { # Orange for TSL
+                        'borderColor': '#FEB019', 'style': {'color': '#fff', 'background': '#FEB019'},
+                        'text': f'Trail SL: {tsl_val:.5f}'
+                    }
+                })
+    
+    last_ts = hist_for_chart[-1]['timestamp'].timestamp()*1000 if hist_for_chart else None
+    
+    # Get the latest ST value and direction from the *full dataset* state, not recalculated chart segment
+    live_st_val = state.get("last_supertrend_value")
+    live_st_dir = state.get("supertrend_direction")
+
+    return {
+        "ohlc": ohlc, 
+        "supertrend_series": st_series, 
+        "annotations_yaxis": annotations_yaxis,
+        "pair_name": cfg.get('pair_name', pair_id),
+        "last_updated_tv": last_ts,
+        "st_atr_len_label": cfg.get('atr_length'), 
+        "st_factor_label": cfg.get('factor'),
+        "strategy_state_info": {
+            "supertrend_value": live_st_val, # Use live state
+            "supertrend_direction": live_st_dir # Use live state
+        }
+    }
 
 flask_app_instance = Flask(__name__)
-HTML_CHART_TEMPLATE = """ <!DOCTYPE html> <html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>Supertrend Chart</title> <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script> <style>body{font-family:sans-serif;margin:0;background-color:#1e1e1e;color:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:10px}#controls{background-color:#2a2a2a;padding:10px;border-radius:8px;margin-bottom:10px;display:flex;align-items:center;gap:10px;width:100%;max-width:1200px}select,button{padding:8px 12px;border-radius:5px;border:1px solid #444;background-color:#333;color:#e0e0e0;cursor:pointer}#chart-container{width:100%;max-width:1200px;background-color:#2a2a2a;padding:15px;border-radius:8px}h1{color:#00bcd4;margin-bottom:10px;font-size:1.5em}#lastUpdatedLabel{font-size:.8em;color:#aaa;margin-left:auto}#strategyInfoLabel{font-size:.8em;color:#ffd700;margin-left:10px;white-space:pre}</style> </head> <body> <h1>Supertrend Strategy Chart</h1> <div id="controls"> <label for="pairSelector">Pair:</label> <select id="pairSelector" onchange="handlePairSelectionChange()"></select> <button onclick="loadChartDataForCurrentPair()">Refresh</button> <span id="strategyInfoLabel">Status: -</span> <span id="lastUpdatedLabel">Memuat...</span> </div> <div id="chart-container"><div id="chart"></div></div> <script>let activeChart,currentSelectedPairId="",lastKnownDataTimestamp=null,autoRefreshIntervalId=null,isLoadingData=!1;const initialChartOptions={series:[{name:"Candlestick",type:"candlestick",data:[]},{name:"Supertrend",type:"line",data:[]}],chart:{type:"candlestick",height:550,background:"#2a2a2a",animations:{enabled:!1},toolbar:{show:!0}},theme:{mode:"dark"},title:{text:"Memuat Data Pair...",align:"left",style:{color:"#e0e0e0"}},xaxis:{type:"datetime",labels:{style:{colors:"#aaa"}},tooltip:{enabled:!1}},yaxis:{tooltip:{enabled:!0},labels:{style:{colors:"#aaa"},formatter:v=>v?v.toFixed(5):""}},stroke:{width:[1,2],curve:"straight"},markers:{size:0},colors:["#FEB019","#888"],grid:{borderColor:"#444"},annotations:{yaxis:[],points:[]},tooltip:{theme:"dark",shared:!0,intersect:!1,custom:function({series:s,seriesIndex:e,dataPointIndex:a,w:t}){let n,i,r,l,o,d;const c=t.globals.series.findIndex(s=>"candlestick"===s.type),h=t.globals.series.findIndex(s=>s.name.startsWith("Supertrend"));c!==-1&&void 0!==t.globals.seriesCandleO[c]?.[a]&&([n,i,r,l]=[t.globals.seriesCandleO[c][a],t.globals.seriesCandleH[c][a],t.globals.seriesCandleL[c][a],t.globals.seriesCandleC[c][a]]),h!==-1&&s[h]?.[a]!==void 0&&t.config.series[h].data[a]&&(o=t.config.series[h].data[a].y);let u='<div style="padding:5px 10px;background:#333;color:#fff;border:1px solid #555;">';return void 0!==n&&(u+=["O","H","L","C"].map((s,e)=>`<div>${s}: <span style="font-weight:bold;">${[n,i,r,l][e].toFixed(5)}</span></div>`).join("")),void 0!==o&&(u+=`<div>ST: <span style="font-weight:bold;">${o.toFixed(5)}</span></div>`),u+="</div>",void 0!==n||void 0!==o?u:""},noData:{text:"Tidak ada data.",align:"center",style:{color:"#ccc"}}};async function fetchAvailablePairs(){try{const s=await fetch("/api/available_pairs");if(!s.ok)throw new Error(`HTTP ${s.status}`);const e=await s.json(),a=document.getElementById("pairSelector");if(a.innerHTML="","e.length>0?(e.forEach(s=>{const e=document.createElement("option");e.value=s.id,e.textContent=s.name,a.appendChild(e)}),currentSelectedPairId=a.value||e[0].id,loadChartDataForCurrentPair()):(a.innerHTML='<option value="">No pairs</option>',activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML="No pairs configured.")}catch(s){console.error("Err pairs:",s),activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML=`Err: ${s.message}`}}function handlePairSelectionChange(){currentSelectedPairId=document.getElementById("pairSelector").value,lastKnownDataTimestamp=null,loadChartDataForCurrentPair()}async function loadChartDataForCurrentPair(){if(currentSelectedPairId&&!isLoadingData){isLoadingData=!0,document.getElementById("lastUpdatedLabel").textContent=`Loading ${currentSelectedPairId}...`;try{const s=await fetch(`/api/chart_data/${currentSelectedPairId}`);if(!s.ok)throw new Error(`HTTP ${s.status}`);const e=await s.json();if(e&&e.ohlc&&0!==e.ohlc.length){if(e.last_updated_tv&&e.last_updated_tv===lastKnownDataTimestamp){console.log("Chart data unchanged."),document.getElementById("lastUpdatedLabel").textContent=`Last @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;const s=e.strategy_state_info||{};document.getElementById("strategyInfoLabel").textContent=`ST: ${s.supertrend_value?.toFixed(3)||"N/A"}\nDir: ${s.supertrend_direction||"N/A"}`,isLoadingData=!1;return}lastKnownDataTimestamp=e.last_updated_tv,document.getElementById("lastUpdatedLabel").textContent=`Last @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;const a=e.strategy_state_info||{};document.getElementById("strategyInfoLabel").textContent=`ST: ${a.supertrend_value?.toFixed(3)||"N/A"}\nDir: ${1==a.supertrend_direction?"Up":-1==a.supertrend_direction?"Down":"N/A"}`;const t=`Supertrend (${e.st_atr_len_label}/${e.st_factor_label})`,n=e.supertrend_series.map(s=>({x:s.x,y:s.y}));let i=initialChartOptions.colors[1];e.supertrend_series&&e.supertrend_series.length>0&&e.supertrend_series[e.supertrend_series.length-1].color&&(i=e.supertrend_series[e.supertrend_series.length-1].color);const r={...initialChartOptions,title:{...initialChartOptions.title,text:`${e.pair_name} - Supertrend`},series:[{name:"Candlestick",type:"candlestick",data:e.ohlc||[]},{name:t,type:"line",data:n}],annotations:{yaxis:e.annotations_yaxis||[],points:e.annotations_points||[]},colors:[initialChartOptions.colors[0],i]};activeChart?activeChart.updateOptions(r):(activeChart=new ApexCharts(document.querySelector("#chart"),r),activeChart.render())}else{const s={...initialChartOptions,title:{...initialChartOptions.title,text:`${e.pair_name||currentSelectedPairId} - No Data`},series:initialChartOptions.series.map(s=>({...s,data:[]}))};activeChart?activeChart.updateOptions(s):(activeChart=new ApexCharts(document.querySelector("#chart"),s),activeChart.render()),lastKnownDataTimestamp=e.last_updated_tv||null,document.getElementById("lastUpdatedLabel").textContent=lastKnownDataTimestamp?`Data (empty) @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`:"No data",document.getElementById("strategyInfoLabel").textContent="Status: Data Kosong",isLoadingData=!1}}catch(s){console.error("Err chart data:",s),activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML=`Err: ${s.message}`}finally{isLoadingData=!1}}}document.addEventListener("DOMContentLoaded",()=>{activeChart||(activeChart=new ApexCharts(document.querySelector("#chart"),initialChartOptions),activeChart.render()),fetchAvailablePairs(),autoRefreshIntervalId&&clearInterval(autoRefreshIntervalId),autoRefreshIntervalId=setInterval(async()=>{currentSelectedPairId&&"visible"===document.visibilityState&&!isLoadingData&&await loadChartDataForCurrentPair()},15e3)}); </script> </body></html>"""
+HTML_CHART_TEMPLATE = """ <!DOCTYPE html> <html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>Supertrend Chart</title> <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script> <style>body{font-family:sans-serif;margin:0;background-color:#1e1e1e;color:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:10px}#controls{background-color:#2a2a2a;padding:10px;border-radius:8px;margin-bottom:10px;display:flex;align-items:center;gap:10px;width:100%;max-width:1200px}select,button{padding:8px 12px;border-radius:5px;border:1px solid #444;background-color:#333;color:#e0e0e0;cursor:pointer}#chart-container{width:100%;max-width:1200px;background-color:#2a2a2a;padding:15px;border-radius:8px}h1{color:#00bcd4;margin-bottom:10px;font-size:1.5em}#lastUpdatedLabel{font-size:.8em;color:#aaa;margin-left:auto}#strategyInfoLabel{font-size:.8em;color:#ffd700;margin-left:10px;white-space:pre}</style> </head> <body> <h1>Supertrend Strategy Chart</h1> <div id="controls"> <label for="pairSelector">Pair:</label> <select id="pairSelector" onchange="handlePairSelectionChange()"></select> <button onclick="loadChartDataForCurrentPair()">Refresh</button> <span id="strategyInfoLabel">Status: -</span> <span id="lastUpdatedLabel">Memuat...</span> </div> <div id="chart-container"><div id="chart"></div></div> <script>let activeChart,currentSelectedPairId="",lastKnownDataTimestamp=null,autoRefreshIntervalId=null,isLoadingData=!1;const initialChartOptions={series:[{name:"Candlestick",type:"candlestick",data:[]},{name:"Supertrend",type:"line",data:[]}],chart:{type:"candlestick",height:550,background:"#2a2a2a",animations:{enabled:!1},toolbar:{show:!0}},theme:{mode:"dark"},title:{text:"Memuat Data Pair...",align:"left",style:{color:"#e0e0e0"}},xaxis:{type:"datetime",labels:{style:{colors:"#aaa"}},tooltip:{enabled:!1}},yaxis:{tooltip:{enabled:!0},labels:{style:{colors:"#aaa"},formatter:v=>v?v.toFixed(5):""}},stroke:{width:[1,2],curve:"straight"},markers:{size:0},colors:["#FEB019","#888888"],grid:{borderColor:"#444"},annotations:{yaxis:[],points:[]},tooltip:{theme:"dark",shared:!0,intersect:!1,custom:function({series:s,seriesIndex:e,dataPointIndex:a,w:t}){let n,i,r,l,o,d;const c=t.globals.series.findIndex(s=>"candlestick"===s.type),h=t.globals.series.findIndex(s=>s.name.startsWith("Supertrend"));c!==-1&&void 0!==t.globals.seriesCandleO[c]?.[a]&&([n,i,r,l]=[t.globals.seriesCandleO[c][a],t.globals.seriesCandleH[c][a],t.globals.seriesCandleL[c][a],t.globals.seriesCandleC[c][a]]),h!==-1&&s[h]?.[a]!==void 0&&t.config.series[h].data[a]&&(o=t.config.series[h].data[a].y);let u='<div style="padding:5px 10px;background:#333;color:#fff;border:1px solid #555;">';return void 0!==n&&(u+=["O","H","L","C"].map((s,e)=>`<div>${s}: <span style="font-weight:bold;">${[n,i,r,l][e].toFixed(5)}</span></div>`).join("")),void 0!==o&&(u+=`<div>ST: <span style="font-weight:bold;">${o.toFixed(5)}</span></div>`),u+="</div>",void 0!==n||void 0!==o?u:""},noData:{text:"Tidak ada data.",align:"center",style:{color:"#ccc"}}};async function fetchAvailablePairs(){try{const s=await fetch("/api/available_pairs");if(!s.ok)throw new Error(`HTTP ${s.status}`);const e=await s.json(),a=document.getElementById("pairSelector");if(a.innerHTML="","e.length>0?(e.forEach(s=>{const e=document.createElement("option");e.value=s.id,e.textContent=s.name,a.appendChild(e)}),currentSelectedPairId=a.value||e[0].id,loadChartDataForCurrentPair()):(a.innerHTML='<option value="">No pairs</option>',activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML="No pairs configured.")}catch(s){console.error("Err pairs:",s),activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML=`Err: ${s.message}`}}function handlePairSelectionChange(){currentSelectedPairId=document.getElementById("pairSelector").value,lastKnownDataTimestamp=null,loadChartDataForCurrentPair()}async function loadChartDataForCurrentPair(){if(currentSelectedPairId&&!isLoadingData){isLoadingData=!0,document.getElementById("lastUpdatedLabel").textContent=`Loading ${currentSelectedPairId}...`;try{const s=await fetch(`/api/chart_data/${currentSelectedPairId}`);if(!s.ok)throw new Error(`HTTP ${s.status}`);const e=await s.json();if(e&&e.ohlc&&0!==e.ohlc.length){if(e.last_updated_tv&&e.last_updated_tv===lastKnownDataTimestamp){console.log("Chart data unchanged."),document.getElementById("lastUpdatedLabel").textContent=`Last @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;const s=e.strategy_state_info||{};document.getElementById("strategyInfoLabel").textContent=`ST: ${s.supertrend_value?.toFixed(3)||"N/A"}\nDir: ${s.supertrend_direction||"N/A"}`,isLoadingData=!1;return}lastKnownDataTimestamp=e.last_updated_tv,document.getElementById("lastUpdatedLabel").textContent=`Last @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;const a=e.strategy_state_info||{};document.getElementById("strategyInfoLabel").textContent=`ST: ${a.supertrend_value?.toFixed(3)||"N/A"}\nDir: ${1==a.supertrend_direction?"Up":-1==a.supertrend_direction?"Down":"N/A"}`;const t=`Supertrend (${e.st_atr_len_label}/${e.st_factor_label})`,n=e.supertrend_series.map(s=>({x:s.x,y:s.y}));let i=initialChartOptions.colors[1];if(e.supertrend_series&&e.supertrend_series.length>0){const s=e.supertrend_series[e.supertrend_series.length-1];s&&s.color&&(i=s.color)}const r={...initialChartOptions,title:{...initialChartOptions.title,text:`${e.pair_name} - Supertrend`},series:[{name:"Candlestick",type:"candlestick",data:e.ohlc||[]},{name:t,type:"line",data:n}],annotations:{yaxis:e.annotations_yaxis||[],points:e.annotations_points||[]},colors:[initialChartOptions.colors[0],i]};activeChart?activeChart.updateOptions(r):(activeChart=new ApexCharts(document.querySelector("#chart"),r),activeChart.render())}else{const s={...initialChartOptions,title:{...initialChartOptions.title,text:`${e.pair_name||currentSelectedPairId} - No Data`},series:initialChartOptions.series.map(s=>({...s,data:[]}))};activeChart?activeChart.updateOptions(s):(activeChart=new ApexCharts(document.querySelector("#chart"),s),activeChart.render()),lastKnownDataTimestamp=e.last_updated_tv||null,document.getElementById("lastUpdatedLabel").textContent=lastKnownDataTimestamp?`Data (empty) @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`:"No data",document.getElementById("strategyInfoLabel").textContent="Status: Data Kosong",isLoadingData=!1}}catch(s){console.error("Err chart data:",s),activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML=`Err: ${s.message}`}finally{isLoadingData=!1}}}document.addEventListener("DOMContentLoaded",()=>{activeChart||(activeChart=new ApexCharts(document.querySelector("#chart"),initialChartOptions),activeChart.render()),fetchAvailablePairs(),autoRefreshIntervalId&&clearInterval(autoRefreshIntervalId),autoRefreshIntervalId=setInterval(async()=>{currentSelectedPairId&&"visible"===document.visibilityState&&!isLoadingData&&await loadChartDataForCurrentPair()},15e3)}); </script> </body></html>"""
+
 @flask_app_instance.route('/')
 def serve_index_page(): return render_template_string(HTML_CHART_TEMPLATE)
+
 @flask_app_instance.route('/api/available_pairs')
-def get_available_pairs_flask(): # Renamed to avoid conflict if run in same global scope with other examples
+def get_available_pairs_flask(): 
     with shared_data_lock: data_manager_view = shared_crypto_data_manager.copy()
     active_pairs_info = []
     for pair_id, pair_data in data_manager_view.items():
         cfg = pair_data.get("config", {})
         if cfg.get("enabled", True): active_pairs_info.append({"id": pair_id, "name": cfg.get('pair_name', pair_id)})
+    active_pairs_info.sort(key=lambda x: x['name']) # Sort pairs alphabetically
     return jsonify(active_pairs_info)
+
 @flask_app_instance.route('/api/chart_data/<pair_id_from_request>')
-def get_chart_data_for_frontend_flask(pair_id_from_request): # Renamed
+def get_chart_data_for_frontend_flask(pair_id_from_request): 
     with shared_data_lock:
         if pair_id_from_request not in shared_crypto_data_manager: return jsonify({"error": "Pair not found"}), 404
+        # Deepcopy only the specific pair data to avoid holding lock for too long during prepare_chart_data
         pair_data_snapshot = copy.deepcopy(shared_crypto_data_manager.get(pair_id_from_request, {}))
+    
     if not pair_data_snapshot: return jsonify({"error": "Data empty for pair", "ohlc":[], "supertrend_series":[]}), 200
-    temp_manager = {pair_id_from_request: pair_data_snapshot}
-    prepared_data = prepare_chart_data_for_pair(pair_id_from_request, temp_manager)
+    
+    # Pass a temporary manager containing only the snapshot of the requested pair
+    temp_manager_for_preparation = {pair_id_from_request: pair_data_snapshot}
+    prepared_data = prepare_chart_data_for_pair(pair_id_from_request, temp_manager_for_preparation)
+    
     if not prepared_data: return jsonify({"error": "Failed to process chart data"}), 500
-    if not prepared_data.get("ohlc"): return jsonify({"error": "No OHLC data to display", **prepared_data}), 200
+    if not prepared_data.get("ohlc"): return jsonify({"error": "No OHLC data to display", **prepared_data}), 200 # Send other info if ohlc is empty
     return jsonify(prepared_data)
+
 def run_flask_server_thread():
     log_info("Memulai Flask server di http://localhost:5001", pair_name="SYSTEM_CHART")
     try:
-        logging.getLogger('werkzeug').setLevel(logging.ERROR) # Silence Flask's default logger
+        # Silence Werkzeug's default logger to avoid duplicate logs if our logger is also capturing them
+        flask_log = logging.getLogger('werkzeug')
+        flask_log.setLevel(logging.ERROR) 
+        # For more control, could add a handler that formats werkzeug logs to match ours
+        # flask_log.handlers = [ch] # Example: use our console handler for werkzeug
+        
         flask_app_instance.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
-    except Exception as e_flask: log_error(f"Flask server gagal dijalankan: {e_flask}", pair_name="SYSTEM_CHART")
+    except Exception as e_flask: 
+        log_error(f"Flask server gagal dijalankan: {e_flask}", pair_name="SYSTEM_CHART")
+
 # CHART_INTEGRATION_END
 
 
@@ -706,24 +905,27 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
 
     local_crypto_data_manager = {}
     for config in all_crypto_configs:
-        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}"
-        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}"
-        animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC}...", color=AnsiColors.MAGENTA, delay=0.01)
+        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}_{config.get('exchange','CCCAGG')}"
+        config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}" # Used for logging
+        animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']} ({config['timeframe']}){AnsiColors.ENDC}...", color=AnsiColors.MAGENTA, delay=0.01)
+        
         local_crypto_data_manager[pair_id] = {
             "config": config, "all_candles_list": [], "strategy_state": get_initial_strategy_state(),
             "big_data_collection_phase_active": True, "big_data_email_sent": False,
-            "last_candle_fetch_time": datetime.min, "data_fetch_failed_consecutively": 0
+            "last_candle_fetch_time": datetime.min, "data_fetch_failed_consecutively": 0,
+            "last_attempt_after_all_keys_failed": None # Untuk cooldown
         }
+        # Initial update to shared manager for this pair
         with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
         
-        min_len_for_indicators_init = config.get('atr_length', 10) + 50 # Minimal ATR + buffer
-        initial_candles_target = max(TARGET_BIG_DATA_CANDLES, min_len_for_indicators_init)
+        min_len_for_indicators_init = config.get('atr_length', 10) + 50 # ATR + buffer
+        initial_candles_target_for_pair = max(TARGET_BIG_DATA_CANDLES, min_len_for_indicators_init)
         
         initial_candles = []
         initial_fetch_successful = False
-        # Loop untuk mencoba setiap API key untuk pengambilan data awal
         max_initial_key_attempts = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
         initial_key_attempts_done = 0
+        original_api_key_index_for_initial = api_key_manager.get_current_key_index() # Track if key changed during initial fetch
 
         while initial_key_attempts_done < max_initial_key_attempts and not initial_fetch_successful:
             current_api_key_init = api_key_manager.get_current_key()
@@ -731,123 +933,153 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 log_error(f"BIG DATA: Semua API key habis (global) sebelum mencoba fetch untuk {config['pair_name']}.", pair_name=config['pair_name'])
                 break 
             
-            log_info(f"BIG DATA: Mencoba fetch awal untuk {config['pair_name']} dengan key index {api_key_manager.get_current_key_index()} (Attempt {initial_key_attempts_done + 1}/{max_initial_key_attempts})", pair_name=config['pair_name'])
+            log_info(f"BIG DATA: Mencoba fetch awal ({initial_candles_target_for_pair} candles) untuk {config['pair_name']} dengan key index {api_key_manager.get_current_key_index()} (Attempt {initial_key_attempts_done + 1}/{max_initial_key_attempts})", pair_name=config['pair_name'])
             try:
-                initial_candles = fetch_candles(config['symbol'], config['currency'], initial_candles_target, config['exchange'], current_api_key_init, config['timeframe'], pair_name=config['pair_name'])
-                initial_fetch_successful = True # Sukses jika tidak ada error
+                initial_candles = fetch_candles(config['symbol'], config['currency'], initial_candles_target_for_pair, config['exchange'], current_api_key_init, config['timeframe'], pair_name=config['pair_name'])
+                initial_fetch_successful = True 
             except APIKeyError:
                 log_warning(f"BIG DATA: API Key (Idx {api_key_manager.get_current_key_index()}) gagal untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                if not api_key_manager.switch_to_next_key(): # Coba ganti key
+                if not api_key_manager.switch_to_next_key(): 
                     log_error(f"BIG DATA: Gagal beralih ke key berikutnya, semua key habis untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                    break # Keluar dari loop jika tidak ada key lagi
-                # Jika switch berhasil, loop akan lanjut dengan key baru
+                    break 
             except requests.exceptions.RequestException as e_req_init:
                 log_error(f"BIG DATA: Error Jaringan saat fetch awal {config['pair_name']}: {e_req_init}. Tidak ganti key.", pair_name=config['pair_name'])
-                break # Stop untuk pair ini jika ada error jaringan
+                break 
             except Exception as e_gen_init:
                 log_exception(f"BIG DATA: Error Umum saat fetch awal {config['pair_name']}: {e_gen_init}. Tidak ganti key.", pair_name=config['pair_name'])
-                break # Stop untuk pair ini
-            
-            initial_key_attempts_done += 1 # Increment setelah satu upaya dengan satu key (baik sukses atau gagal APIKeyError dan switch)
+                break 
+            initial_key_attempts_done += 1
 
         if not initial_fetch_successful or not initial_candles:
             log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini akan dilewati di loop utama hingga cooldown.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            local_crypto_data_manager[pair_id]["data_fetch_failed_consecutively"] = max_initial_key_attempts +1 # Masuk cooldown
+            local_crypto_data_manager[pair_id]["data_fetch_failed_consecutively"] = max_initial_key_attempts + 1 
             local_crypto_data_manager[pair_id]["last_attempt_after_all_keys_failed"] = datetime.now()
-            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False # Tandai gagal
+            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False 
             with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
-            continue # Lanjut ke pair berikutnya
+            continue 
 
         local_crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
         log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima untuk {config['pair_name']}.", pair_name=config['pair_name'])
         
-        # Warm-up state (Sama seperti sebelumnya, menggunakan run_strategy_logic Supertrend)
         if initial_candles:
             min_len_for_warmup = config.get('atr_length', 10) + 2 
             if len(initial_candles) >= min_len_for_warmup:
-                # ... (Logika warm-up sama) ...
                 log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state {config['pair_name']}...", pair_name=config['pair_name'])
-                for i_warmup in range(min_len_for_warmup -1, len(initial_candles) - 1): 
+                # Warm-up: Iterate through historical data to set initial Supertrend state without generating signals
+                temp_state_for_warmup = get_initial_strategy_state() # Fresh state for warm-up
+                for i_warmup in range(min_len_for_warmup -1, len(initial_candles) -1): # Process up to the second to last candle
                     historical_slice = initial_candles[:i_warmup+1] 
                     if len(historical_slice) < min_len_for_warmup: continue
-                    temp_state_for_warmup = local_crypto_data_manager[pair_id]["strategy_state"].copy()
-                    temp_state_for_warmup["position_size"] = 0 # No trading
-                    local_crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
-                    if local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: # Reset jika ada posisi palsu
-                        local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] = 0
-                        local_crypto_data_manager[pair_id]["strategy_state"]["entry_price_custom"] = None
+                    
+                    # Simulate running logic but prevent actual trade signals/notifications during warm-up
+                    # Create a temporary config or modify state to suppress notifications if needed
+                    temp_state_for_warmup = run_strategy_logic(historical_slice, config, temp_state_for_warmup, {"api_settings": {}}) # Pass dummy global settings
+
+                # After warm-up, assign the final warmed-up state (excluding any simulated position)
+                local_crypto_data_manager[pair_id]["strategy_state"] = temp_state_for_warmup
+                local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] = 0
+                local_crypto_data_manager[pair_id]["strategy_state"]["entry_price_custom"] = None
+                local_crypto_data_manager[pair_id]["strategy_state"]["last_notification_type"] = None # Reset notification state
+                local_crypto_data_manager[pair_id]["strategy_state"]["last_notification_price"] = None
+
                 log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) untuk {config['pair_name']} selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
 
         if len(local_crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
             local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-            # ... (Notifikasi email Big Data tercapai) ...
             log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {config['pair_name']}!{AnsiColors.ENDC}", pair_name=config['pair_name'])
             if not local_crypto_data_manager[pair_id]["big_data_email_sent"]:
-                send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", {**config, 'pair_name': config['pair_name']})
+                email_cfg_for_big_data = {**config, 'pair_name': config['pair_name']} # ensure pair_name is in context
+                send_email_notification(
+                    f"Data Downloading Complete: {config['pair_name']}", 
+                    f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now ready for live analysis on {config['pair_name']}.", 
+                    email_cfg_for_big_data
+                )
                 local_crypto_data_manager[pair_id]["big_data_email_sent"] = True
             log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({config['pair_name']}) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        
         with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
     
     animated_text_display(f"{AnsiColors.HEADER}----------------- SEMUA PAIR DIINISIALISASI -----------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
     
-    try: # Main trading loop
+    try: 
         while True:
             active_cryptos_still_in_big_data_collection = 0
             min_overall_next_refresh_seconds = float('inf')
-            any_data_fetched_this_cycle = False
+            any_data_fetched_this_cycle = False # Track if any fetch happened to adjust sleep if all keys fail globally
 
-            for pair_id, data_per_pair in local_crypto_data_manager.items():
+            # Create a list of pair_ids to iterate over, to allow removing items from local_crypto_data_manager if needed
+            current_pair_ids_to_process = list(local_crypto_data_manager.keys())
+
+            for pair_id in current_pair_ids_to_process:
+                if pair_id not in local_crypto_data_manager: continue # Pair might have been removed (e.g. due to persistent error)
+                
+                data_per_pair = local_crypto_data_manager[pair_id]
                 config_for_pair = data_per_pair["config"]
                 pair_name_for_log = config_for_pair['pair_name']
 
-                # Cooldown logic (sama)
-                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) + 1 : 
-                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # 1 jam cooldown
-                        min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, 3600); continue
-                    else: data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset cooldown
+                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) + 1 : 
+                    cooldown_duration = 3600 # 1 hour cooldown
+                    time_since_last_failure = (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds()
+                    if time_since_last_failure < cooldown_duration:
+                        min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, cooldown_duration - time_since_last_failure)
+                        # log_debug(f"{pair_name_for_log} in cooldown. Remaining: {cooldown_duration - time_since_last_failure:.0f}s", pair_name=pair_name_for_log)
+                        continue
+                    else: 
+                        log_info(f"Cooldown berakhir untuk {pair_name_for_log}. Mencoba lagi.", pair_name=pair_name_for_log)
+                        data_per_pair["data_fetch_failed_consecutively"] = 0 
+                        data_per_pair["last_attempt_after_all_keys_failed"] = None # Reset cooldown timestamp
 
                 current_loop_time = datetime.now()
                 time_since_last_fetch = (current_loop_time - data_per_pair["last_candle_fetch_time"]).total_seconds()
+                
                 required_interval = config_for_pair.get('refresh_interval_seconds', 60)
                 if data_per_pair["big_data_collection_phase_active"]:
                     active_cryptos_still_in_big_data_collection += 1
-                    required_interval = 60 if config_for_pair.get('timeframe') == "minute" else 3600 # Fetch more aggressively
+                    # Fetch more aggressively during big data collection, but respect API limits
+                    limit_based_on_tf = {"minute": 15, "hour": 60, "day": 300}.get(config_for_pair.get('timeframe'), 60)
+                    required_interval = min(limit_based_on_tf, config_for_pair.get('refresh_interval_seconds', 60))
+                else: # Live trading, ensure minimum interval if set
+                     required_interval = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, config_for_pair.get('refresh_interval_seconds',60))
+
+
                 if time_since_last_fetch < required_interval:
-                    min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval - time_since_last_fetch); continue
+                    min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval - time_since_last_fetch)
+                    continue
                 
                 log_info(f"Memproses {pair_name_for_log} (Interval: {required_interval}s)...", pair_name=pair_name_for_log)
                 data_per_pair["last_candle_fetch_time"] = current_loop_time
                 num_candles_before_fetch = len(data_per_pair["all_candles_list"])
                 
-                # Animated display (sama)
-                if data_per_pair["big_data_collection_phase_active"]: animated_text_display(f"\n--- BIG DATA {pair_name_for_log} ({num_candles_before_fetch}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD+AnsiColors.MAGENTA)
-                else: animated_text_display(f"\n--- LIVE {pair_name_for_log} ({current_loop_time.strftime('%H:%M:%S')}) | {num_candles_before_fetch} candles ---", color=AnsiColors.BOLD+AnsiColors.CYAN)
+                if data_per_pair["big_data_collection_phase_active"]: animated_text_display(f"\n--- BIG DATA {pair_name_for_log} ({num_candles_before_fetch}/{TARGET_BIG_DATA_CANDLES}) [{config_for_pair['timeframe']}] ---", color=AnsiColors.BOLD+AnsiColors.MAGENTA, new_line=False)
+                else: animated_text_display(f"\n--- LIVE {pair_name_for_log} ({current_loop_time.strftime('%H:%M:%S')}) | {num_candles_before_fetch} [{config_for_pair['timeframe']}] ---", color=AnsiColors.BOLD+AnsiColors.CYAN, new_line=False)
 
                 new_candles_batch = []
                 fetch_update_successful = False
-                limit_fetch_update = 3 # Default untuk update
+                limit_fetch_update = 3 
                 if data_per_pair["big_data_collection_phase_active"]:
                     needed_for_big_data = TARGET_BIG_DATA_CANDLES - num_candles_before_fetch
-                    if needed_for_big_data <=0 : fetch_update_successful = True # Sudah cukup, tidak perlu fetch
+                    if needed_for_big_data <=0 : 
+                        fetch_update_successful = True # Already have enough, no need to fetch
+                        limit_fetch_update = 0 # Set to 0 to skip fetch block
                     else: limit_fetch_update = min(needed_for_big_data, CRYPTOCOMPARE_MAX_LIMIT)
                 
-                if limit_fetch_update > 0 or (data_per_pair["big_data_collection_phase_active"] and not fetch_update_successful): # Hanya fetch jika perlu
+                if limit_fetch_update > 0 : # Only fetch if needed
                     max_update_key_attempts = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                     update_key_attempts_done = 0
-                    original_api_key_index_for_this_update = api_key_manager.get_current_key_index()
+                    original_api_key_index_for_this_update_cycle = api_key_manager.get_current_key_index() # Track if key changed
 
                     while update_key_attempts_done < max_update_key_attempts and not fetch_update_successful:
                         current_api_key_update = api_key_manager.get_current_key()
                         if not current_api_key_update:
                             log_error(f"UPDATE: Semua API key habis (global) untuk {pair_name_for_log}.", pair_name=pair_name_for_log); break
                         
-                        log_info(f"UPDATE: Mencoba fetch untuk {pair_name_for_log} dengan key index {api_key_manager.get_current_key_index()} (Attempt {update_key_attempts_done + 1}/{max_update_key_attempts})", pair_name=pair_name_for_log)
+                        # log_debug(f"UPDATE: Mencoba fetch untuk {pair_name_for_log} dengan key idx {api_key_manager.get_current_key_index()} (Attempt {update_key_attempts_done + 1}/{max_update_key_attempts})", pair_name=pair_name_for_log)
                         try:
                             new_candles_batch = fetch_candles(config_for_pair['symbol'], config_for_pair['currency'], limit_fetch_update, config_for_pair['exchange'], current_api_key_update, config_for_pair['timeframe'], pair_name=pair_name_for_log)
                             fetch_update_successful = True
-                            data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset jika sukses
-                            any_data_fetched_this_cycle = True
-                            if api_key_manager.get_current_key_index() != original_api_key_index_for_this_update:
+                            data_per_pair["data_fetch_failed_consecutively"] = 0 
+                            any_data_fetched_this_cycle = True # Mark that a fetch attempt was made
+                            if api_key_manager.get_current_key_index() != original_api_key_index_for_this_update_cycle:
                                 log_info(f"UPDATE: Fetch berhasil dengan key index {api_key_manager.get_current_key_index()} setelah retry untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
                         except APIKeyError:
                             log_warning(f"UPDATE: API Key (Idx {api_key_manager.get_current_key_index()}) gagal untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
@@ -858,94 +1090,168 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                             log_error(f"UPDATE: Error Jaringan {pair_name_for_log}: {e_req_upd}.", pair_name=pair_name_for_log); data_per_pair["data_fetch_failed_consecutively"] +=1; break 
                         except Exception as e_gen_upd:
                             log_exception(f"UPDATE: Error Umum {pair_name_for_log}: {e_gen_upd}.", pair_name=pair_name_for_log); data_per_pair["data_fetch_failed_consecutively"] +=1; break
-                        
                         update_key_attempts_done += 1
                 
-                # Cooldown jika semua key gagal untuk pair ini
-                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) +1:
-                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() # Catat waktu untuk cooldown
+                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1) +1 :
+                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() 
+                    log_warning(f"Semua API key gagal untuk {pair_name_for_log} di siklus ini. Masuk cooldown.", pair_name=pair_name_for_log)
 
-                if not fetch_update_successful or not new_candles_batch:
-                    # ... (Logika jika fetch gagal atau tidak ada candle baru, sama seperti sebelumnya) ...
-                    if fetch_update_successful and not new_candles_batch and not data_per_pair["big_data_collection_phase_active"]:
-                        log_info(f"Tidak ada data candle baru diterima untuk {pair_name_for_log} (fetch dianggap berhasil tapi batch kosong).", pair_name=pair_name_for_log)
-                    elif not fetch_update_successful:
-                         log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name_for_log} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+
+                if not fetch_update_successful or (limit_fetch_update > 0 and not new_candles_batch): # Check if fetch was intended but failed or returned empty
+                    if fetch_update_successful and not new_candles_batch and not data_per_pair["big_data_collection_phase_active"]: # Successfully fetched, but no new data
+                        log_info(f" Tidak ada candle baru diterima untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
+                    elif not fetch_update_successful and limit_fetch_update > 0: # Fetch was intended and failed
+                         log_error(f" {AnsiColors.RED}Gagal update {pair_name_for_log}.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                    # else: # e.g. fetch_update_successful is True because limit_fetch_update was 0 (big data complete)
+                    #    sys.stdout.write(f"{AnsiColors.GREEN} Data Lengkap.{AnsiColors.ENDC}\n")
+                    #    sys.stdout.flush()
+
+
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval)
-                    with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
-                    continue
+                    with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair) # Save state even on failed fetch (e.g. consecutive failure count)
+                    sys.stdout.write("\n"); sys.stdout.flush() # Ensure newline after animated text
+                    continue # Next pair
 
-                # Merge candle (sama)
-                merged_candles_dict = {c['timestamp']: c for c in data_per_pair["all_candles_list"]}
-                newly_added_count_this_batch, updated_count_this_batch = 0,0
-                for candle in new_candles_batch:
-                    ts = candle['timestamp']
-                    if ts not in merged_candles_dict: merged_candles_dict[ts] = candle; newly_added_count_this_batch +=1
-                    elif merged_candles_dict[ts] != candle : merged_candles_dict[ts] = candle; updated_count_this_batch +=1
-                data_per_pair["all_candles_list"] = sorted(list(merged_candles_dict.values()), key=lambda c_sort: c_sort['timestamp'])
-                if newly_added_count_this_batch + updated_count_this_batch > 0: log_info(f"{newly_added_count_this_batch + updated_count_this_batch} candle baru/diupdate untuk {pair_name_for_log}.", pair_name_for_log)
+                sys.stdout.write(f"{AnsiColors.GREEN} OK.{AnsiColors.ENDC}\n") # For the animated text if fetch was OK or not needed.
+                sys.stdout.flush()
 
-                # Handle Big Data Collection (display) (sama)
+                if new_candles_batch: # Only merge if there's something new
+                    merged_candles_dict = {c['timestamp']: c for c in data_per_pair["all_candles_list"]}
+                    newly_added_count_this_batch, updated_count_this_batch = 0,0
+                    for candle in new_candles_batch:
+                        ts = candle['timestamp']
+                        if ts not in merged_candles_dict: 
+                            merged_candles_dict[ts] = candle; newly_added_count_this_batch +=1
+                        elif merged_candles_dict[ts]['close'] != candle['close'] or merged_candles_dict[ts]['high'] != candle['high'] or merged_candles_dict[ts]['low'] != candle['low']: # Check if candle data changed
+                            merged_candles_dict[ts] = candle; updated_count_this_batch +=1
+                    
+                    data_per_pair["all_candles_list"] = sorted(list(merged_candles_dict.values()), key=lambda c_sort: c_sort['timestamp'])
+                    if newly_added_count_this_batch > 0 or updated_count_this_batch > 0: 
+                        log_info(f"{newly_added_count_this_batch} baru, {updated_count_this_batch} diupdate untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
+
                 if data_per_pair["big_data_collection_phase_active"]:
                     if len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-                        # ... (Logika notifikasi Big Data tercapai sama)
                         data_per_pair["big_data_collection_phase_active"] = False
                         active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) 
-                elif len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: # Trim jika sudah live
-                    data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                        if not data_per_pair["big_data_email_sent"]:
+                            email_cfg_bd_done = {**config_for_pair, 'pair_name': pair_name_for_log}
+                            send_email_notification(f"Data Downloading Complete: {pair_name_for_log}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {pair_name_for_log}.", email_cfg_bd_done)
+                            data_per_pair["big_data_email_sent"] = True
+                        log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({pair_name_for_log}) ----------{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                
+                # Trim excess candles if not in big data phase and list is too long
+                if not data_per_pair["big_data_collection_phase_active"] and len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES + 100: # Keep a bit more than target for calcs
+                    data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-(TARGET_BIG_DATA_CANDLES + 50):]
 
-                # Jalankan Logika Strategi (Supertrend)
+
                 min_len_for_logic_run_live = config_for_pair.get('atr_length', 10) + 2
                 if len(data_per_pair["all_candles_list"]) >= min_len_for_logic_run_live:
-                    process_logic_now = (newly_added_count_this_batch + updated_count_this_batch > 0 or
-                                         (not data_per_pair["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) )
-                    if process_logic_now:
-                         log_info(f"Menjalankan logika strategi Supertrend untuk {pair_name_for_log}...", pair_name=pair_name_for_log)
+                    # Process logic if new candles arrived OR if it's the first run after big data collection completed
+                    process_logic_now = ( (newly_added_count_this_batch + updated_count_this_batch > 0) or
+                                         (not data_per_pair["big_data_collection_phase_active"] and 
+                                          num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and 
+                                          len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) 
+                                       )
+                    if process_logic_now :
+                         # log_debug(f"Running strategy for {pair_name_for_log}...", pair_name=pair_name_for_log)
                          data_per_pair["strategy_state"] = run_strategy_logic(data_per_pair["all_candles_list"], config_for_pair, data_per_pair["strategy_state"], global_settings_dict)
                 
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval)
                 with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
             
-            # Penentuan Waktu Tidur (sama)
             sleep_duration = 15 
-            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: sleep_duration = 3600 # Semua key global gagal
-            elif active_cryptos_still_in_big_data_collection > 0: sleep_duration = 30 # Cek lebih sering jika masih big data
+            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None and api_key_manager.total_keys() > 0: 
+                # All keys were exhausted globally during this cycle's attempts
+                log_error(f"{AnsiColors.RED}{AnsiColors.BOLD}SEMUA API KEY GLOBAL GAGAL di siklus ini. Skrip akan tidur 1 jam sebelum mencoba lagi.{AnsiColors.ENDC}", pair_name="SYSTEM")
+                sleep_duration = 3600 
+            elif active_cryptos_still_in_big_data_collection > 0: 
+                sleep_duration = min(15, int(min_overall_next_refresh_seconds) if min_overall_next_refresh_seconds != float('inf') else 15)
+                sleep_duration = max(1, sleep_duration) # Ensure at least 1s sleep
             elif min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0:
                 sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-            if sleep_duration > 0: show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s...")
-            else: time.sleep(1)
+            
+            if sleep_duration > 0: 
+                show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s (Next check: ~{datetime.now() + timedelta(seconds=sleep_duration):%H:%M:%S})...")
+            else: # Should not happen if logic above is correct, but as a fallback
+                time.sleep(1)
 
-    except KeyboardInterrupt: animated_text_display(f"\n{AnsiColors.ORANGE}Proses dihentikan.{AnsiColors.ENDC}",color=AnsiColors.ORANGE)
-    except Exception as e_main_loop: log_exception(f"{AnsiColors.RED}Error loop utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM")
-    finally: animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}",color=AnsiColors.HEADER); input("Tekan Enter...")
+    except KeyboardInterrupt: animated_text_display(f"\n{AnsiColors.ORANGE}Proses dihentikan oleh pengguna.{AnsiColors.ENDC}",color=AnsiColors.ORANGE, new_line=True)
+    except Exception as e_main_loop: 
+        log_exception(f"{AnsiColors.RED}Error Kritis di loop utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM_CRITICAL")
+        animated_text_display(f"\n{AnsiColors.RED}ERROR KRITIS DALAM LOOP UTAMA: {e_main_loop}{AnsiColors.ENDC}", color=AnsiColors.RED, new_line=True)
+    finally: 
+        animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}",color=AnsiColors.HEADER, new_line=True)
+        input("Tekan Enter untuk kembali ke menu utama...")
 
 
 # --- MENU UTAMA ---
 def main_menu():
     settings = load_settings()
-    flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True); flask_thread.start()
+    # Start Flask server in a separate thread
+    # Ensure Flask thread is daemon so it exits when main thread exits
+    flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True)
+    flask_thread.start()
+    
     while True:
         clear_screen_animated()
         animated_text_display("========= Crypto Supertrend Strategy Runner =========", color=AnsiColors.HEADER)
+        
         pick_title_main = ""
+        # Reload settings in case they were changed by another instance or manually (less likely for desktop app)
+        # For multi-instance scenarios, IPC or a proper database for settings would be better.
+        # For this script, loading here ensures `settings_menu` changes are reflected if user goes back and forth.
+        settings = load_settings() 
+        
         active_cfgs = [c for c in settings.get("cryptos",[]) if c.get("enabled",True)]
-        if active_cfgs: pick_title_main += f"--- Crypto Aktif ({len(active_cfgs)}) ---\n" + "".join([f"  {i+1}. {c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe','?')})\n" for i,c in enumerate(active_cfgs)])
-        else: pick_title_main += "Tidak ada konfigurasi crypto aktif.\n"
+        if active_cfgs: 
+            pick_title_main += f"{AnsiColors.CYAN}--- Crypto Aktif ({len(active_cfgs)}) ---{AnsiColors.ENDC}\n"
+            for i,c in enumerate(active_cfgs):
+                pick_title_main += f"  {AnsiColors.GREEN}{i+1}. {c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe','?')}, {c.get('exchange','CCCAGG')}){AnsiColors.ENDC}\n"
+        else: 
+            pick_title_main += f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto aktif.{AnsiColors.ENDC}\n"
         
         api_s_main = settings.get("api_settings", {})
-        pk_disp = api_s_main.get('primary_key','N/A'); pk_disp = ("..."+pk_disp[-5:]) if len(pk_disp)>10 and pk_disp!="YOUR_PRIMARY_KEY" else pk_disp
-        pick_title_main += f"-----------------------------------------------\nPrimary API Key: {pk_disp}\nChart Server: http://localhost:5001\n-----------------------------------------------\nPilih Opsi:"
+        pk_disp_val = api_s_main.get('primary_key','N/A')
+        pk_disp = ("..." + pk_disp_val[-5:]) if pk_disp_val and len(pk_disp_val) > 10 and pk_disp_val not in ["YOUR_PRIMARY_KEY","N/A"] else pk_disp_val
+        num_recovery = len([k for k in api_s_main.get('recovery_keys',[]) if k])
+
+        pick_title_main += f"{AnsiColors.BLUE}-----------------------------------------------{AnsiColors.ENDC}\n"
+        pick_title_main += f"Primary API Key: {AnsiColors.MAGENTA}{pk_disp}{AnsiColors.ENDC} | Recovery Keys: {AnsiColors.MAGENTA}{num_recovery}{AnsiColors.ENDC}\n"
+        pick_title_main += f"Chart Server: {AnsiColors.YELLOW_BG}{AnsiColors.BLUE}http://localhost:5001{AnsiColors.ENDC}\n"
+        pick_title_main += f"{AnsiColors.BLUE}-----------------------------------------------{AnsiColors.ENDC}\n"
+        pick_title_main += "Pilih Opsi:"
         
         main_opts = ["Mulai Analisa Realtime", "Pengaturan", "Keluar"]
-        _, main_idx = pick(main_opts, pick_title_main, indicator='=>')
+        selected_option, main_idx = pick(main_opts, pick_title_main, indicator='=>', options_map_func=lambda x: AnsiColors.BOLD + x + AnsiColors.ENDC)
         
-        if main_idx == 0: settings = load_settings(); start_trading(settings, shared_crypto_data_manager, shared_data_lock)
-        elif main_idx == 1: settings = settings_menu(settings)
-        elif main_idx == 2: log_info("Aplikasi ditutup."); break
-    animated_text_display("Terima kasih!", color=AnsiColors.MAGENTA); show_spinner(0.5, "Exiting")
+        if main_idx == 0: 
+            # Ensure settings are fresh before starting trading
+            current_fresh_settings = load_settings() 
+            start_trading(current_fresh_settings, shared_crypto_data_manager, shared_data_lock)
+        elif main_idx == 1: 
+            settings = settings_menu(settings) # settings_menu saves inside itself, and returns the latest
+        elif main_idx == 2: 
+            log_info("Aplikasi ditutup oleh pengguna.", pair_name="SYSTEM")
+            break 
+            
+    animated_text_display("\nTerima kasih telah menggunakan skrip ini!", color=AnsiColors.MAGENTA)
+    show_spinner(0.5, "Exiting")
+    print(AnsiColors.ENDC) # Ensure colors are reset
 
 if __name__ == "__main__":
-    try: main_menu()
-    except KeyboardInterrupt: clear_screen_animated(); animated_text_display("Aplikasi dihentikan.", color=AnsiColors.ORANGE)
-    except Exception as e_global: clear_screen_animated(); print(f"{AnsiColors.RED}ERROR KRITIKAL: {e_global}{AnsiColors.ENDC}"); log_exception("MAIN ERROR:",pair_name="SYS_CRIT"); input("Enter...")
-    finally: sys.stdout.flush(); sys.stderr.flush()
+    try: 
+        main_menu()
+    except KeyboardInterrupt: 
+        clear_screen_animated()
+        animated_text_display("\nAplikasi dihentikan oleh pengguna (Ctrl+C di menu utama).", color=AnsiColors.ORANGE)
+    except Exception as e_global: 
+        clear_screen_animated()
+        print(f"{AnsiColors.RED}{AnsiColors.BOLD}ERROR KRITIKAL GLOBAL: {e_global}{AnsiColors.ENDC}")
+        log_exception("MAIN_APP_ERROR_UNHANDLED:",pair_name="SYS_CRITICAL")
+        input("Tekan Enter untuk keluar...")
+    finally: 
+        # Ensure all output buffers are flushed before exiting
+        sys.stdout.flush()
+        sys.stderr.flush()
+        print(AnsiColors.ENDC) # Final reset of colors
