@@ -122,10 +122,11 @@ def log_debug(message, pair_name="SYSTEM"): logger.debug(message, extra={'pair_n
 def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra={'pair_name': pair_name})
 
 
-SETTINGS_FILE = "settings_supertrend.json"
+SETTINGS_FILE = "settings_ema_trend.json" # Ganti nama file settings
 CRYPTOCOMPARE_MAX_LIMIT = 1999
-TARGET_BIG_DATA_CANDLES = 2500 # <<< DIUBAH DARI 250 MENJADI 2500
+TARGET_BIG_DATA_CANDLES = 2500 
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
+EMA_LENGTH_FIXED = 500 # EMA length is fixed at 500
 
 # --- FUNGSI CLEAR SCREEN ---
 def clear_screen_animated():
@@ -139,7 +140,7 @@ class APIKeyManager:
         if primary_key and primary_key != "YOUR_API_KEY_HERE" and primary_key != "YOUR_PRIMARY_KEY":
             self.keys.append(primary_key)
         if recovery_keys_list:
-            self.keys.extend([k for k in recovery_keys_list if k]) # Filter out empty strings
+            self.keys.extend([k for k in recovery_keys_list if k]) 
 
         self.current_index = 0
         self.global_email_settings = global_settings_for_email or {}
@@ -152,7 +153,7 @@ class APIKeyManager:
             return None
         if self.current_index < len(self.keys):
             return self.keys[self.current_index]
-        return None # All keys exhausted or no keys initially
+        return None 
 
     def switch_to_next_key(self):
         if not self.keys: return None
@@ -196,7 +197,7 @@ class APIKeyManager:
                     send_email_notification(email_subject, email_body, dummy_email_cfg)
                 else:
                     log_warning("Konfigurasi email global tidak lengkap untuk notifikasi KRITIS semua API key gagal (APIKeyManager).")
-            return None # Explicitly return None when all keys are exhausted
+            return None 
 
     def has_valid_keys(self):
         return bool(self.keys)
@@ -257,12 +258,9 @@ def get_default_crypto_config():
         "id": str(uuid.uuid4()), "enabled": True,
         "symbol": "BTC", "currency": "USD", "exchange": "CCCAGG",
         "timeframe": "hour", "refresh_interval_seconds": 60,
-        "atr_length": 10, "factor": 3.0,
-        "emergency_sl_percent": 2.0, "profit_target_percent_activation": 2.0, "trailing_stop_gap_percent": 1.0,
-        "ma_length": 50, "stoch_length": 14, "stoch_smooth_k": 3, "stoch_smooth_d": 3,
-        "stoch_overbought": 80, "stoch_oversold": 20,
-        "left_strength": 50, "right_strength": 150, "enable_secure_fib": True, "secure_fib_check_price": "Close",
-        "enable_email_notifications": False,
+        "ema_lookback_period": 10, # BARU: Sesuai PineScript
+        # Parameter Supertrend dan SL/TP dihilangkan
+        "enable_email_notifications": False, # Untuk notifikasi sistem (mis. Big Data tercapai)
         "email_sender_address": "", "email_sender_app_password": "", "email_receiver_address": ""
     }
 
@@ -272,7 +270,7 @@ def load_settings():
         "enable_global_email_notifications_for_key_switch": False,
         "email_sender_address": "pengirim.global@gmail.com", "email_sender_app_password": "xxxx xxxx xxxx xxxx",
         "email_receiver_address_admin": "admin.penerima@example.com",
-        "enable_termux_notifications": False
+        "enable_termux_notifications": False 
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -282,12 +280,23 @@ def load_settings():
                 for k, v in default_api_settings.items():
                     if k not in settings["api_settings"]: settings["api_settings"][k] = v
             if "cryptos" not in settings or not isinstance(settings["cryptos"], list): settings["cryptos"] = []
+            
             default_crypto_template = get_default_crypto_config()
             for crypto_cfg in settings["cryptos"]:
                 if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
                 if "enabled" not in crypto_cfg: crypto_cfg["enabled"] = True
+                # Pastikan semua keys dari template ada di config yang diload
                 for key, default_value in default_crypto_template.items():
                     if key not in crypto_cfg: crypto_cfg[key] = default_value
+                # Hapus key lama yang tidak relevan lagi (opsional, tapi lebih bersih)
+                keys_to_remove = ["atr_length", "factor", "emergency_sl_percent", 
+                                  "profit_target_percent_activation", "trailing_stop_gap_percent",
+                                  "ma_length", "stoch_length", "stoch_smooth_k", "stoch_smooth_d",
+                                  "stoch_overbought", "stoch_oversold", "left_strength", 
+                                  "right_strength", "enable_secure_fib", "secure_fib_check_price"]
+                for old_key in keys_to_remove:
+                    if old_key in crypto_cfg:
+                        del crypto_cfg[old_key]
             return settings
         except Exception as e:
             log_error(f"Error membaca {SETTINGS_FILE}: {e}. Menggunakan default.")
@@ -318,30 +327,18 @@ def _prompt_crypto_config(current_config):
         new_config["refresh_interval_seconds"] = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(refresh_input_str) if refresh_input_str else new_config.get('refresh_interval_seconds',60))
     except ValueError: new_config["refresh_interval_seconds"] = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, new_config.get('refresh_interval_seconds',60))
 
-    animated_text_display("\n-- Parameter Supertrend --", color=AnsiColors.HEADER)
+    animated_text_display("\n-- Parameter EMA Trend Detector --", color=AnsiColors.HEADER)
     try:
-        new_config["atr_length"] = int(input(f"{AnsiColors.BLUE}Supertrend - ATR Length [{new_config.get('atr_length',10)}]: {AnsiColors.ENDC}").strip() or new_config.get('atr_length',10))
-        new_config["factor"] = float(input(f"{AnsiColors.BLUE}Supertrend - Factor [{new_config.get('factor',3.0)}]: {AnsiColors.ENDC}").strip() or new_config.get('factor',3.0))
+        new_config["ema_lookback_period"] = int(input(f"{AnsiColors.BLUE}EMA Lookback Period [{new_config.get('ema_lookback_period',10)}]: {AnsiColors.ENDC}").strip() or new_config.get('ema_lookback_period',10))
     except ValueError:
-        print(f"{AnsiColors.RED}Input Supertrend tidak valid. Default digunakan.{AnsiColors.ENDC}")
+        print(f"{AnsiColors.RED}Input EMA Lookback Period tidak valid. Default digunakan.{AnsiColors.ENDC}")
         def_cfg = get_default_crypto_config()
-        new_config["atr_length"] = new_config.get('atr_length', def_cfg['atr_length'])
-        new_config["factor"] = new_config.get('factor', def_cfg['factor'])
-
-    animated_text_display("\n-- Parameter Exits --", color=AnsiColors.HEADER)
-    try:
-        new_config["emergency_sl_percent"] = float(input(f"{AnsiColors.RED}Fixed Stop Loss % [{new_config.get('emergency_sl_percent',2.0)}]: {AnsiColors.ENDC}").strip() or new_config.get('emergency_sl_percent',2.0))
-        animated_text_display("\n-- Trailing Take Profit (Persentase) --", color=AnsiColors.CYAN)
-        new_config["profit_target_percent_activation"] = float(input(f"{AnsiColors.BLUE}Trail Activation Profit % [{new_config.get('profit_target_percent_activation',2.0)}]: {AnsiColors.ENDC}").strip() or new_config.get('profit_target_percent_activation',2.0))
-        new_config["trailing_stop_gap_percent"] = float(input(f"{AnsiColors.BLUE}Trail Gap % [{new_config.get('trailing_stop_gap_percent',1.0)}]: {AnsiColors.ENDC}").strip() or new_config.get('trailing_stop_gap_percent',1.0))
-    except ValueError:
-        print(f"{AnsiColors.RED}Input Exits tidak valid. Default digunakan.{AnsiColors.ENDC}")
-        def_cfg = get_default_crypto_config()
-        for k_exit in ["emergency_sl_percent", "profit_target_percent_activation", "trailing_stop_gap_percent"]:
-            new_config[k_exit] = new_config.get(k_exit, def_cfg[k_exit])
+        new_config["ema_lookback_period"] = new_config.get('ema_lookback_period', def_cfg['ema_lookback_period'])
     
-    animated_text_display("\n-- Notifikasi Email (Gmail) --", color=AnsiColors.HEADER)
-    email_enable_input = input(f"Aktifkan Notifikasi Email? (true/false) [{new_config.get('enable_email_notifications',False)}]: ").lower().strip()
+    # Input SL/TP dihilangkan
+    
+    animated_text_display("\n-- Notifikasi Email (Gmail) - Untuk Notif Sistem --", color=AnsiColors.HEADER)
+    email_enable_input = input(f"Aktifkan Notifikasi Email Sistem? (true/false) [{new_config.get('enable_email_notifications',False)}]: ").lower().strip()
     new_config["enable_email_notifications"] = True if email_enable_input == 'true' else (False if email_enable_input == 'false' else new_config.get('enable_email_notifications',False))
     new_config["email_sender_address"] = (input(f"{AnsiColors.BLUE}Email Pengirim [{new_config.get('email_sender_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_address','')).strip()
     new_config["email_sender_app_password"] = (input(f"{AnsiColors.BLUE}App Password Pengirim [{new_config.get('email_sender_app_password','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_app_password','')).strip()
@@ -355,33 +352,62 @@ def settings_menu(current_settings):
         pkd = api_s.get('primary_key', 'N/A'); pkd = pkd[:5]+"..."+pkd[-3:] if len(pkd)>8 and pkd not in ["YOUR_PRIMARY_KEY", "N/A"] else pkd
         nrk = len([k for k in api_s.get('recovery_keys', []) if k])
         tns = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
-        title = f"--- Menu Pengaturan ---\nAPI Key: {pkd} | Recovery: {nrk} | Termux: {tns}\nStrategi: Supertrend Entry\nCrypto Pairs:\n"
+        title = f"--- Menu Pengaturan ---\nAPI Key: {pkd} | Recovery: {nrk} | Termux: {tns}\nStrategi: EMA 500 Trend Detector\nCrypto Pairs:\n" # Ganti nama strategi
         if not current_settings.get("cryptos"): title += "  (Kosong)\n"
         else:
-            for i, cfg in enumerate(current_settings["cryptos"]): title += f"  {i+1}. {cfg.get('symbol','?')}-{cfg.get('currency','?')} ({cfg.get('timeframe','?')}) - {'Aktif' if cfg.get('enabled',True) else 'Nonaktif'}\n"
+            for i, cfg in enumerate(current_settings["cryptos"]): title += f"  {i+1}. {cfg.get('symbol','?')}-{cfg.get('currency','?')} ({cfg.get('timeframe','?')}, EMA Lookback: {cfg.get('ema_lookback_period','?')}) - {'Aktif' if cfg.get('enabled',True) else 'Nonaktif'}\n"
         title += "----------------------\nPilih tindakan:"
         opts = ["Primary API Key", "Recovery API Keys", "Email Global Notif Sistem", "Notifikasi Termux", "Tambah Crypto Pair", "Ubah Crypto Pair", "Hapus Crypto Pair", "Kembali"]
         _, action_idx = pick(opts, title, indicator='=>')
         clear_screen_animated()
         try:
-            if action_idx == 0:
-                api_s["primary_key"] = (input(f"Primary API Key [{api_s.get('primary_key','')}]: ").strip() or api_s.get('primary_key',''))
-            elif action_idx == 1: # Kelola Recovery (loop internal)
+            if action_idx == 0: # Primary API Key
+                new_pk = input(f"Primary API Key [{api_s.get('primary_key','')}]: ").strip()
+                if new_pk: api_s["primary_key"] = new_pk
+                elif not api_s.get('primary_key'): api_s["primary_key"] = "YOUR_PRIMARY_KEY" # Set to placeholder if cleared and was empty
+
+            elif action_idx == 1: # Recovery API Keys
                 while True:
-                    # ... (sama seperti versi sebelumnya)
-                    # For brevity, this part is condensed. It allows adding/removing recovery keys.
-                    # Ensure save_settings is called appropriately within this sub-loop if changes are made.
-                    # This sub-menu would use pick as well.
-                    # Placeholder:
-                    print("Kelola Recovery Keys (placeholder for sub-menu logic)") 
-                    # Example: new_rec_key = input("Tambah key: "); if new_rec_key: api_s.setdefault('recovery_keys',[]).append(new_rec_key)
-                    break # Exit sub-menu for now
-            elif action_idx == 2:
-                api_s['enable_global_email_notifications_for_key_switch'] = input(f"Email Global Notif? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower() == 'true'
-                api_s['email_sender_address'] = input(f"Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address','')
-                # ... (sender_password, receiver_address_admin)
-            elif action_idx == 3:
-                api_s['enable_termux_notifications'] = input(f"Notif Termux? (true/false) [{api_s.get('enable_termux_notifications',False)}]: ").lower() == 'true'
+                    clear_screen_animated()
+                    current_recovery = api_s.get('recovery_keys', [])
+                    rec_title = "--- Kelola Recovery API Keys ---\n"
+                    if not current_recovery: rec_title += "  (Tidak ada recovery key)\n"
+                    else:
+                        for i_rec, key_rec in enumerate(current_recovery):
+                             rec_title += f"  {i_rec+1}. {key_rec[:5]}...{key_rec[-3:] if len(key_rec)>8 else key_rec}\n"
+                    rec_title += "----------------------------\nPilih:"
+                    rec_opts = ["Tambah Recovery Key", "Hapus Recovery Key", "Kembali ke Menu Pengaturan"]
+                    _, rec_action_idx = pick(rec_opts, rec_title, indicator='=>')
+                    
+                    if rec_action_idx == 0: # Tambah
+                        new_rec_key = input("Masukkan Recovery API Key baru: ").strip()
+                        if new_rec_key:
+                            api_s.setdefault('recovery_keys',[]).append(new_rec_key)
+                            save_settings(current_settings)
+                            animated_text_display("Recovery key ditambahkan.", color=AnsiColors.GREEN)
+                        else: animated_text_display("Input kosong, tidak ada key ditambahkan.", color=AnsiColors.ORANGE)
+                    elif rec_action_idx == 1: # Hapus
+                        if not api_s.get('recovery_keys'):
+                            animated_text_display("Tidak ada recovery key untuk dihapus.", color=AnsiColors.ORANGE); time.sleep(1); continue
+                        del_rec_opts = [f"{k_rec[:5]}...{k_rec[-3:] if len(k_rec)>8 else k_rec}" for k_rec in api_s['recovery_keys']] + ["Batal"]
+                        animated_text_display("Pilih recovery key untuk dihapus:", color=AnsiColors.HEADER,new_line=False)
+                        _, del_rec_key_idx = pick(del_rec_opts, "Pilih recovery key untuk dihapus:", indicator='=>')
+                        if del_rec_key_idx < len(api_s['recovery_keys']):
+                            api_s['recovery_keys'].pop(del_rec_key_idx)
+                            save_settings(current_settings)
+                            animated_text_display("Recovery key dihapus.", color=AnsiColors.GREEN)
+                    elif rec_action_idx == 2: break # Kembali ke menu pengaturan utama
+                    show_spinner(0.5, "Memproses...")
+
+            elif action_idx == 2: # Email Global Notif Sistem
+                api_s['enable_global_email_notifications_for_key_switch'] = input(f"Aktifkan Email Notif Sistem Global? (true/false) [{api_s.get('enable_global_email_notifications_for_key_switch',False)}]: ").lower().strip() == 'true'
+                api_s['email_sender_address'] = (input(f"Alamat Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
+                api_s['email_sender_app_password'] = (input(f"App Password Email Pengirim Global [{api_s.get('email_sender_app_password','')}]: ").strip() or api_s.get('email_sender_app_password',''))
+                api_s['email_receiver_address_admin'] = (input(f"Alamat Email Penerima Admin Global [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
+            
+            elif action_idx == 3: # Notifikasi Termux
+                api_s['enable_termux_notifications'] = input(f"Aktifkan Notifikasi Termux? (true/false) [{api_s.get('enable_termux_notifications',False)}]: ").lower().strip() == 'true'
+            
             elif action_idx == 4: current_settings.setdefault("cryptos", []).append(_prompt_crypto_config(get_default_crypto_config()))
             elif action_idx == 5:
                 if not current_settings.get("cryptos"): print("Tidak ada pair untuk diubah."); show_spinner(1,""); continue
@@ -394,9 +420,9 @@ def settings_menu(current_settings):
                 _, del_c_idx = pick(del_opts, "Pilih pair untuk dihapus:")
                 if del_c_idx < len(current_settings["cryptos"]): current_settings["cryptos"].pop(del_c_idx)
             elif action_idx == 7: break # Kembali
-            current_settings["api_settings"] = api_s # Pastikan api_s disimpan kembali
+            current_settings["api_settings"] = api_s 
             save_settings(current_settings)
-            if action_idx not in [1,7]: show_spinner(1, "Disimpan...") # Sub-menu recovery akan handle savenya sendiri
+            if action_idx not in [1,7]: show_spinner(1, "Disimpan...") 
         except Exception as e_menu: log_error(f"Error menu: {e_menu}"); show_spinner(1, "Error...")
     return current_settings
 
@@ -408,7 +434,7 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     current_to_ts = None
     api_endpoint = {"minute": "histominute", "hour": "histohour", "day": "histoday"}.get(timeframe, "histohour")
     url = f"https://min-api.cryptocompare.com/data/v2/{api_endpoint}"
-    is_large_fetch = total_limit_desired > 20 # Show progress for larger fetches
+    is_large_fetch = total_limit_desired > 20 
 
     if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT : simple_progress_bar(0, total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles')
     
@@ -420,11 +446,11 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
         if current_to_ts: params["toTs"] = current_to_ts
         try:
             response = requests.get(url, params=params, timeout=20)
-            if response.status_code in [401, 403, 429]: # Key-related HTTP errors
+            if response.status_code in [401, 403, 429]: 
                 err_msg = response.json().get('Message', f"HTTP Error {response.status_code}") if response.content else f"HTTP Error {response.status_code}"
                 log_warning(f"API Key Error (HTTP {response.status_code}): {err_msg} | Key: ...{current_api_key_to_use[-5:]}", pair_name=pair_name)
                 raise APIKeyError(f"HTTP {response.status_code}: {err_msg}")
-            response.raise_for_status() # Other HTTP errors
+            response.raise_for_status() 
             data = response.json()
             if data.get('Response') == 'Error':
                 err_msg = data.get('Message', 'Unknown API Error')
@@ -445,239 +471,462 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                 if all(k in item and item[k] is not None for k in ['time', 'open', 'high', 'low', 'close', 'volumefrom']):
                     batch.append({'timestamp': datetime.fromtimestamp(item['time']), 'open': item['open'], 'high': item['high'], 'low': item['low'], 'close': item['close'], 'volume': item['volumefrom']})
             
-            if current_to_ts and all_accumulated_candles and batch and batch[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']: batch.pop() # Remove overlap
-            if not batch and current_to_ts: break # No new data after overlap removal
+            if current_to_ts and all_accumulated_candles and batch and batch[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']: batch.pop() 
+            if not batch and current_to_ts: break 
 
             all_accumulated_candles = batch + all_accumulated_candles
             if raw_candles: current_to_ts = raw_candles[0]['time']
             else: break
 
             if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles')
-            if len(raw_candles) < limit_call: break # Reached end of available history for this timeframe
+            if len(raw_candles) < limit_call: break 
             if len(all_accumulated_candles) >= total_limit_desired: break
-            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: time.sleep(0.2) # Small delay for large fetches
-        except APIKeyError: raise # Re-raise to be caught by calling function for key switching
-        except requests.exceptions.RequestException as e_req: log_error(f"Kesalahan Jaringan: {e_req}", pair_name=pair_name); break # Don't switch key for network error
+            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: time.sleep(0.2) 
+        except APIKeyError: raise 
+        except requests.exceptions.RequestException as e_req: log_error(f"Kesalahan Jaringan: {e_req}", pair_name=pair_name); break 
         except Exception as e_gen: log_exception(f"Error lain dalam fetch_candles: {e_gen}", pair_name=pair_name); break
     
     if len(all_accumulated_candles) > total_limit_desired: all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
     if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT : simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Selesai')
-    # log_info(f"Pengambilan data selesai. Total {len(all_accumulated_candles)} candle untuk {pair_name}.", pair_name=pair_name)
     return all_accumulated_candles
 
-# --- LOGIKA STRATEGI (Supertrend) ---
-# (Fungsi get_initial_strategy_state, calculate_atr, calculate_supertrend, run_strategy_logic SAMA seperti di respons Supertrend sebelumnya)
+# --- LOGIKA STRATEGI (EMA 500 Trend Detector) ---
 def get_initial_strategy_state():
     return {
-        "last_supertrend_value": None, "supertrend_direction": 0, "last_atr_value_for_chart": None,
-        "entry_price_custom": None, "highest_price_for_trailing": None,
-        "trailing_tp_active_custom": False, "current_trailing_stop_level": None,
-        "emergency_sl_level_custom": None, "position_size": 0,
-        "last_ma_value_for_chart": None, "last_stoch_k_value_for_chart": None, "last_stoch_d_value_for_chart": None,
-        "last_signal_type": 0, "final_pivot_high_price_confirmed": None, "final_pivot_low_price_confirmed": None,
-        "last_pivot_high_display_info": None, "last_pivot_low_display_info": None,
-        "high_price_for_fib": None, "high_bar_index_for_fib": None, "active_fib_level": None, "active_fib_line_start_index": None,
+        "previous_trend_is_uptrend": False,
+        "previous_trend_is_downtrend": False,
+        "last_ema500_value_for_chart": None, 
+        "current_trend_color_for_chart": "gray" 
     }
 
-def calculate_atr(high_prices, low_prices, close_prices, period):
-    if len(close_prices) < period or period <= 0: return [None] * len(close_prices)
-    tr, atr = [None] * len(close_prices), [None] * len(close_prices)
-    for i in range(len(close_prices)):
-        if not all(x is not None for x in [high_prices[i], low_prices[i], close_prices[i]]): continue
-        hl = high_prices[i] - low_prices[i]
-        hpc = abs(high_prices[i] - (close_prices[i-1] if i>0 and close_prices[i-1] is not None else high_prices[i]))
-        lpc = abs(low_prices[i] - (close_prices[i-1] if i>0 and close_prices[i-1] is not None else low_prices[i]))
-        tr[i] = max(hl, hpc, lpc) if i>0 or (i==0 and close_prices[i-1] is None) else (hl if i==0 else None)
-
-    first_valid_tr_idx = next((i for i, x in enumerate(tr) if x is not None), -1)
-    if first_valid_tr_idx == -1 or len([x for x in tr[first_valid_tr_idx:] if x is not None]) < period : return atr
+def calculate_ema(prices, period):
+    if not prices or len(prices) < period or period <= 0:
+        return [None] * len(prices)
     
-    atr_start_idx = -1; sum_tr = 0; count = 0
-    for i in range(first_valid_tr_idx, len(tr)):
-        if tr[i] is not None: sum_tr += tr[i]; count += 1
-        if count == period: atr_start_idx = i; atr[i] = sum_tr / period; break
-    if atr_start_idx == -1: return atr
-        
-    for i in range(atr_start_idx + 1, len(close_prices)):
-        if tr[i] is not None and atr[i-1] is not None: atr[i] = (atr[i-1] * (period - 1) + tr[i]) / period
-    return atr
-
-def calculate_supertrend(high_prices, low_prices, close_prices, atr_length, factor):
-    n = len(close_prices)
-    if n < atr_length + 1: return ([None]*n, [0]*n)
-    atr = calculate_atr(high_prices, low_prices, close_prices, atr_length)
-    st, direction = [None]*n, [0]*n
+    ema_values = [None] * len(prices)
     
-    first_valid_idx = -1
-    for i in range(atr_length, n): # Start where ATR might be valid
-        if all(x is not None for x in [close_prices[i], high_prices[i], low_prices[i], atr[i]]):
-            first_valid_idx = i; break
-    if first_valid_idx == -1: return (st, direction)
+    # Find first valid price to start calculation
+    first_valid_price_index = -1
+    for i, p in enumerate(prices):
+        if p is not None:
+            first_valid_price_index = i
+            break
+            
+    if first_valid_price_index == -1: # No valid prices at all
+        return ema_values
 
-    # Initial ST (simplified)
-    mid_init = (high_prices[first_valid_idx] + low_prices[first_valid_idx]) / 2
-    st[first_valid_idx] = mid_init - factor * atr[first_valid_idx] if close_prices[first_valid_idx] > mid_init else mid_init + factor * atr[first_valid_idx]
-    direction[first_valid_idx] = 1 if close_prices[first_valid_idx] > st[first_valid_idx] else -1
-    if close_prices[first_valid_idx] == st[first_valid_idx]: direction[first_valid_idx] = 1 # Default to up on exact match
+    # Check if enough data points *after* the first valid price for initial SMA
+    if (len(prices) - first_valid_price_index) < period:
+        return ema_values
 
-    for i in range(first_valid_idx + 1, n):
-        if not all(x is not None for x in [close_prices[i], high_prices[i], low_prices[i], atr[i], close_prices[i-1], st[i-1]]):
-            st[i] = st[i-1]; direction[i] = direction[i-1]; continue
+    # Calculate initial SMA for the first EMA value
+    sma_sum = 0.0
+    valid_prices_in_initial_period = 0
+    initial_period_end_index = first_valid_price_index + period -1
 
-        basic_ub = ((high_prices[i] + low_prices[i]) / 2) + factor * atr[i]
-        basic_lb = ((high_prices[i] + low_prices[i]) / 2) - factor * atr[i]
-        
-        prev_st, prev_dir = st[i-1], direction[i-1]
-        curr_st, curr_dir = prev_st, prev_dir
+    for i in range(first_valid_price_index, initial_period_end_index + 1):
+        if prices[i] is not None:
+            sma_sum += prices[i]
+            valid_prices_in_initial_period +=1
+        else: # Gap in data within initial period
+            # Shift first_valid_price_index and retry SMA calc or return None
+            # For simplicity now, if there's a None in the first `period` prices, we can't start.
+            # This part can be made more robust to handle initial Nones.
+            # For now, let's assume calculate_ema is called with enough leading non-None data.
+            # Or, more simply, the first EMA value will be None if any of its components are None.
+            return ema_values # Cannot calculate initial SMA reliably
 
-        if prev_dir == 1: # Uptrend
-            curr_st = max(basic_lb, prev_st)
-            if close_prices[i] < curr_st: curr_dir = -1; curr_st = basic_ub
-        elif prev_dir == -1: # Downtrend
-            curr_st = min(basic_ub, prev_st)
-            if close_prices[i] > curr_st: curr_dir = 1; curr_st = basic_lb
-        else: # Initial or error state, re-evaluate
-            mid = (high_prices[i] + low_prices[i]) / 2
-            curr_st = basic_lb if close_prices[i] > mid else basic_ub
-            curr_dir = 1 if close_prices[i] > curr_st else -1
-            if close_prices[i] == curr_st : curr_dir = 1
+    if valid_prices_in_initial_period < period: # Should be caught by gap check
+         return ema_values
+
+    ema_values[initial_period_end_index] = sma_sum / period
+    multiplier = 2 / (period + 1)
+
+    # Calculate subsequent EMA values
+    for i in range(initial_period_end_index + 1, len(prices)):
+        if prices[i] is not None and ema_values[i-1] is not None:
+            ema_values[i] = (prices[i] - ema_values[i-1]) * multiplier + ema_values[i-1]
+        elif prices[i] is not None and ema_values[i-1] is None:
+            # Try to re-initialize EMA if previous was None due to a gap
+            # This requires looking back `period` non-None prices again.
+            # For this implementation, if ema[i-1] is None, ema[i] will also be None
+            # unless we add logic for re-initialization.
+            # For now, a sustained None in prices will lead to sustained None in EMA.
+            pass # ema_values[i] remains None
+        # If prices[i] is None, ema_values[i] remains None.
+    return ema_values
 
 
-        st[i], direction[i] = curr_st, curr_dir
-    return st, direction
-
-def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings):
+def run_strategy_logic(candles_history, crypto_config, strategy_state, global_settings, is_warmup=False):
     pair_name = f"{crypto_config['symbol']}-{crypto_config['currency']}"
-    atr_len, st_factor = crypto_config.get('atr_length', 10), crypto_config.get('factor', 3.0)
-    sl_perc, tp_act_perc, tp_trail_perc = crypto_config.get('emergency_sl_percent',2.0)/100.0, crypto_config.get('profit_target_percent_activation',2.0)/100.0, crypto_config.get('trailing_stop_gap_percent',1.0)/100.0
-    
-    min_data = atr_len + 2
-    if len(candles_history) < min_data: return strategy_state
+    lookback_period = crypto_config.get('ema_lookback_period', 10)
+    # ema_length is fixed at EMA_LENGTH_FIXED (500)
+
+    min_data_needed = EMA_LENGTH_FIXED + lookback_period
+    if len(candles_history) < min_data_needed:
+        # log_debug(f"Not enough data for EMA trend ({len(candles_history)}/{min_data_needed}) for {pair_name}", pair_name=pair_name)
+        strategy_state["last_ema500_value_for_chart"] = None
+        strategy_state["current_trend_color_for_chart"] = "gray" # PineScript: color.new(color.gray, 50)
+        return strategy_state
 
     closes = [c.get('close') for c in candles_history]
-    highs = [c.get('high') for c in candles_history]
-    lows = [c.get('low') for c in candles_history]
+    ema500_series = calculate_ema(closes, EMA_LENGTH_FIXED)
+
+    current_idx = len(candles_history) - 1
+    ema_value = ema500_series[current_idx]
     
-    st_line, st_dir_signal = calculate_supertrend(highs, lows, closes, atr_len, st_factor)
-    curr_idx, prev_idx = len(candles_history)-1, len(candles_history)-2
+    strategy_state["last_ema500_value_for_chart"] = ema_value
 
-    curr_candle = candles_history[curr_idx]
-    if any(curr_candle.get(k) is None for k in ['open','high','low','close','timestamp']): return strategy_state
+    past_ema_idx = current_idx - lookback_period
+    # past_ema_idx should be >= EMA_LENGTH_FIXED - 1 for ema500_series[past_ema_idx] to be potentially valid
+    if past_ema_idx < (EMA_LENGTH_FIXED - 1) : 
+        strategy_state["current_trend_color_for_chart"] = "gray"
+        strategy_state["previous_trend_is_uptrend"] = False # Reset if not enough history for comparison
+        strategy_state["previous_trend_is_downtrend"] = False
+        return strategy_state
+
+    ema_past_value = ema500_series[past_ema_idx]
+
+    if ema_value is None or ema_past_value is None:
+        # log_debug(f"EMA value or past EMA value is None for {pair_name}. Current: {ema_value}, Past: {ema_past_value}", pair_name=pair_name)
+        strategy_state["current_trend_color_for_chart"] = "gray"
+        strategy_state["previous_trend_is_uptrend"] = False
+        strategy_state["previous_trend_is_downtrend"] = False
+        return strategy_state
+
+    is_uptrend_now = ema_value > ema_past_value
+    is_downtrend_now = ema_value < ema_past_value
+    # is_sideways_now handled by the 'else' in color determination
+
+    # Determine color for chart (mirrors PineScript logic)
+    if is_uptrend_now:
+        strategy_state["current_trend_color_for_chart"] = "green" # PineScript: color.new(color.green, 0)
+    elif is_downtrend_now:
+        strategy_state["current_trend_color_for_chart"] = "red"   # PineScript: color.new(color.red, 0)
+    else: # Sideways or equal
+        strategy_state["current_trend_color_for_chart"] = "yellow" # PineScript: color.new(color.yellow, 0)
+
+
+    if not is_warmup: # Only send notifications if not in warm-up phase
+        if is_uptrend_now and not strategy_state.get("previous_trend_is_uptrend", False):
+            message = f"EMA500 Trend UP: This is a good time to trade on {pair_name}"
+            log_info(f"{AnsiColors.GREEN}{message}{AnsiColors.ENDC}", pair_name=pair_name)
+            send_termux_notification(f"UPTREND: {pair_name}", message, global_settings, pair_name_for_log=pair_name)
+            # play_notification_sound() # Optional sound
+
+        elif is_downtrend_now and not strategy_state.get("previous_trend_is_downtrend", False):
+            message = f"EMA500 Trend DOWN: This is not a good time to trade on {pair_name}"
+            log_info(f"{AnsiColors.RED}{message}{AnsiColors.ENDC}", pair_name=pair_name)
+            send_termux_notification(f"DOWNTREND: {pair_name}", message, global_settings, pair_name_for_log=pair_name)
+            # play_notification_sound() # Optional sound
+            
+    # Update previous trend state for the next iteration
+    strategy_state["previous_trend_is_uptrend"] = is_uptrend_now
+    strategy_state["previous_trend_is_downtrend"] = is_downtrend_now
     
-    curr_c, curr_l, curr_h = curr_candle['close'], curr_candle['low'], curr_candle['high']
-    curr_st_val, curr_st_dir = st_line[curr_idx], st_dir_signal[curr_idx]
-    strategy_state["last_supertrend_value"], strategy_state["supertrend_direction"] = curr_st_val, curr_st_dir
-
-    prev_c, prev_st_val = (candles_history[prev_idx].get('close') if prev_idx >=0 else None), (st_line[prev_idx] if prev_idx >=0 else None)
-
-    if curr_st_val is None or prev_st_val is None or prev_c is None: pass # Skip cross logic
-    else:
-        crossed_above = prev_c <= prev_st_val and curr_c > curr_st_val
-        crossed_below = prev_c >= prev_st_val and curr_c < curr_st_val
-        
-        if strategy_state["position_size"] > 0: # In position
-            if crossed_below: # Exit Long on ST cross down
-                entry_p = strategy_state["entry_price_custom"]
-                pnl = ((curr_c - entry_p) / entry_p) * 100.0 if entry_p else 0.0
-                log_info(f"{AnsiColors.BLUE}EXIT (ST Cross) @ {curr_c:.5f}. PnL: {pnl:.2f}%{AnsiColors.ENDC}", pair_name=pair_name)
-                # ... (Notifikasi & reset state posisi) ...
-                strategy_state["position_size"]=0; strategy_state["entry_price_custom"]=None; # etc.
-        elif strategy_state["position_size"] == 0: # Not in position
-            if crossed_above and curr_st_dir == 1: # Entry Long
-                strategy_state["position_size"]=1; strategy_state["entry_price_custom"]=curr_c
-                strategy_state["emergency_sl_level_custom"] = curr_c * (1-sl_perc)
-                strategy_state["highest_price_for_trailing"] = curr_h
-                log_info(f"{AnsiColors.GREEN}BUY (ST Cross) @ {curr_c:.5f}. SL: {strategy_state['emergency_sl_level_custom']:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
-                # ... (Notifikasi) ...
-            elif crossed_below: # Potential Sell Signal (alert only)
-                log_info(f"{AnsiColors.MAGENTA}SELL ALERT (ST Cross) @ {curr_c:.5f}{AnsiColors.ENDC}", pair_name=pair_name)
-
-    # SL/TP Logic (jika masih dalam posisi)
-    if strategy_state["position_size"] > 0:
-        # ... (Logika SL/TP sama seperti sebelumnya) ...
-        entry_p_val = strategy_state["entry_price_custom"]
-        if curr_h is not None: strategy_state["highest_price_for_trailing"] = max(strategy_state.get("highest_price_for_trailing", curr_h) or curr_h, curr_h)
-        if not strategy_state["trailing_tp_active_custom"] and entry_p_val and strategy_state["highest_price_for_trailing"]:
-            if ((strategy_state["highest_price_for_trailing"] - entry_p_val) / entry_p_val) >= tp_act_perc:
-                strategy_state["trailing_tp_active_custom"] = True; log_info(f"{AnsiColors.BLUE}Trailing TP Aktif.{AnsiColors.ENDC}",pair_name)
-        if strategy_state["trailing_tp_active_custom"] and strategy_state["highest_price_for_trailing"]:
-            new_tsl = strategy_state["highest_price_for_trailing"] * (1-tp_trail_perc)
-            strategy_state["current_trailing_stop_level"] = max(strategy_state.get("current_trailing_stop_level", new_tsl) or new_tsl, new_tsl)
-        
-        eff_sl = strategy_state["emergency_sl_level_custom"]
-        exit_r, exit_c = "Stop Loss", AnsiColors.RED
-        if strategy_state["trailing_tp_active_custom"] and strategy_state["current_trailing_stop_level"]:
-            if eff_sl is None or strategy_state["current_trailing_stop_level"] > eff_sl : 
-                eff_sl = strategy_state["current_trailing_stop_level"]; exit_r="Trailing TP"; exit_c=AnsiColors.BLUE
-        
-        if eff_sl and curr_l and curr_l <= eff_sl:
-            pnl_sltp = ((eff_sl - entry_p_val) / entry_p_val) * 100.0 if entry_p_val else 0.0
-            if exit_r=="Trailing TP" and pnl_sltp < 0: exit_c=AnsiColors.RED; exit_r="Trailing SL (Loss)"
-            log_info(f"{exit_c}EXIT ({exit_r}) @ {eff_sl:.5f}. PnL: {pnl_sltp:.2f}%{AnsiColors.ENDC}",pair_name)
-            # ... (Notifikasi & reset state posisi) ...
-            strategy_state["position_size"]=0; strategy_state["entry_price_custom"]=None; # etc.
     return strategy_state
 
-# CHART_INTEGRATION_START & Flask Endpoints (SAMA seperti di respons Supertrend sebelumnya)
-# ...
+# CHART_INTEGRATION_START & Flask Endpoints
 shared_crypto_data_manager = {}
 shared_data_lock = threading.Lock()
-# (Fungsi prepare_chart_data_for_pair, HTML_CHART_TEMPLATE, dan endpoint Flask sama)
-def prepare_chart_data_for_pair(pair_id, snapshot): # Simplified
-    if pair_id not in snapshot: return None
-    data = snapshot[pair_id]; hist = data.get("all_candles_list", [])[-TARGET_BIG_DATA_CANDLES:] # Uses TARGET_BIG_DATA_CANDLES for display limit
-    cfg = data.get("config", {}); state = data.get("strategy_state", {})
-    ohlc, st_series = [], []
-    if not hist: return {"ohlc":[], "supertrend_series":[], "pair_name": cfg.get('pair_name',pair_id)}
-    
-    chart_st, _ = calculate_supertrend([c.get('high') for c in hist], [c.get('low') for c in hist], [c.get('close') for c in hist], cfg.get('atr_length',10), cfg.get('factor',3.0))
-    for i, c in enumerate(hist):
-        if all(c.get(k) for k in ['timestamp','open','high','low','close']):
-            tsms = c['timestamp'].timestamp()*1000
-            ohlc.append({'x':tsms, 'y':[c['open'],c['high'],c['low'],c['close']]})
-            if i < len(chart_st) and chart_st[i] is not None: st_series.append({'x':tsms, 'y':chart_st[i]})
-    
-    # Annotations (SL/Entry)
-    ann_y = []
-    if state.get("position_size",0)>0 and state.get("entry_price_custom") is not None:
-        ep = state.get("entry_price_custom")
-        ann_y.append({'y':ep, 'borderColor':'#2698FF', 'label':{'text':f'Entry: {ep:.5f}'}})
-        sl_val = state.get("emergency_sl_level_custom")
-        sl_txt = "SL"
-        if state.get("trailing_tp_active_custom") and state.get("current_trailing_stop_level"):
-            tsl = state.get("current_trailing_stop_level")
-            if sl_val is None or (tsl and tsl > sl_val): sl_val = tsl; sl_txt = "Trail.SL"
-        if sl_val : ann_y.append({'y':sl_val, 'borderColor':'#FF4560', 'label':{'text':f'{sl_txt}: {sl_val:.5f}'}})
 
-    return {"ohlc":ohlc, "supertrend_series":st_series, "annotations_yaxis":ann_y, "pair_name":cfg.get('pair_name',pair_id), "last_updated_tv":hist[-1]['timestamp'].timestamp()*1000 if hist else None, "st_atr_len_label":cfg.get('atr_length'), "st_factor_label":cfg.get('factor'), "strategy_state_info": {"supertrend_value":state.get("last_supertrend_value"),"supertrend_direction":state.get("supertrend_direction")} }
+def prepare_chart_data_for_pair(pair_id, snapshot):
+    if pair_id not in snapshot: return None
+    data = snapshot[pair_id]
+    hist = data.get("all_candles_list", [])[-TARGET_BIG_DATA_CANDLES:] 
+    cfg = data.get("config", {})
+    state = data.get("strategy_state", {})
+    
+    ohlc_data = []
+    ema500_series_data = []
+    
+    pair_display_name = cfg.get('pair_name', pair_id)
+    ema_lookback_chart = cfg.get('ema_lookback_period', 10)
+
+    if not hist:
+        return {
+            "ohlc": [], "ema500_series": [], "ema500_line_color": "gray",
+            "annotations_yaxis": [], "pair_name": pair_display_name,
+            "last_updated_tv": None, "ema_lookback_label": ema_lookback_chart,
+            "strategy_state_info": {"ema500_value": None, "ema_trend_color": "gray"}
+        }
+
+    closes_hist = [c.get('close') for c in hist]
+    ema500_values_hist = calculate_ema(closes_hist, EMA_LENGTH_FIXED)
+
+    for i, c in enumerate(hist):
+        if all(c.get(k) is not None for k in ['timestamp', 'open', 'high', 'low', 'close']):
+            ts_ms = c['timestamp'].timestamp() * 1000
+            ohlc_data.append({'x': ts_ms, 'y': [c['open'], c['high'], c['low'], c['close']]})
+            if ema500_values_hist[i] is not None:
+                ema500_series_data.append({'x': ts_ms, 'y': ema500_values_hist[i]})
+    
+    current_ema_color = state.get("current_trend_color_for_chart", "gray")
+    last_ema_value = state.get("last_ema500_value_for_chart")
+
+    return {
+        "ohlc": ohlc_data,
+        "ema500_series": ema500_series_data,
+        "ema500_line_color": current_ema_color,
+        "annotations_yaxis": [], # SL/Entry annotations removed
+        "pair_name": pair_display_name,
+        "last_updated_tv": hist[-1]['timestamp'].timestamp() * 1000 if hist else None,
+        "ema_lookback_label": ema_lookback_chart, # Keep for info
+        "strategy_state_info": {
+            "ema500_value": last_ema_value,
+            "ema_trend_color": current_ema_color,
+            # Add isUptrend/isDowntrend from state for more detailed display if needed
+            "is_uptrend": state.get("previous_trend_is_uptrend", False), # Displaying the state of the last processed candle
+            "is_downtrend": state.get("previous_trend_is_downtrend", False)
+        }
+    }
 
 flask_app_instance = Flask(__name__)
-HTML_CHART_TEMPLATE = """ <!DOCTYPE html> <html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>Supertrend Chart</title> <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script> <style>body{font-family:sans-serif;margin:0;background-color:#1e1e1e;color:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:10px}#controls{background-color:#2a2a2a;padding:10px;border-radius:8px;margin-bottom:10px;display:flex;align-items:center;gap:10px;width:100%;max-width:1200px}select,button{padding:8px 12px;border-radius:5px;border:1px solid #444;background-color:#333;color:#e0e0e0;cursor:pointer}#chart-container{width:100%;max-width:1200px;background-color:#2a2a2a;padding:15px;border-radius:8px}h1{color:#00bcd4;margin-bottom:10px;font-size:1.5em}#lastUpdatedLabel{font-size:.8em;color:#aaa;margin-left:auto}#strategyInfoLabel{font-size:.8em;color:#ffd700;margin-left:10px;white-space:pre}</style> </head> <body> <h1>Supertrend Strategy Chart</h1> <div id="controls"> <label for="pairSelector">Pair:</label> <select id="pairSelector" onchange="handlePairSelectionChange()"></select> <button onclick="loadChartDataForCurrentPair()">Refresh</button> <span id="strategyInfoLabel">Status: -</span> <span id="lastUpdatedLabel">Memuat...</span> </div> <div id="chart-container"><div id="chart"></div></div> <script>let activeChart,currentSelectedPairId="",lastKnownDataTimestamp=null,autoRefreshIntervalId=null,isLoadingData=!1;const initialChartOptions={series:[{name:"Candlestick",type:"candlestick",data:[]},{name:"Supertrend",type:"line",data:[]}],chart:{type:"candlestick",height:550,background:"#2a2a2a",animations:{enabled:!1},toolbar:{show:!0}},theme:{mode:"dark"},title:{text:"Memuat Data Pair...",align:"left",style:{color:"#e0e0e0"}},xaxis:{type:"datetime",labels:{style:{colors:"#aaa"}},tooltip:{enabled:!1}},yaxis:{tooltip:{enabled:!0},labels:{style:{colors:"#aaa"},formatter:v=>v?v.toFixed(5):""}},stroke:{width:[1,2],curve:"straight"},markers:{size:0},colors:["#FEB019","#888"],grid:{borderColor:"#444"},annotations:{yaxis:[],points:[]},tooltip:{theme:"dark",shared:!0,intersect:!1,custom:function({series:s,seriesIndex:e,dataPointIndex:a,w:t}){let n,i,r,l,o,d;const c=t.globals.series.findIndex(s=>"candlestick"===s.type),h=t.globals.series.findIndex(s=>s.name.startsWith("Supertrend"));c!==-1&&void 0!==t.globals.seriesCandleO[c]?.[a]&&([n,i,r,l]=[t.globals.seriesCandleO[c][a],t.globals.seriesCandleH[c][a],t.globals.seriesCandleL[c][a],t.globals.seriesCandleC[c][a]]),h!==-1&&s[h]?.[a]!==void 0&&t.config.series[h].data[a]&&(o=t.config.series[h].data[a].y);let u='<div style="padding:5px 10px;background:#333;color:#fff;border:1px solid #555;">';return void 0!==n&&(u+=["O","H","L","C"].map((s,e)=>`<div>${s}: <span style="font-weight:bold;">${[n,i,r,l][e].toFixed(5)}</span></div>`).join("")),void 0!==o&&(u+=`<div>ST: <span style="font-weight:bold;">${o.toFixed(5)}</span></div>`),u+="</div>",void 0!==n||void 0!==o?u:""},noData:{text:"Tidak ada data.",align:"center",style:{color:"#ccc"}}};async function fetchAvailablePairs(){try{const s=await fetch("/api/available_pairs");if(!s.ok)throw new Error(`HTTP ${s.status}`);const e=await s.json(),a=document.getElementById("pairSelector");if(a.innerHTML="","e.length>0?(e.forEach(s=>{const e=document.createElement("option");e.value=s.id,e.textContent=s.name,a.appendChild(e)}),currentSelectedPairId=a.value||e[0].id,loadChartDataForCurrentPair()):(a.innerHTML='<option value="">No pairs</option>',activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML="No pairs configured.")}catch(s){console.error("Err pairs:",s),activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML=`Err: ${s.message}`}}function handlePairSelectionChange(){currentSelectedPairId=document.getElementById("pairSelector").value,lastKnownDataTimestamp=null,loadChartDataForCurrentPair()}async function loadChartDataForCurrentPair(){if(currentSelectedPairId&&!isLoadingData){isLoadingData=!0,document.getElementById("lastUpdatedLabel").textContent=`Loading ${currentSelectedPairId}...`;try{const s=await fetch(`/api/chart_data/${currentSelectedPairId}`);if(!s.ok)throw new Error(`HTTP ${s.status}`);const e=await s.json();if(e&&e.ohlc&&0!==e.ohlc.length){if(e.last_updated_tv&&e.last_updated_tv===lastKnownDataTimestamp){console.log("Chart data unchanged."),document.getElementById("lastUpdatedLabel").textContent=`Last @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;const s=e.strategy_state_info||{};document.getElementById("strategyInfoLabel").textContent=`ST: ${s.supertrend_value?.toFixed(3)||"N/A"}\nDir: ${s.supertrend_direction||"N/A"}`,isLoadingData=!1;return}lastKnownDataTimestamp=e.last_updated_tv,document.getElementById("lastUpdatedLabel").textContent=`Last @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;const a=e.strategy_state_info||{};document.getElementById("strategyInfoLabel").textContent=`ST: ${a.supertrend_value?.toFixed(3)||"N/A"}\nDir: ${1==a.supertrend_direction?"Up":-1==a.supertrend_direction?"Down":"N/A"}`;const t=`Supertrend (${e.st_atr_len_label}/${e.st_factor_label})`,n=e.supertrend_series.map(s=>({x:s.x,y:s.y}));let i=initialChartOptions.colors[1];e.supertrend_series&&e.supertrend_series.length>0&&e.supertrend_series[e.supertrend_series.length-1].color&&(i=e.supertrend_series[e.supertrend_series.length-1].color);const r={...initialChartOptions,title:{...initialChartOptions.title,text:`${e.pair_name} - Supertrend`},series:[{name:"Candlestick",type:"candlestick",data:e.ohlc||[]},{name:t,type:"line",data:n}],annotations:{yaxis:e.annotations_yaxis||[],points:e.annotations_points||[]},colors:[initialChartOptions.colors[0],i]};activeChart?activeChart.updateOptions(r):(activeChart=new ApexCharts(document.querySelector("#chart"),r),activeChart.render())}else{const s={...initialChartOptions,title:{...initialChartOptions.title,text:`${e.pair_name||currentSelectedPairId} - No Data`},series:initialChartOptions.series.map(s=>({...s,data:[]}))};activeChart?activeChart.updateOptions(s):(activeChart=new ApexCharts(document.querySelector("#chart"),s),activeChart.render()),lastKnownDataTimestamp=e.last_updated_tv||null,document.getElementById("lastUpdatedLabel").textContent=lastKnownDataTimestamp?`Data (empty) @${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`:"No data",document.getElementById("strategyInfoLabel").textContent="Status: Data Kosong",isLoadingData=!1}}catch(s){console.error("Err chart data:",s),activeChart&&(activeChart.destroy(),activeChart=null),document.getElementById("chart").innerHTML=`Err: ${s.message}`}finally{isLoadingData=!1}}}document.addEventListener("DOMContentLoaded",()=>{activeChart||(activeChart=new ApexCharts(document.querySelector("#chart"),initialChartOptions),activeChart.render()),fetchAvailablePairs(),autoRefreshIntervalId&&clearInterval(autoRefreshIntervalId),autoRefreshIntervalId=setInterval(async()=>{currentSelectedPairId&&"visible"===document.visibilityState&&!isLoadingData&&await loadChartDataForCurrentPair()},15e3)}); </script> </body></html>"""
+HTML_CHART_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EMA 500 Trend Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; background-color: #1e1e1e; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; padding: 10px; }
+        #controls { background-color: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 1200px; }
+        select, button { padding: 8px 12px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; cursor: pointer; }
+        #chart-container { width: 100%; max-width: 1200px; background-color: #2a2a2a; padding: 15px; border-radius: 8px; }
+        h1 { color: #00bcd4; margin-bottom: 10px; font-size: 1.5em; }
+        #lastUpdatedLabel { font-size: .8em; color: #aaa; margin-left: auto; }
+        #strategyInfoLabel { font-size: .8em; color: #ffd700; margin-left: 10px; white-space: pre; }
+    </style>
+</head>
+<body>
+    <h1>EMA 500 Trend Detector Chart</h1>
+    <div id="controls">
+        <label for="pairSelector">Pair:</label>
+        <select id="pairSelector" onchange="handlePairSelectionChange()"></select>
+        <button onclick="loadChartDataForCurrentPair()">Refresh</button>
+        <span id="strategyInfoLabel">Status: -</span>
+        <span id="lastUpdatedLabel">Memuat...</span>
+    </div>
+    <div id="chart-container"><div id="chart"></div></div>
+    <script>
+        let activeChart, currentSelectedPairId = "", lastKnownDataTimestamp = null, autoRefreshIntervalId = null, isLoadingData = false;
+        const initialChartOptions = {
+            series: [
+                { name: "Candlestick", type: "candlestick", data: [] },
+                { name: "EMA 500", type: "line", data: [] }
+            ],
+            chart: { type: "candlestick", height: 550, background: "#2a2a2a", animations: { enabled: false }, toolbar: { show: true } },
+            theme: { mode: "dark" },
+            title: { text: "Memuat Data Pair...", align: "left", style: { color: "#e0e0e0" } },
+            xaxis: { type: "datetime", labels: { style: { colors: "#aaa" } }, tooltip: { enabled: false } },
+            yaxis: { tooltip: { enabled: true }, labels: { style: { colors: "#aaa" }, formatter: v => v ? v.toFixed(5) : "" } },
+            stroke: { width: [1, 2], curve: "straight" }, // EMA line thickness
+            markers: { size: 0 },
+            colors: ["#FEB019", "#888888"], // Default color for candlestick, EMA line
+            grid: { borderColor: "#444" },
+            annotations: { yaxis: [], points: [] }, // Annotations can be cleared or used for other things if needed
+            tooltip: {
+                theme: "dark", shared: true, intersect: false,
+                custom: function({ series, seriesIndex, dataPointIndex, w }) {
+                    let ohlcOpen, ohlcHigh, ohlcLow, ohlcClose, emaValue;
+                    const candleSeriesIdx = w.globals.series.findIndex(s => s.type === 'candlestick');
+                    const emaSeriesIdx = w.globals.series.findIndex(s => s.name.startsWith("EMA 500"));
+
+                    if (candleSeriesIdx !== -1 && w.globals.seriesCandleO[candleSeriesIdx]?.[dataPointIndex] !== undefined) {
+                        [ohlcOpen, ohlcHigh, ohlcLow, ohlcClose] = [
+                            w.globals.seriesCandleO[candleSeriesIdx][dataPointIndex],
+                            w.globals.seriesCandleH[candleSeriesIdx][dataPointIndex],
+                            w.globals.seriesCandleL[candleSeriesIdx][dataPointIndex],
+                            w.globals.seriesCandleC[candleSeriesIdx][dataPointIndex]
+                        ];
+                    }
+                    if (emaSeriesIdx !== -1 && series[emaSeriesIdx]?.[dataPointIndex] !== undefined && w.config.series[emaSeriesIdx].data[dataPointIndex]) {
+                        emaValue = w.config.series[emaSeriesIdx].data[dataPointIndex].y;
+                    }
+
+                    let html = '<div style="padding:5px 10px;background:#333;color:#fff;border:1px solid #555;">';
+                    if (ohlcOpen !== undefined) {
+                        html += ['O', 'H', 'L', 'C'].map((label, idx) => 
+                            `<div>${label}: <span style="font-weight:bold;">${[ohlcOpen, ohlcHigh, ohlcLow, ohlcClose][idx].toFixed(5)}</span></div>`
+                        ).join('');
+                    }
+                    if (emaValue !== undefined) {
+                        html += `<div>EMA 500: <span style="font-weight:bold;">${emaValue.toFixed(5)}</span></div>`;
+                    }
+                    html += '</div>';
+                    return (ohlcOpen !== undefined || emaValue !== undefined) ? html : "";
+                }
+            },
+            noData: { text: "Tidak ada data.", align: "center", style: { color: "#ccc" } }
+        };
+
+        async function fetchAvailablePairs() {
+            try {
+                const response = await fetch("/api/available_pairs");
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const pairs = await response.json();
+                const selector = document.getElementById("pairSelector");
+                selector.innerHTML = ""; 
+                if (pairs.length > 0) {
+                    pairs.forEach(pair => {
+                        const option = document.createElement("option");
+                        option.value = pair.id; option.textContent = pair.name;
+                        selector.appendChild(option);
+                    });
+                    currentSelectedPairId = selector.value || pairs[0].id;
+                    loadChartDataForCurrentPair();
+                } else {
+                    selector.innerHTML = '<option value="">No pairs</option>';
+                    if (activeChart) { activeChart.destroy(); activeChart = null; }
+                    document.getElementById("chart").innerHTML = "No pairs configured.";
+                }
+            } catch (error) {
+                console.error("Error fetching available pairs:", error);
+                if (activeChart) { activeChart.destroy(); activeChart = null; }
+                document.getElementById("chart").innerHTML = `Error loading pairs: ${error.message}`;
+            }
+        }
+
+        function handlePairSelectionChange() {
+            currentSelectedPairId = document.getElementById("pairSelector").value;
+            lastKnownDataTimestamp = null; 
+            loadChartDataForCurrentPair();
+        }
+
+        async function loadChartDataForCurrentPair() {
+            if (!currentSelectedPairId || isLoadingData) return;
+            isLoadingData = true;
+            document.getElementById("lastUpdatedLabel").textContent = `Loading ${currentSelectedPairId}...`;
+            try {
+                const response = await fetch(`/api/chart_data/${currentSelectedPairId}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+
+                if (data && data.ohlc) { // Check if data.ohlc exists
+                    if (data.last_updated_tv && data.last_updated_tv === lastKnownDataTimestamp) {
+                        console.log("Chart data is unchanged based on timestamp.");
+                        document.getElementById("lastUpdatedLabel").textContent = `Last @ ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;
+                        const sstate = data.strategy_state_info || {};
+                         document.getElementById("strategyInfoLabel").textContent = 
+                            `EMA500: ${sstate.ema500_value !== null && sstate.ema500_value !== undefined ? sstate.ema500_value.toFixed(3) : "N/A"}\n` +
+                            `Trend: ${sstate.ema_trend_color || "N/A"}`;
+                        isLoadingData = false;
+                        return;
+                    }
+                    lastKnownDataTimestamp = data.last_updated_tv;
+                     document.getElementById("lastUpdatedLabel").textContent = lastKnownDataTimestamp ? `Last @ ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}` : "Data Loaded";
+                    
+                    const strategyState = data.strategy_state_info || {};
+                     document.getElementById("strategyInfoLabel").textContent = 
+                        `EMA500: ${strategyState.ema500_value !== null && strategyState.ema500_value !== undefined ? strategyState.ema500_value.toFixed(3) : "N/A"}\n`+
+                        `Trend: ${strategyState.ema_trend_color || "N/A"} (${strategyState.is_uptrend ? "Up" : strategyState.is_downtrend ? "Down" : "Side"})`;
+
+                    const emaLineColor = data.ema500_line_color || initialChartOptions.colors[1];
+
+                    const chartOptionsUpdate = {
+                        ...initialChartOptions,
+                        title: { ...initialChartOptions.title, text: `${data.pair_name} - EMA 500 (Lookback: ${data.ema_lookback_label})` },
+                        series: [
+                            { name: "Candlestick", type: "candlestick", data: data.ohlc || [] },
+                            { name: "EMA 500", type: "line", data: data.ema500_series || [], color: emaLineColor }
+                        ],
+                        annotations: { yaxis: data.annotations_yaxis || [] , points: data.annotations_points || []},
+                         colors: [initialChartOptions.colors[0], emaLineColor] // Ensure candlestick color is first, then EMA color
+                    };
+                     if (data.ohlc.length === 0) { // If OHLC is empty, show no data message
+                        chartOptionsUpdate.title.text = `${data.pair_name || currentSelectedPairId} - No Data`;
+                        chartOptionsUpdate.series = initialChartOptions.series.map(s => ({ ...s, data: [] }));
+                        document.getElementById("strategyInfoLabel").textContent = "Status: Data Kosong";
+                    }
+
+
+                    if (activeChart) {
+                        activeChart.updateOptions(chartOptionsUpdate);
+                    } else {
+                        activeChart = new ApexCharts(document.querySelector("#chart"), chartOptionsUpdate);
+                        activeChart.render();
+                    }
+                } else { // data or data.ohlc is missing
+                     const noDataOptions = { ...initialChartOptions,
+                        title: { ...initialChartOptions.title, text: `${data.pair_name || currentSelectedPairId} - No Data` },
+                        series: initialChartOptions.series.map(s => ({ ...s, data: [] }))
+                    };
+                    if (activeChart) activeChart.updateOptions(noDataOptions);
+                    else { activeChart = new ApexCharts(document.querySelector("#chart"), noDataOptions); activeChart.render(); }
+                    lastKnownDataTimestamp = data.last_updated_tv || null;
+                     document.getElementById("lastUpdatedLabel").textContent = lastKnownDataTimestamp ? `Data (empty) @ ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}` : "No data";
+                    document.getElementById("strategyInfoLabel").textContent = "Status: Data Kosong";
+                }
+            } catch (error) {
+                console.error("Error loading chart data:", error);
+                if (activeChart) { activeChart.destroy(); activeChart = null; }
+                document.getElementById("chart").innerHTML = `Error loading chart: ${error.message}`;
+            } finally {
+                isLoadingData = false;
+            }
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            if (!activeChart) { // Initialize with basic options if not already done
+                activeChart = new ApexCharts(document.querySelector("#chart"), initialChartOptions);
+                activeChart.render();
+            }
+            fetchAvailablePairs();
+            if (autoRefreshIntervalId) clearInterval(autoRefreshIntervalId);
+            autoRefreshIntervalId = setInterval(async () => {
+                if (currentSelectedPairId && document.visibilityState === 'visible' && !isLoadingData) {
+                    await loadChartDataForCurrentPair();
+                }
+            }, 15000); // Refresh every 15 seconds
+        });
+    </script>
+</body>
+</html>
+"""
 @flask_app_instance.route('/')
 def serve_index_page(): return render_template_string(HTML_CHART_TEMPLATE)
+
 @flask_app_instance.route('/api/available_pairs')
-def get_available_pairs_flask(): # Renamed to avoid conflict if run in same global scope with other examples
+def get_available_pairs_flask(): 
     with shared_data_lock: data_manager_view = shared_crypto_data_manager.copy()
     active_pairs_info = []
     for pair_id, pair_data in data_manager_view.items():
         cfg = pair_data.get("config", {})
         if cfg.get("enabled", True): active_pairs_info.append({"id": pair_id, "name": cfg.get('pair_name', pair_id)})
     return jsonify(active_pairs_info)
+
 @flask_app_instance.route('/api/chart_data/<pair_id_from_request>')
-def get_chart_data_for_frontend_flask(pair_id_from_request): # Renamed
+def get_chart_data_for_frontend_flask(pair_id_from_request): 
     with shared_data_lock:
         if pair_id_from_request not in shared_crypto_data_manager: return jsonify({"error": "Pair not found"}), 404
         pair_data_snapshot = copy.deepcopy(shared_crypto_data_manager.get(pair_id_from_request, {}))
-    if not pair_data_snapshot: return jsonify({"error": "Data empty for pair", "ohlc":[], "supertrend_series":[]}), 200
+    
+    if not pair_data_snapshot: 
+        # Return a structure that the frontend expects even for empty data
+        default_cfg = get_default_crypto_config()
+        pair_name_default = f"{default_cfg['symbol']}-{default_cfg['currency']}" # Fallback name
+        return jsonify({
+            "ohlc":[], "ema500_series":[], "ema500_line_color": "gray",
+            "annotations_yaxis":[], "pair_name": pair_name_default, 
+            "last_updated_tv": None, 
+            "ema_lookback_label": default_cfg['ema_lookback_period'],
+            "strategy_state_info": {"ema500_value":None,"ema_trend_color":"gray"}
+        }), 200
+
     temp_manager = {pair_id_from_request: pair_data_snapshot}
     prepared_data = prepare_chart_data_for_pair(pair_id_from_request, temp_manager)
+    
     if not prepared_data: return jsonify({"error": "Failed to process chart data"}), 500
-    if not prepared_data.get("ohlc"): return jsonify({"error": "No OHLC data to display", **prepared_data}), 200
+    # Even if ohlc is empty, return the prepared structure
+    # if not prepared_data.get("ohlc"): return jsonify({"error": "No OHLC data to display", **prepared_data}), 200
     return jsonify(prepared_data)
+
 def run_flask_server_thread():
     log_info("Memulai Flask server di http://localhost:5001", pair_name="SYSTEM_CHART")
     try:
-        logging.getLogger('werkzeug').setLevel(logging.ERROR) # Silence Flask's default logger
+        logging.getLogger('werkzeug').setLevel(logging.ERROR) 
         flask_app_instance.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
     except Exception as e_flask: log_error(f"Flask server gagal dijalankan: {e_flask}", pair_name="SYSTEM_CHART")
 # CHART_INTEGRATION_END
@@ -698,7 +947,7 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
         log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif untuk dijalankan.{AnsiColors.ENDC}")
         animated_text_display("Tekan Enter untuk kembali ke menu...", color=AnsiColors.ORANGE); input(); return
 
-    animated_text_display("=========== SUPERTREND STRATEGY START (Multi-Pair) ===========", color=AnsiColors.HEADER, delay=0.005)
+    animated_text_display("=========== EMA 500 TREND DETECTOR START (Multi-Pair) ===========", color=AnsiColors.HEADER, delay=0.005)
     key_idx_display = api_key_manager.get_current_key_index()
     key_val_display = api_key_manager.get_current_key()
     key_val_display_short = ("..." + key_val_display[-3:]) if key_val_display and len(key_val_display) > 8 else key_val_display
@@ -716,12 +965,11 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
         }
         with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
         
-        min_len_for_indicators_init = config.get('atr_length', 10) + 50 # Minimal ATR + buffer
+        min_len_for_indicators_init = EMA_LENGTH_FIXED + config.get('ema_lookback_period', 10) + 50 # EMA len + lookback + buffer
         initial_candles_target = max(TARGET_BIG_DATA_CANDLES, min_len_for_indicators_init)
         
         initial_candles = []
         initial_fetch_successful = False
-        # Loop untuk mencoba setiap API key untuk pengambilan data awal
         max_initial_key_attempts = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
         initial_key_attempts_done = 0
 
@@ -734,63 +982,61 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
             log_info(f"BIG DATA: Mencoba fetch awal untuk {config['pair_name']} dengan key index {api_key_manager.get_current_key_index()} (Attempt {initial_key_attempts_done + 1}/{max_initial_key_attempts})", pair_name=config['pair_name'])
             try:
                 initial_candles = fetch_candles(config['symbol'], config['currency'], initial_candles_target, config['exchange'], current_api_key_init, config['timeframe'], pair_name=config['pair_name'])
-                initial_fetch_successful = True # Sukses jika tidak ada error
+                initial_fetch_successful = True 
             except APIKeyError:
                 log_warning(f"BIG DATA: API Key (Idx {api_key_manager.get_current_key_index()}) gagal untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                if not api_key_manager.switch_to_next_key(): # Coba ganti key
+                if not api_key_manager.switch_to_next_key(): 
                     log_error(f"BIG DATA: Gagal beralih ke key berikutnya, semua key habis untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                    break # Keluar dari loop jika tidak ada key lagi
-                # Jika switch berhasil, loop akan lanjut dengan key baru
+                    break 
             except requests.exceptions.RequestException as e_req_init:
                 log_error(f"BIG DATA: Error Jaringan saat fetch awal {config['pair_name']}: {e_req_init}. Tidak ganti key.", pair_name=config['pair_name'])
-                break # Stop untuk pair ini jika ada error jaringan
+                break 
             except Exception as e_gen_init:
                 log_exception(f"BIG DATA: Error Umum saat fetch awal {config['pair_name']}: {e_gen_init}. Tidak ganti key.", pair_name=config['pair_name'])
-                break # Stop untuk pair ini
-            
-            initial_key_attempts_done += 1 # Increment setelah satu upaya dengan satu key (baik sukses atau gagal APIKeyError dan switch)
+                break 
+            initial_key_attempts_done += 1
 
         if not initial_fetch_successful or not initial_candles:
             log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']} setelah semua upaya. Pair ini akan dilewati di loop utama hingga cooldown.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            local_crypto_data_manager[pair_id]["data_fetch_failed_consecutively"] = max_initial_key_attempts +1 # Masuk cooldown
+            local_crypto_data_manager[pair_id]["data_fetch_failed_consecutively"] = max_initial_key_attempts +1 
             local_crypto_data_manager[pair_id]["last_attempt_after_all_keys_failed"] = datetime.now()
-            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False # Tandai gagal
+            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False 
             with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
-            continue # Lanjut ke pair berikutnya
+            continue 
 
         local_crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
         log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima untuk {config['pair_name']}.", pair_name=config['pair_name'])
         
-        # Warm-up state (Sama seperti sebelumnya, menggunakan run_strategy_logic Supertrend)
         if initial_candles:
-            min_len_for_warmup = config.get('atr_length', 10) + 2 
+            min_len_for_warmup = EMA_LENGTH_FIXED + config.get('ema_lookback_period', 10) 
             if len(initial_candles) >= min_len_for_warmup:
-                # ... (Logika warm-up sama) ...
-                log_info(f"Memproses {max(0, len(initial_candles) - 1)} candle historis awal untuk inisialisasi state {config['pair_name']}...", pair_name=config['pair_name'])
-                for i_warmup in range(min_len_for_warmup -1, len(initial_candles) - 1): 
+                log_info(f"Memproses {max(0, len(initial_candles) - (min_len_for_warmup -1) )} candle historis awal untuk inisialisasi state {config['pair_name']}...", pair_name=config['pair_name'])
+                # Run strategy logic on historical slices to populate initial state (e.g., previous_trend)
+                # No alerts will be sent during warmup due to is_warmup=True
+                for i_warmup in range(min_len_for_warmup -1, len(initial_candles) -1): # Process all but the last candle for warmup
                     historical_slice = initial_candles[:i_warmup+1] 
-                    if len(historical_slice) < min_len_for_warmup: continue
+                    if len(historical_slice) < min_len_for_warmup: continue # Ensure enough data for this slice
                     temp_state_for_warmup = local_crypto_data_manager[pair_id]["strategy_state"].copy()
-                    temp_state_for_warmup["position_size"] = 0 # No trading
-                    local_crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(historical_slice, config, temp_state_for_warmup, global_settings_dict)
-                    if local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] > 0: # Reset jika ada posisi palsu
-                        local_crypto_data_manager[pair_id]["strategy_state"]["position_size"] = 0
-                        local_crypto_data_manager[pair_id]["strategy_state"]["entry_price_custom"] = None
+                    local_crypto_data_manager[pair_id]["strategy_state"] = run_strategy_logic(
+                        historical_slice, config, temp_state_for_warmup, global_settings_dict, is_warmup=True
+                    )
                 log_info(f"{AnsiColors.CYAN}Inisialisasi state (warm-up) untuk {config['pair_name']} selesai.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+            else:
+                log_warning(f"Tidak cukup data untuk warm-up ({len(initial_candles)}/{min_len_for_warmup}) untuk {config['pair_name']}", pair_name=config['pair_name'])
+
 
         if len(local_crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
             local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-            # ... (Notifikasi email Big Data tercapai) ...
             log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {config['pair_name']}!{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            if not local_crypto_data_manager[pair_id]["big_data_email_sent"]:
-                send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now trading on {config['pair_name']}.", {**config, 'pair_name': config['pair_name']})
+            if not local_crypto_data_manager[pair_id]["big_data_email_sent"] and config.get("enable_email_notifications"):
+                send_email_notification(f"Data Downloading Complete: {config['pair_name']}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now analyzing {config['pair_name']}.", {**config, 'pair_name': config['pair_name']})
                 local_crypto_data_manager[pair_id]["big_data_email_sent"] = True
             log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({config['pair_name']}) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
         with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
     
     animated_text_display(f"{AnsiColors.HEADER}----------------- SEMUA PAIR DIINISIALISASI -----------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
     
-    try: # Main trading loop
+    try: 
         while True:
             active_cryptos_still_in_big_data_collection = 0
             min_overall_next_refresh_seconds = float('inf')
@@ -800,18 +1046,17 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 config_for_pair = data_per_pair["config"]
                 pair_name_for_log = config_for_pair['pair_name']
 
-                # Cooldown logic (sama)
                 if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) + 1 : 
-                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # 1 jam cooldown
+                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: 
                         min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, 3600); continue
-                    else: data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset cooldown
+                    else: data_per_pair["data_fetch_failed_consecutively"] = 0 
 
                 current_loop_time = datetime.now()
                 time_since_last_fetch = (current_loop_time - data_per_pair["last_candle_fetch_time"]).total_seconds()
                 required_interval = config_for_pair.get('refresh_interval_seconds', 60)
                 if data_per_pair["big_data_collection_phase_active"]:
                     active_cryptos_still_in_big_data_collection += 1
-                    required_interval = 60 if config_for_pair.get('timeframe') == "minute" else 3600 # Fetch more aggressively
+                    required_interval = 60 if config_for_pair.get('timeframe') == "minute" else 300 # Fetch more aggressively during big data, e.g., every 5 min for hour/day
                 if time_since_last_fetch < required_interval:
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval - time_since_last_fetch); continue
                 
@@ -819,19 +1064,18 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 data_per_pair["last_candle_fetch_time"] = current_loop_time
                 num_candles_before_fetch = len(data_per_pair["all_candles_list"])
                 
-                # Animated display (sama)
                 if data_per_pair["big_data_collection_phase_active"]: animated_text_display(f"\n--- BIG DATA {pair_name_for_log} ({num_candles_before_fetch}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD+AnsiColors.MAGENTA)
                 else: animated_text_display(f"\n--- LIVE {pair_name_for_log} ({current_loop_time.strftime('%H:%M:%S')}) | {num_candles_before_fetch} candles ---", color=AnsiColors.BOLD+AnsiColors.CYAN)
 
                 new_candles_batch = []
                 fetch_update_successful = False
-                limit_fetch_update = 3 # Default untuk update
+                limit_fetch_update = 3 
                 if data_per_pair["big_data_collection_phase_active"]:
                     needed_for_big_data = TARGET_BIG_DATA_CANDLES - num_candles_before_fetch
-                    if needed_for_big_data <=0 : fetch_update_successful = True # Sudah cukup, tidak perlu fetch
+                    if needed_for_big_data <=0 : fetch_update_successful = True 
                     else: limit_fetch_update = min(needed_for_big_data, CRYPTOCOMPARE_MAX_LIMIT)
                 
-                if limit_fetch_update > 0 or (data_per_pair["big_data_collection_phase_active"] and not fetch_update_successful): # Hanya fetch jika perlu
+                if limit_fetch_update > 0 or (data_per_pair["big_data_collection_phase_active"] and not fetch_update_successful): 
                     max_update_key_attempts = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                     update_key_attempts_done = 0
                     original_api_key_index_for_this_update = api_key_manager.get_current_key_index()
@@ -845,7 +1089,7 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                         try:
                             new_candles_batch = fetch_candles(config_for_pair['symbol'], config_for_pair['currency'], limit_fetch_update, config_for_pair['exchange'], current_api_key_update, config_for_pair['timeframe'], pair_name=pair_name_for_log)
                             fetch_update_successful = True
-                            data_per_pair["data_fetch_failed_consecutively"] = 0 # Reset jika sukses
+                            data_per_pair["data_fetch_failed_consecutively"] = 0 
                             any_data_fetched_this_cycle = True
                             if api_key_manager.get_current_key_index() != original_api_key_index_for_this_update:
                                 log_info(f"UPDATE: Fetch berhasil dengan key index {api_key_manager.get_current_key_index()} setelah retry untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
@@ -861,12 +1105,10 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                         
                         update_key_attempts_done += 1
                 
-                # Cooldown jika semua key gagal untuk pair ini
                 if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) +1:
-                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() # Catat waktu untuk cooldown
+                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() 
 
                 if not fetch_update_successful or not new_candles_batch:
-                    # ... (Logika jika fetch gagal atau tidak ada candle baru, sama seperti sebelumnya) ...
                     if fetch_update_successful and not new_candles_batch and not data_per_pair["big_data_collection_phase_active"]:
                         log_info(f"Tidak ada data candle baru diterima untuk {pair_name_for_log} (fetch dianggap berhasil tapi batch kosong).", pair_name=pair_name_for_log)
                     elif not fetch_update_successful:
@@ -875,7 +1117,6 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                     with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
                     continue
 
-                # Merge candle (sama)
                 merged_candles_dict = {c['timestamp']: c for c in data_per_pair["all_candles_list"]}
                 newly_added_count_this_batch, updated_count_this_batch = 0,0
                 for candle in new_candles_batch:
@@ -885,61 +1126,86 @@ def start_trading(global_settings_dict, shared_dm_ref, lock_ref):
                 data_per_pair["all_candles_list"] = sorted(list(merged_candles_dict.values()), key=lambda c_sort: c_sort['timestamp'])
                 if newly_added_count_this_batch + updated_count_this_batch > 0: log_info(f"{newly_added_count_this_batch + updated_count_this_batch} candle baru/diupdate untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
 
-                # Handle Big Data Collection (display) (sama)
                 if data_per_pair["big_data_collection_phase_active"]:
                     if len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-                        # ... (Logika notifikasi Big Data tercapai sama)
                         data_per_pair["big_data_collection_phase_active"] = False
                         active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) 
-                elif len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES: # Trim jika sudah live
-                    data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-TARGET_BIG_DATA_CANDLES:]
+                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                        if not data_per_pair["big_data_email_sent"] and config_for_pair.get("enable_email_notifications"):
+                            send_email_notification(f"Data Downloading Complete: {pair_name_for_log}", f"Data downloading complete for {TARGET_BIG_DATA_CANDLES} candles! Now analyzing {pair_name_for_log}.", {**config_for_pair, 'pair_name': pair_name_for_log})
+                            data_per_pair["big_data_email_sent"] = True
+                        log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({pair_name_for_log}) ----------{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                elif len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES + 100: # Trim if significantly over, keep some buffer
+                    data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-(TARGET_BIG_DATA_CANDLES + 50):]
 
-                # Jalankan Logika Strategi (Supertrend)
-                min_len_for_logic_run_live = config_for_pair.get('atr_length', 10) + 2
+
+                min_len_for_logic_run_live = EMA_LENGTH_FIXED + config_for_pair.get('ema_lookback_period', 10)
                 if len(data_per_pair["all_candles_list"]) >= min_len_for_logic_run_live:
                     process_logic_now = (newly_added_count_this_batch + updated_count_this_batch > 0 or
-                                         (not data_per_pair["big_data_collection_phase_active"] and num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) )
+                                         (not data_per_pair["big_data_collection_phase_active"] and 
+                                          num_candles_before_fetch < TARGET_BIG_DATA_CANDLES and # e.g. just finished big data
+                                          len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES) ) 
+                    
                     if process_logic_now:
-                         log_info(f"Menjalankan logika strategi Supertrend untuk {pair_name_for_log}...", pair_name=pair_name_for_log)
-                         data_per_pair["strategy_state"] = run_strategy_logic(data_per_pair["all_candles_list"], config_for_pair, data_per_pair["strategy_state"], global_settings_dict)
+                         log_info(f"Menjalankan logika EMA Trend Detector untuk {pair_name_for_log}...", pair_name=pair_name_for_log)
+                         data_per_pair["strategy_state"] = run_strategy_logic(
+                             data_per_pair["all_candles_list"], 
+                             config_for_pair, 
+                             data_per_pair["strategy_state"], 
+                             global_settings_dict,
+                             is_warmup=False # Live processing
+                        )
                 
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval)
                 with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
             
-            # Penentuan Waktu Tidur (sama)
             sleep_duration = 15 
-            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: sleep_duration = 3600 # Semua key global gagal
-            elif active_cryptos_still_in_big_data_collection > 0: sleep_duration = 30 # Cek lebih sering jika masih big data
+            if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: sleep_duration = 3600 
+            elif active_cryptos_still_in_big_data_collection > 0: sleep_duration = 30 
             elif min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0:
                 sleep_duration = max(MIN_REFRESH_INTERVAL_AFTER_BIG_DATA, int(min_overall_next_refresh_seconds))
-            if sleep_duration > 0: show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s...")
-            else: time.sleep(1)
+            
+            if sleep_duration > 0 : show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s ({time.strftime('%H:%M:%S')})...")
+            else: time.sleep(1) # Minimal sleep
 
     except KeyboardInterrupt: animated_text_display(f"\n{AnsiColors.ORANGE}Proses dihentikan.{AnsiColors.ENDC}",color=AnsiColors.ORANGE)
     except Exception as e_main_loop: log_exception(f"{AnsiColors.RED}Error loop utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM")
-    finally: animated_text_display(f"{AnsiColors.HEADER}================ STRATEGY STOP ================{AnsiColors.ENDC}",color=AnsiColors.HEADER); input("Tekan Enter...")
+    finally: animated_text_display(f"{AnsiColors.HEADER}=========== EMA TREND DETECTOR STOP ==========={AnsiColors.ENDC}",color=AnsiColors.HEADER); input("Tekan Enter untuk kembali ke menu utama...")
 
 
 # --- MENU UTAMA ---
 def main_menu():
     settings = load_settings()
-    flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True); flask_thread.start()
+    # Periksa apakah flask_thread sudah ada dan berjalan untuk menghindari multiple Flask servers
+    # Cara sederhana: cek apakah thread dengan nama spesifik ada di active_count()
+    # Ini tidak ideal untuk production, tapi cukup untuk skrip ini.
+    is_flask_running = any(t.name == "FlaskServerThread" for t in threading.enumerate())
+    
+    if not is_flask_running:
+        flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True, name="FlaskServerThread")
+        flask_thread.start()
+    else:
+        log_info("Flask server sudah berjalan di thread lain.", "SYSTEM_CHART")
+
+
     while True:
         clear_screen_animated()
-        animated_text_display("========= Crypto Supertrend Strategy Runner =========", color=AnsiColors.HEADER)
+        animated_text_display("========= Crypto EMA 500 Trend Detector =========", color=AnsiColors.HEADER) # Ganti judul
         pick_title_main = ""
         active_cfgs = [c for c in settings.get("cryptos",[]) if c.get("enabled",True)]
-        if active_cfgs: pick_title_main += f"--- Crypto Aktif ({len(active_cfgs)}) ---\n" + "".join([f"  {i+1}. {c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe','?')})\n" for i,c in enumerate(active_cfgs)])
+        if active_cfgs: pick_title_main += f"--- Crypto Aktif ({len(active_cfgs)}) ---\n" + "".join([f"  {i+1}. {c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe','?')}, EMA Lookback: {c.get('ema_lookback_period','?')})\n" for i,c in enumerate(active_cfgs)])
         else: pick_title_main += "Tidak ada konfigurasi crypto aktif.\n"
         
         api_s_main = settings.get("api_settings", {})
-        pk_disp = api_s_main.get('primary_key','N/A'); pk_disp = ("..."+pk_disp[-5:]) if len(pk_disp)>10 and pk_disp!="YOUR_PRIMARY_KEY" else pk_disp
+        pk_disp = api_s_main.get('primary_key','N/A'); pk_disp = ("..."+pk_disp[-5:]) if len(pk_disp)>10 and pk_disp not in ["YOUR_PRIMARY_KEY", "N/A"] else pk_disp
         pick_title_main += f"-----------------------------------------------\nPrimary API Key: {pk_disp}\nChart Server: http://localhost:5001\n-----------------------------------------------\nPilih Opsi:"
         
         main_opts = ["Mulai Analisa Realtime", "Pengaturan", "Keluar"]
         _, main_idx = pick(main_opts, pick_title_main, indicator='=>')
         
-        if main_idx == 0: settings = load_settings(); start_trading(settings, shared_crypto_data_manager, shared_data_lock)
+        if main_idx == 0: 
+            settings = load_settings() # Reload settings before starting
+            start_trading(settings, shared_crypto_data_manager, shared_data_lock)
         elif main_idx == 1: settings = settings_menu(settings)
         elif main_idx == 2: log_info("Aplikasi ditutup."); break
     animated_text_display("Terima kasih!", color=AnsiColors.MAGENTA); show_spinner(0.5, "Exiting")
@@ -947,5 +1213,5 @@ def main_menu():
 if __name__ == "__main__":
     try: main_menu()
     except KeyboardInterrupt: clear_screen_animated(); animated_text_display("Aplikasi dihentikan.", color=AnsiColors.ORANGE)
-    except Exception as e_global: clear_screen_animated(); print(f"{AnsiColors.RED}ERROR KRITIKAL: {e_global}{AnsiColors.ENDC}"); log_exception("MAIN ERROR:",pair_name="SYS_CRIT"); input("Enter...")
+    except Exception as e_global: clear_screen_animated(); print(f"{AnsiColors.RED}ERROR KRITIKAL: {e_global}{AnsiColors.ENDC}"); log_exception("MAIN ERROR:",pair_name="SYS_CRIT"); input("Enter untuk keluar...")
     finally: sys.stdout.flush(); sys.stderr.flush()
