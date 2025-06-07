@@ -9,18 +9,16 @@ from email.mime.text import MIMEText
 import sys
 import uuid
 from pick import pick
-import subprocess # Ditambahkan untuk termux-notification
+import subprocess
 import math
-
-# CHART_INTEGRATION_START
 import threading
-import copy # Untuk deep copy data agar thread-safe
+import copy
+
 try:
     from flask import Flask, jsonify, render_template_string
 except ImportError:
     print("Flask tidak terinstal. Silakan install dengan: pip install Flask")
     sys.exit(1)
-# CHART_INTEGRATION_END
 
 # --- ANSI COLOR CODES ---
 class AnsiColors:
@@ -35,10 +33,11 @@ class AnsiColors:
     CYAN = '\033[96m'
     MAGENTA = '\033[35m'
     YELLOW_BG = '\033[43m'
-    LOW_LIQ_BG_CONSOLE = '\033[44m' # Biru untuk low liq
-    HIGH_LIQ_BG_CONSOLE = '\033[47m\033[30m' # Putih BG, Hitam Teks untuk high liq (mirip chart)
+    LOW_LIQ_BG_CONSOLE = '\033[44m'
+    HIGH_LIQ_BG_CONSOLE = '\033[47m\033[30m'
+    AGG_DROP_ALERT_BG = '\033[41m\033[97m' # Latar belakang merah, teks putih untuk alert drop
 
-# --- ANIMATION HELPER FUNCTIONS --- (Sama seperti sebelumnya)
+# --- ANIMATION HELPER FUNCTIONS ---
 def animated_text_display(text, delay=0.02, color=AnsiColors.CYAN, new_line=True):
     for char in text:
         sys.stdout.write(color + char + AnsiColors.ENDC if color else char)
@@ -92,12 +91,12 @@ class APIKeyError(Exception):
     pass
 
 # --- KONFIGURASI LOGGING ---
-logger = logging.getLogger("ExoraVulcanFutures") # Nama logger baru
+logger = logging.getLogger("ExoraAggregator") # Nama logger baru
 logger.setLevel(logging.INFO)
 if logger.hasHandlers():
     logger.handlers.clear()
 
-log_file_name = "trading_log_exora_vulcan_futures.txt" # Nama file log baru
+log_file_name = "trading_log_exora_aggregator.txt" # Nama file log baru
 fh = logging.FileHandler(log_file_name, mode='a', encoding='utf-8')
 file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pair_name)s - %(message)s')
 fh.setFormatter(file_formatter)
@@ -125,18 +124,18 @@ def log_debug(message, pair_name="SYSTEM"): logger.debug(message, extra={'pair_n
 def log_exception(message, pair_name="SYSTEM"): logger.exception(message, extra={'pair_name': pair_name})
 
 
-SETTINGS_FILE = "settings_exora_vulcan_futures.json" # Nama file settings BARU
+SETTINGS_FILE = "settings_exora_aggregator.json" # Nama file settings BARU
 CRYPTOCOMPARE_MAX_LIMIT = 1999
-TARGET_BIG_DATA_CANDLES = 200 # Kebutuhan data awal untuk analisa likuiditas mungkin tidak sebesar strategi trading kompleks
+TARGET_BIG_DATA_CANDLES = 200
 MIN_REFRESH_INTERVAL_AFTER_BIG_DATA = 15
 
 
-# --- FUNGSI CLEAR SCREEN --- (Sama)
+# --- FUNGSI CLEAR SCREEN ---
 def clear_screen_animated():
     show_spinner(0.1, "Clearing screen")
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- API KEY MANAGER --- (Sama)
+# --- API KEY MANAGER ---
 class APIKeyManager:
     def __init__(self, primary_key, recovery_keys_list, global_settings_for_email=None):
         self.keys = []
@@ -162,14 +161,14 @@ class APIKeyManager:
             new_key_display = self.keys[self.current_index][:5] + "..." + self.keys[self.current_index][-3:] if len(self.keys[self.current_index]) > 8 else self.keys[self.current_index]
             log_info(f"{AnsiColors.ORANGE}Beralih ke API key berikutnya: Index {self.current_index} ({new_key_display}){AnsiColors.ENDC}")
             if self.global_email_settings.get("enable_global_email_notifications_for_key_switch", False):
-                subject = "Exora Vulcan Futures: API Key Switched"
+                subject = "Exora Aggregator: API Key Switched"
                 body = f"Bot beralih ke API key berikutnya (Index {self.current_index}). Key lama mungkin bermasalah."
                 send_email_notification(subject, body, self.global_email_settings, pair_name_ctx_override="GLOBAL_SYSTEM")
             return self.keys[self.current_index]
         else:
             log_error(f"{AnsiColors.RED}{AnsiColors.BOLD}SEMUA API KEY TELAH HABIS/GAGAL! Tidak dapat mengambil data.{AnsiColors.ENDC}")
             if self.global_email_settings.get("enable_global_email_notifications_for_key_switch", False):
-                subject = "Exora Vulcan Futures: SEMUA API KEY GAGAL"
+                subject = "Exora Aggregator: SEMUA API KEY GAGAL"
                 body = "Semua API key (primary dan recovery) telah gagal atau habis. Bot tidak dapat mengambil data."
                 send_email_notification(subject, body, self.global_email_settings, pair_name_ctx_override="GLOBAL_SYSTEM")
             return None
@@ -178,7 +177,7 @@ class APIKeyManager:
     def total_keys(self): return len(self.keys)
     def get_current_key_index(self): return self.current_index
 
-# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION --- (Sama, hanya subjek email disesuaikan)
+# --- FUNGSI BEEP, EMAIL & TERMUX NOTIFICATION ---
 def play_notification_sound():
     try:
         if sys.platform == "win32":
@@ -201,9 +200,8 @@ def send_email_notification(subject, body_text, settings_for_email, pair_name_ct
         log_warning(f"Konfigurasi email tidak lengkap. Notifikasi email dilewati.", pair_name=pair_name_ctx)
         return
     msg = MIMEText(body_text)
-    # Tambahkan prefix "Exora Vulcan Futures" ke subjek jika belum ada
-    if "Exora Vulcan Futures" not in subject:
-        subject = f"Exora Vulcan Futures: {subject}"
+    if "Exora Aggregator" not in subject:
+        subject = f"Exora Aggregator: {subject}"
 
     msg['Subject'] = subject
     msg['From'] = sender_email
@@ -220,13 +218,12 @@ def send_termux_notification(title, content_msg, global_settings, pair_name_for_
     api_settings = global_settings.get("api_settings", {})
     if not api_settings.get("enable_termux_notifications", False): return
     
-    # Tambahkan prefix "Exora Vulcan" ke judul jika belum ada
-    if "Exora Vulcan" not in title and pair_name_for_log != "SYSTEM_CHART" : # Hindari prefix ganda atau untuk notif sistem chart
-        title = f"Exora Vulcan: {title}"
+    if "Exora Aggregator" not in title and pair_name_for_log != "SYSTEM_CHART" :
+        title = f"Exora Aggregator: {title}"
 
     try:
-        subprocess.run(['termux-notification', '--title', title, '--content', content_msg, '--priority', 'max', '--sound', '-id', f'exora_vulcan_{pair_name_for_log.replace("/", "_")}_{str(uuid.uuid4())[:4]}'],
-                       check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10) # ID unik untuk notifikasi
+        subprocess.run(['termux-notification', '--title', title, '--content', content_msg, '--priority', 'max', '--sound', '-id', f'exora_agg_{pair_name_for_log.replace("/", "_")}_{str(uuid.uuid4())[:4]}'],
+                       check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         log_info(f"{AnsiColors.CYAN}Notifikasi Termux dikirim: '{title}'{AnsiColors.ENDC}", pair_name=pair_name_for_log)
     except FileNotFoundError:
         log_warning(f"{AnsiColors.ORANGE}Perintah 'termux-notification' tidak ditemukan.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
@@ -235,28 +232,36 @@ def send_termux_notification(title, content_msg, global_settings, pair_name_for_
     except Exception as e:
         log_error(f"{AnsiColors.RED}Gagal mengirim notifikasi Termux: {e}{AnsiColors.ENDC}", pair_name=pair_name_for_log)
 
+# --- HELPER TIMEFRAME ---
+def timeframe_to_seconds(tf_str):
+    tf_lower = tf_str.lower()
+    num_part = int("".join(filter(str.isdigit, tf_lower))) if any(char.isdigit() for char in tf_lower) else 1
+    if 'm' in tf_lower: return num_part * 60
+    if 'h' in tf_lower: return num_part * 3600
+    if 'd' in tf_lower: return num_part * 86400
+    if 'w' in tf_lower: return num_part * 604800
+    return 3600 # Default 1 jam jika tidak dikenali
 
-# --- FUNGSI PENGATURAN (Dirombak untuk Parameter Deteksi Likuiditas) ---
-def get_default_crypto_config():
+# --- FUNGSI PENGATURAN ---
+def get_default_crypto_config(): # Ini untuk setiap pair individual
     return {
         "id": str(uuid.uuid4()), "enabled": True,
         "symbol": "BTC", "currency": "USD", "exchange": "CCCAGG",
         "timeframe": "1m",
         "refresh_interval_seconds": 60,
-
-        # Pengaturan Detektor Likuiditas (grp_liq_detect)
-        "enable_lowliq_detector": True,
-        "lowliq_pattern_length": 4, # Sesuai PineScript: lowliq_len
-        "enable_highliq_detector": True,
-        "highliq_pattern_length": 5, # Sesuai PineScript: highliq_len
-        "highliq_lookback_confirmation_bars": 3, # Sesuai PineScript
-
-        # Pengaturan Alert
-        "alert_on_liquidity_state_change": True,
-        "alert_on_high_liquidity_confirmed": False, # Default false agar tidak terlalu banyak notif
-        
-        "enable_email_notifications": False,
+        "enable_email_notifications": False, # Notifikasi email per pair
         "email_sender_address": "", "email_sender_app_password": "", "email_receiver_address": ""
+        # Hapus pengaturan detektor likuiditas dari config individual jika tidak digunakan lagi di sini
+    }
+
+def get_default_aggregation_settings():
+    return {
+        "enabled_aggregation_tracker": False,
+        "crypto_ids_for_aggregation": [], # list of "id" from cryptos section
+        "aggregation_timeframe": "1h", # e.g., "15m", "1h", "4h"
+        "lookback_bars_drop_agg": 5,
+        "drop_percentage_threshold_agg": 3.0,
+        "alert_cooldown_seconds_agg": 300, # 5 menit cooldown untuk alert yang sama
     }
 
 def load_settings():
@@ -270,34 +275,43 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f: settings = json.load(f)
+            
             if "api_settings" not in settings: settings["api_settings"] = default_api_settings.copy()
             else:
                 for k, v in default_api_settings.items():
                     if k not in settings["api_settings"]: settings["api_settings"][k] = v
+            
             if "cryptos" not in settings or not isinstance(settings["cryptos"], list): settings["cryptos"] = []
-
             default_crypto_template = get_default_crypto_config()
             for crypto_cfg in settings["cryptos"]:
                 if "id" not in crypto_cfg: crypto_cfg["id"] = str(uuid.uuid4())
                 for key, default_value in default_crypto_template.items():
                     if key not in crypto_cfg: crypto_cfg[key] = default_value
-                
-                # Hapus key lama dari strategi Exora V6 jika ada
-                keys_to_remove_old_strat = [
-                    "rsi_len", "rsi_extreme_oversold", "rsi_extreme_overbought",
-                    "stoch_k", "stoch_smooth_k", "stoch_d", "stoch_extreme_oversold", "stoch_extreme_overbought",
-                    "use_swing_filter", "swing_lookback", "avoid_resistance_proximity_percent",
-                    "use_dump_cooldown", "dump_threshold_percent", "cooldown_period_after_dump_bars",
-                    "use_fixed_sl", "sl_percent", "use_standard_tp", "standard_tp_percent",
-                    "use_new_trailing_tp", "trailing_step_percent", "trailing_gap_percent"
+                # Hapus key lama yang tidak relevan dengan agregator
+                keys_to_remove_old_liq = [
+                    "enable_lowliq_detector", "lowliq_pattern_length", "enable_highliq_detector",
+                    "highliq_pattern_length", "highliq_lookback_confirmation_bars",
+                    "alert_on_liquidity_state_change", "alert_on_high_liquidity_confirmed"
                 ]
-                for old_key in keys_to_remove_old_strat:
+                for old_key in keys_to_remove_old_liq:
                     if old_key in crypto_cfg: del crypto_cfg[old_key]
+
+            if "aggregation_settings" not in settings:
+                settings["aggregation_settings"] = get_default_aggregation_settings()
+            else:
+                default_agg_template = get_default_aggregation_settings()
+                for key, default_value in default_agg_template.items():
+                    if key not in settings["aggregation_settings"]:
+                        settings["aggregation_settings"][key] = default_value
             return settings
         except Exception as e:
             log_error(f"Error membaca {SETTINGS_FILE}: {e}. Menggunakan default.")
-            return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
-    return {"api_settings": default_api_settings.copy(), "cryptos": [get_default_crypto_config()]}
+            return {"api_settings": default_api_settings.copy(), 
+                    "cryptos": [get_default_crypto_config()], 
+                    "aggregation_settings": get_default_aggregation_settings()}
+    return {"api_settings": default_api_settings.copy(), 
+            "cryptos": [get_default_crypto_config()],
+            "aggregation_settings": get_default_aggregation_settings()}
 
 def save_settings(settings):
     try:
@@ -306,30 +320,30 @@ def save_settings(settings):
     except Exception as e:
         log_error(f"{AnsiColors.RED}Gagal menyimpan pengaturan ke {SETTINGS_FILE}: {e}{AnsiColors.ENDC}")
 
-def _prompt_type(prompt_text, current_value, target_type, default_value, min_val=None, max_val=None, step=None):
+def _prompt_type(prompt_text, current_value, target_type, default_value, min_val=None, max_val=None, step=None, valid_options=None):
     while True:
         val_str = input(f"{AnsiColors.BLUE}{prompt_text} [{current_value}]: {AnsiColors.ENDC}").strip()
         if not val_str: return current_value
         try:
             if target_type == bool:
-                if val_str.lower() == 'true': return True
-                if val_str.lower() == 'false': return False
+                if val_str.lower() in ['true', 't', 'y', 'yes', '1']: return True
+                if val_str.lower() in ['false', 'f', 'n', 'no', '0']: return False
                 raise ValueError("Input boolean tidak valid (true/false)")
             
             typed_val = target_type(val_str)
             
+            if valid_options and typed_val not in valid_options:
+                print(f"{AnsiColors.RED}Pilihan tidak valid. Pilihan yang tersedia: {valid_options}{AnsiColors.ENDC}")
+                continue
             if min_val is not None and typed_val < min_val:
-                print(f"{AnsiColors.RED}Nilai harus >= {min_val}.{AnsiColors.ENDC}")
-                continue
+                print(f"{AnsiColors.RED}Nilai harus >= {min_val}.{AnsiColors.ENDC}"); continue
             if max_val is not None and typed_val > max_val:
-                print(f"{AnsiColors.RED}Nilai harus <= {max_val}.{AnsiColors.ENDC}")
-                continue
+                print(f"{AnsiColors.RED}Nilai harus <= {max_val}.{AnsiColors.ENDC}"); continue
             return typed_val
         except ValueError as e_val:
             print(f"{AnsiColors.RED}Input tidak valid: {e_val}. Harap masukkan tipe {target_type.__name__}.{AnsiColors.ENDC}")
 
-
-def _prompt_crypto_config(current_config):
+def _prompt_crypto_config(current_config): # Konfigurasi untuk pair individual
     clear_screen_animated()
     new_config = current_config.copy()
     def_cfg = get_default_crypto_config()
@@ -340,44 +354,156 @@ def _prompt_crypto_config(current_config):
     new_config["currency"] = (input(f"{AnsiColors.BLUE}Simbol Mata Uang Quote [{new_config.get('currency',def_cfg['currency'])}]: {AnsiColors.ENDC}") or new_config.get('currency',def_cfg['currency'])).upper().strip()
     new_config["exchange"] = (input(f"{AnsiColors.BLUE}Exchange [{new_config.get('exchange',def_cfg['exchange'])}]: {AnsiColors.ENDC}") or new_config.get('exchange',def_cfg['exchange'])).strip()
     
-    tf_input = (input(f"{AnsiColors.BLUE}Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 1d) [{new_config.get('timeframe',def_cfg['timeframe'])}]: {AnsiColors.ENDC}") or new_config.get('timeframe',def_cfg['timeframe'])).lower().strip()
     valid_tf_keys = ["1m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "12h", "1d", "3d", "1w"]
-    if tf_input in valid_tf_keys: new_config["timeframe"] = tf_input
-    else: print(f"{AnsiColors.RED}Timeframe tidak valid. Menggunakan default/sebelumnya.{AnsiColors.ENDC}");
+    new_config["timeframe"] = _prompt_type(f"Timeframe ({', '.join(valid_tf_keys)})", new_config.get('timeframe',def_cfg['timeframe']), str, def_cfg['timeframe'], valid_options=valid_tf_keys).lower().strip()
 
     new_config["refresh_interval_seconds"] = _prompt_type("Interval Refresh (detik)", new_config.get('refresh_interval_seconds',def_cfg['refresh_interval_seconds']), int, def_cfg['refresh_interval_seconds'], min_val=MIN_REFRESH_INTERVAL_AFTER_BIG_DATA)
+    
+    # Pengaturan email untuk pair ini (opsional, jika diperlukan notif spesifik pair)
+    # animated_text_display("\n-- Notifikasi Email Pair --", color=AnsiColors.HEADER)
+    # new_config["enable_email_notifications"] = _prompt_type("Aktifkan Notifikasi Email untuk pair ini?", new_config.get('enable_email_notifications',def_cfg['enable_email_notifications']), bool, def_cfg['enable_email_notifications'])
+    # if new_config["enable_email_notifications"]:
+    #     new_config["email_sender_address"] = (input(f"{AnsiColors.BLUE}Email Pengirim Pair [{new_config.get('email_sender_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_address','')).strip()
+    #     new_config["email_sender_app_password"] = (input(f"{AnsiColors.BLUE}App Password Pair [{new_config.get('email_sender_app_password','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_app_password','')).strip()
+    #     new_config["email_receiver_address"] = (input(f"{AnsiColors.BLUE}Email Penerima Pair [{new_config.get('email_receiver_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_receiver_address','')).strip()
 
-    animated_text_display("\n-- Pengaturan Detektor Likuiditas --", color=AnsiColors.HEADER)
-    new_config["enable_lowliq_detector"] = _prompt_type("Aktifkan Deteksi Low Liquidity?", new_config.get('enable_lowliq_detector', def_cfg['enable_lowliq_detector']), bool, def_cfg['enable_lowliq_detector'])
-    new_config["lowliq_pattern_length"] = _prompt_type("Panjang Pola Low Liquidity (candles)", new_config.get('lowliq_pattern_length', def_cfg['lowliq_pattern_length']), int, def_cfg['lowliq_pattern_length'], min_val=2)
-    new_config["enable_highliq_detector"] = _prompt_type("Aktifkan Deteksi High Liquidity?", new_config.get('enable_highliq_detector', def_cfg['enable_highliq_detector']), bool, def_cfg['enable_highliq_detector'])
-    new_config["highliq_pattern_length"] = _prompt_type("Panjang Pola High Liquidity (candles)", new_config.get('highliq_pattern_length', def_cfg['highliq_pattern_length']), int, def_cfg['highliq_pattern_length'], min_val=2)
-    new_config["highliq_lookback_confirmation_bars"] = _prompt_type("Lookback Konfirmasi High Liquidity (bars)", new_config.get('highliq_lookback_confirmation_bars', def_cfg['highliq_lookback_confirmation_bars']), int, def_cfg['highliq_lookback_confirmation_bars'], min_val=1)
-
-    animated_text_display("\n-- Pengaturan Notifikasi Likuiditas --", color=AnsiColors.HEADER)
-    new_config["alert_on_liquidity_state_change"] = _prompt_type("Notifikasi saat State Likuiditas Berubah?", new_config.get('alert_on_liquidity_state_change', def_cfg['alert_on_liquidity_state_change']), bool, def_cfg['alert_on_liquidity_state_change'])
-    new_config["alert_on_high_liquidity_confirmed"] = _prompt_type("Notifikasi saat High Liquidity Terkonfirmasi?", new_config.get('alert_on_high_liquidity_confirmed', def_cfg['alert_on_high_liquidity_confirmed']), bool, def_cfg['alert_on_high_liquidity_confirmed'])
-
-    animated_text_display("\n-- Notifikasi Email (Gmail) - Untuk Alert & Sistem --", color=AnsiColors.HEADER)
-    new_config["enable_email_notifications"] = _prompt_type("Aktifkan Notifikasi Email untuk pair ini?", new_config.get('enable_email_notifications',def_cfg['enable_email_notifications']), bool, def_cfg['enable_email_notifications'])
-    new_config["email_sender_address"] = (input(f"{AnsiColors.BLUE}Email Pengirim [{new_config.get('email_sender_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_address','')).strip()
-    new_config["email_sender_app_password"] = (input(f"{AnsiColors.BLUE}App Password Pengirim [{new_config.get('email_sender_app_password','')}]: {AnsiColors.ENDC}") or new_config.get('email_sender_app_password','')).strip()
-    new_config["email_receiver_address"] = (input(f"{AnsiColors.BLUE}Email Penerima [{new_config.get('email_receiver_address','')}]: {AnsiColors.ENDC}") or new_config.get('email_receiver_address','')).strip()
     return new_config
+
+def _prompt_aggregation_settings(current_agg_settings, all_crypto_configs):
+    clear_screen_animated()
+    new_settings = current_agg_settings.copy()
+    def_agg_cfg = get_default_aggregation_settings()
+
+    animated_text_display("--- Konfigurasi Pelacak Agregasi & Sinyal Penurunan ---", color=AnsiColors.HEADER)
+    new_settings["enabled_aggregation_tracker"] = _prompt_type(
+        "Aktifkan Pelacak Agregasi?", 
+        new_settings.get('enabled_aggregation_tracker', def_agg_cfg['enabled_aggregation_tracker']), 
+        bool, def_agg_cfg['enabled_aggregation_tracker']
+    )
+
+    if new_settings["enabled_aggregation_tracker"]:
+        animated_text_display("\n-- Pilihan Kripto untuk Agregasi --", color=AnsiColors.HEADER)
+        if not all_crypto_configs:
+            print(f"{AnsiColors.ORANGE}Tidak ada crypto pair yang dikonfigurasi. Tambahkan dulu.{AnsiColors.ENDC}")
+            new_settings["crypto_ids_for_aggregation"] = []
+        else:
+            current_selected_ids = new_settings.get('crypto_ids_for_aggregation', [])
+            available_cryptos_options = []
+            for cfg in all_crypto_configs:
+                if cfg.get("enabled", True): # Hanya tawarkan yang aktif
+                    pair_display = f"{cfg['symbol']}-{cfg['currency']} ({cfg['timeframe']})"
+                    available_cryptos_options.append({"name": pair_display, "id": cfg['id']})
+            
+            if not available_cryptos_options:
+                print(f"{AnsiColors.ORANGE}Tidak ada crypto pair yang AKTIF untuk dipilih.{AnsiColors.ENDC}")
+                new_settings["crypto_ids_for_aggregation"] = []
+            else:
+                selected_for_agg = []
+                print(f"{AnsiColors.CYAN}Pilih crypto untuk dimasukkan ke dalam agregasi (spasi untuk pilih, enter untuk selesai):{AnsiColors.ENDC}")
+                
+                # Buat daftar opsi untuk pick, tandai yang sudah terpilih
+                pick_options = []
+                default_selected_indices = []
+                for i, opt_data in enumerate(available_cryptos_options):
+                    is_currently_selected = opt_data['id'] in current_selected_ids
+                    pick_options.append(f"[{'x' if is_currently_selected else ' '}] {opt_data['name']}")
+                    if is_currently_selected:
+                        default_selected_indices.append(i)
+                
+                try:
+                    # Pick library untuk multiple selection
+                    # Ini memerlukan versi pick yang mendukung multi-select atau penyesuaian
+                    # Untuk kesederhanaan, kita akan meminta pengguna input Y/N per crypto
+                    temp_selected_ids = []
+                    for crypto_opt_data in available_cryptos_options:
+                        is_selected = crypto_opt_data['id'] in current_selected_ids
+                        user_choice = _prompt_type(f"Sertakan {crypto_opt_data['name']} dalam agregasi?", is_selected, bool, is_selected)
+                        if user_choice:
+                            temp_selected_ids.append(crypto_opt_data['id'])
+                    new_settings["crypto_ids_for_aggregation"] = temp_selected_ids
+
+                except Exception as e_pick_multi:
+                    log_warning(f"Gagal menggunakan pick untuk multi-seleksi crypto agregasi: {e_pick_multi}. Gunakan pilihan manual.")
+                    # Fallback jika pick gagal atau tidak mendukung multi-select
+                    # (Logika ini bisa dibuat lebih canggih jika diperlukan)
+                    print(f"{AnsiColors.ORANGE}Input ID kripto yang akan diagregasi, pisahkan dengan koma (contoh: id1,id2):{AnsiColors.ENDC}")
+                    for i, crypto_opt in enumerate(available_cryptos_options):
+                        print(f"  {i+1}. {crypto_opt['name']} (ID: {crypto_opt['id']})")
+                    ids_str = input(f"ID terpilih saat ini: {','.join(current_selected_ids)}\nMasukkan ID baru: ").strip()
+                    if ids_str:
+                        new_settings["crypto_ids_for_aggregation"] = [s.strip() for s in ids_str.split(',')]
+
+
+        valid_tf_keys_agg = ["1m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "1d"]
+        new_settings["aggregation_timeframe"] = _prompt_type(
+            f"Timeframe Bar Agregasi ({', '.join(valid_tf_keys_agg)})",
+            new_settings.get('aggregation_timeframe', def_agg_cfg['aggregation_timeframe']),
+            str, def_agg_cfg['aggregation_timeframe'], valid_options=valid_tf_keys_agg
+        ).lower().strip()
+
+        animated_text_display("\n-- Pengaturan Sinyal Penurunan Agregasi --", color=AnsiColors.HEADER)
+        new_settings["lookback_bars_drop_agg"] = _prompt_type(
+            "Periode Cek Penurunan Agregasi (bar)",
+            new_settings.get('lookback_bars_drop_agg', def_agg_cfg['lookback_bars_drop_agg']),
+            int, def_agg_cfg['lookback_bars_drop_agg'], min_val=1
+        )
+        new_settings["drop_percentage_threshold_agg"] = _prompt_type(
+            "Ambang Batas Penurunan Agregasi (%)",
+            new_settings.get('drop_percentage_threshold_agg', def_agg_cfg['drop_percentage_threshold_agg']),
+            float, def_agg_cfg['drop_percentage_threshold_agg'], min_val=0.1, step=0.1
+        )
+        new_settings["alert_cooldown_seconds_agg"] = _prompt_type(
+            "Cooldown Alert Penurunan Agregasi (detik)",
+            new_settings.get('alert_cooldown_seconds_agg', def_agg_cfg['alert_cooldown_seconds_agg']),
+            int, def_agg_cfg['alert_cooldown_seconds_agg'], min_val=0
+        )
+    return new_settings
+
 
 def settings_menu(current_settings):
     while True:
         clear_screen_animated()
         api_s = current_settings.get("api_settings", {})
+        agg_s = current_settings.get("aggregation_settings", {})
+        
         pkd = api_s.get('primary_key', 'N/A'); pkd = pkd[:5]+"..."+pkd[-3:] if len(pkd)>8 and pkd not in ["YOUR_PRIMARY_KEY", "N/A"] else pkd
         nrk = len([k for k in api_s.get('recovery_keys', []) if k])
         tns = "Aktif" if api_s.get("enable_termux_notifications", False) else "Nonaktif"
-        title = f"--- Menu Pengaturan Exora Vulcan Futures ---\nAPI Key: {pkd} | Recovery: {nrk} | Termux: {tns}\nStrategi: Deteksi Perubahan Likuiditas\nCrypto Pairs:\n"
+        agg_status_display = "Aktif" if agg_s.get("enabled_aggregation_tracker", False) else "Nonaktif"
+        
+        title = f"--- Menu Pengaturan Exora Aggregator ---\n"
+        title += f"API Key: {pkd} | Recovery: {nrk} | Termux Global: {tns}\n"
+        title += f"Pelacak Agregasi: {AnsiColors.BOLD}{agg_status_display}{AnsiColors.ENDC}\n"
+        if agg_s.get("enabled_aggregation_tracker", False):
+            title += f"  Timeframe Agregasi: {agg_s.get('aggregation_timeframe', 'N/A')}\n"
+            title += f"  Drop Check: {agg_s.get('drop_percentage_threshold_agg', 0)}% over {agg_s.get('lookback_bars_drop_agg', 0)} bars\n"
+            
+            # Tampilkan kripto yang dipilih untuk agregasi
+            selected_ids_for_agg_menu = agg_s.get('crypto_ids_for_aggregation', [])
+            if selected_ids_for_agg_menu:
+                selected_names_for_agg_menu = []
+                for crypto_cfg_menu in current_settings.get("cryptos", []):
+                    if crypto_cfg_menu.get('id') in selected_ids_for_agg_menu:
+                        selected_names_for_agg_menu.append(f"{crypto_cfg_menu.get('symbol')}-{crypto_cfg_menu.get('currency')}")
+                title += f"  Kripto Agregasi: {', '.join(selected_names_for_agg_menu) or 'Belum ada'}\n"
+            else:
+                title += "  Kripto Agregasi: Belum ada yang dipilih\n"
+
+
+        title += "\n--- Crypto Pairs Individu ---\n"
         if not current_settings.get("cryptos"): title += "  (Kosong)\n"
         else:
-            for i, cfg in enumerate(current_settings["cryptos"]): title += f"  {i+1}. {cfg.get('symbol','?')}-{cfg.get('currency','?')} ({cfg.get('timeframe','?')}) - {'Aktif' if cfg.get('enabled',True) else 'Nonaktif'}\n"
+            for i, cfg in enumerate(current_settings["cryptos"]): title += f"  {i+1}. {cfg.get('symbol','?')}-{cfg.get('currency','?')} ({cfg.get('timeframe','?')}) - {'Aktif' if cfg.get('enabled',True) else 'Nonaktif'} (ID: {cfg.get('id', 'N/A')[:8]}..)\n"
+        
         title += "----------------------\nPilih tindakan:"
-        opts = ["Primary API Key", "Recovery API Keys", "Email Global Notif Sistem", "Notifikasi Termux", "Tambah Crypto Pair", "Ubah Crypto Pair", "Hapus Crypto Pair", "Kembali"]
+        opts = [
+            "Pengaturan API & Notifikasi Global", 
+            "Pengaturan Pelacak Agregasi",
+            "Tambah Crypto Pair Individu", 
+            "Ubah Crypto Pair Individu", 
+            "Hapus Crypto Pair Individu", 
+            "Kembali ke Menu Utama"
+        ]
         
         options_for_pick = [opt[:70] + ('...' if len(opt) > 70 else '') for opt in opts]
         try:
@@ -394,11 +520,11 @@ def settings_menu(current_settings):
         
         clear_screen_animated()
         try:
-            if action_idx == 0: # Primary API Key
-                new_pk = input(f"Primary API Key [{api_s.get('primary_key','')}]: ").strip()
-                if new_pk: api_s["primary_key"] = new_pk
-                elif not api_s.get('primary_key'): api_s["primary_key"] = "YOUR_PRIMARY_KEY" 
-            elif action_idx == 1: # Recovery API Keys (Logic sama)
+            if action_idx == 0: # Pengaturan API & Notifikasi Global
+                animated_text_display("--- Pengaturan API & Notifikasi Global ---", color=AnsiColors.HEADER)
+                api_s["primary_key"] = (input(f"Primary API Key CryptoCompare [{api_s.get('primary_key','')}]: ").strip() or api_s.get('primary_key','YOUR_PRIMARY_KEY'))
+                
+                # Kelola Recovery Keys (Sama seperti sebelumnya)
                 while True:
                     clear_screen_animated()
                     current_recovery = api_s.get('recovery_keys', [])
@@ -408,53 +534,64 @@ def settings_menu(current_settings):
                         for i_rec, key_rec in enumerate(current_recovery):
                              rec_title += f"  {i_rec+1}. {key_rec[:5]}...{key_rec[-3:] if len(key_rec)>8 else key_rec}\n"
                     rec_title += "----------------------------\nPilih:"
-                    rec_opts = ["Tambah Recovery Key", "Hapus Recovery Key", "Kembali ke Menu Pengaturan"]
+                    rec_opts = ["Tambah Recovery Key", "Hapus Recovery Key", "Selesai Kelola Recovery Key"]
                     _, rec_action_idx = pick(rec_opts, rec_title, indicator='=>')
                     
                     if rec_action_idx == 0: # Tambah
                         new_rec_key = input("Masukkan Recovery API Key baru: ").strip()
-                        if new_rec_key:
-                            api_s.setdefault('recovery_keys',[]).append(new_rec_key)
-                            animated_text_display("Recovery key ditambahkan.", color=AnsiColors.GREEN)
-                        else: animated_text_display("Input kosong, tidak ada key ditambahkan.", color=AnsiColors.ORANGE)
+                        if new_rec_key: api_s.setdefault('recovery_keys',[]).append(new_rec_key); animated_text_display("Ditambahkan.", color=AnsiColors.GREEN)
+                        else: animated_text_display("Kosong, tidak ditambah.", color=AnsiColors.ORANGE)
                     elif rec_action_idx == 1: # Hapus
-                        if not api_s.get('recovery_keys'):
-                            animated_text_display("Tidak ada recovery key untuk dihapus.", color=AnsiColors.ORANGE); time.sleep(1); continue
+                        if not api_s.get('recovery_keys'): animated_text_display("Tidak ada untuk dihapus.", color=AnsiColors.ORANGE); time.sleep(1); continue
                         del_rec_opts = [f"{k_rec[:5]}...{k_rec[-3:] if len(k_rec)>8 else k_rec}" for k_rec in api_s['recovery_keys']] + ["Batal"]
-                        animated_text_display("Pilih recovery key untuk dihapus:", color=AnsiColors.HEADER,new_line=False)
                         _, del_rec_key_idx = pick(del_rec_opts, "Pilih recovery key untuk dihapus:", indicator='=>')
-                        if del_rec_key_idx < len(api_s['recovery_keys']):
-                            api_s['recovery_keys'].pop(del_rec_key_idx)
-                            animated_text_display("Recovery key dihapus.", color=AnsiColors.GREEN)
+                        if del_rec_key_idx < len(api_s['recovery_keys']): api_s['recovery_keys'].pop(del_rec_key_idx); animated_text_display("Dihapus.", color=AnsiColors.GREEN)
                     elif rec_action_idx == 2: break 
                     show_spinner(0.5, "Memproses...")
-            elif action_idx == 2: # Email Global Notif Sistem (Logic sama)
-                api_s['enable_global_email_notifications_for_key_switch'] = _prompt_type("Aktifkan Email Notif Sistem Global?", api_s.get('enable_global_email_notifications_for_key_switch',False), bool, False)
-                api_s['email_sender_address'] = (input(f"Alamat Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
-                api_s['email_sender_app_password'] = (input(f"App Password Email Pengirim Global [{api_s.get('email_sender_app_password','')}]: ").strip() or api_s.get('email_sender_app_password',''))
-                api_s['email_receiver_address_admin'] = (input(f"Alamat Email Penerima Admin Global [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
-            elif action_idx == 3: # Notifikasi Termux (Logic sama)
-                 api_s['enable_termux_notifications'] = _prompt_type("Aktifkan Notifikasi Termux Global?", api_s.get('enable_termux_notifications',False), bool, False)
-            elif action_idx == 4: current_settings.setdefault("cryptos", []).append(_prompt_crypto_config(get_default_crypto_config()))
-            elif action_idx == 5: # Ubah
+
+                api_s['enable_global_email_notifications_for_key_switch'] = _prompt_type("Aktifkan Email Notif Sistem Global (API Key Switch, etc)?", api_s.get('enable_global_email_notifications_for_key_switch',False), bool, False)
+                if api_s['enable_global_email_notifications_for_key_switch']:
+                    api_s['email_sender_address'] = (input(f"Alamat Email Pengirim Global [{api_s.get('email_sender_address','')}]: ").strip() or api_s.get('email_sender_address',''))
+                    api_s['email_sender_app_password'] = (input(f"App Password Email Pengirim Global [{api_s.get('email_sender_app_password','')}]: ").strip() or api_s.get('email_sender_app_password',''))
+                    api_s['email_receiver_address_admin'] = (input(f"Alamat Email Penerima Admin Global [{api_s.get('email_receiver_address_admin','')}]: ").strip() or api_s.get('email_receiver_address_admin',''))
+                
+                api_s['enable_termux_notifications'] = _prompt_type("Aktifkan Notifikasi Termux Global?", api_s.get('enable_termux_notifications',False), bool, False)
+                current_settings["api_settings"] = api_s
+
+            elif action_idx == 1: # Pengaturan Pelacak Agregasi
+                current_settings["aggregation_settings"] = _prompt_aggregation_settings(
+                    current_settings.get("aggregation_settings", get_default_aggregation_settings()),
+                    current_settings.get("cryptos", [])
+                )
+            elif action_idx == 2: # Tambah Crypto Pair Individu
+                current_settings.setdefault("cryptos", []).append(_prompt_crypto_config(get_default_crypto_config()))
+            elif action_idx == 3: # Ubah Crypto Pair Individu
                 if not current_settings.get("cryptos"): print("Tidak ada pair untuk diubah."); show_spinner(1,""); continue
-                edit_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe', '?')})" for c in current_settings["cryptos"]] + ["Batal"]
+                edit_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe', '?')}) (ID: {c.get('id','N/A')[:8]}..)" for c in current_settings["cryptos"]] + ["Batal"]
                 _, edit_c_idx = pick(edit_opts, "Pilih pair untuk diubah:")
-                if edit_c_idx < len(current_settings["cryptos"]): current_settings["cryptos"][edit_c_idx] = _prompt_crypto_config(current_settings["cryptos"][edit_c_idx])
-            elif action_idx == 6: # Hapus
+                if edit_c_idx < len(current_settings["cryptos"]): 
+                    current_settings["cryptos"][edit_c_idx] = _prompt_crypto_config(current_settings["cryptos"][edit_c_idx])
+            elif action_idx == 4: # Hapus Crypto Pair Individu
                 if not current_settings.get("cryptos"): print("Tidak ada pair untuk dihapus."); show_spinner(1,""); continue
-                del_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe', '?')})" for c in current_settings["cryptos"]] + ["Batal"]
+                del_opts = [f"{c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe', '?')}) (ID: {c.get('id','N/A')[:8]}..)" for c in current_settings["cryptos"]] + ["Batal"]
                 _, del_c_idx = pick(del_opts, "Pilih pair untuk dihapus:")
-                if del_c_idx < len(current_settings["cryptos"]): current_settings["cryptos"].pop(del_c_idx)
-            elif action_idx == 7: break # Kembali
+                if del_c_idx < len(current_settings["cryptos"]): 
+                    # Juga hapus dari daftar agregasi jika ada
+                    deleted_id = current_settings["cryptos"][del_c_idx].get("id")
+                    current_settings["cryptos"].pop(del_c_idx)
+                    if deleted_id and current_settings.get("aggregation_settings", {}).get("crypto_ids_for_aggregation"):
+                        if deleted_id in current_settings["aggregation_settings"]["crypto_ids_for_aggregation"]:
+                            current_settings["aggregation_settings"]["crypto_ids_for_aggregation"].remove(deleted_id)
+                            log_info(f"Pair dengan ID {deleted_id} juga dihapus dari daftar agregasi.", "SETTINGS")
+            elif action_idx == 5: break # Kembali
             
-            current_settings["api_settings"] = api_s 
             save_settings(current_settings)
-            if action_idx not in [1,7]: show_spinner(1, "Disimpan...")
+            if action_idx != 5 : show_spinner(1, "Disimpan...") # Tidak perlu spinner jika "Kembali"
         except Exception as e_menu: log_error(f"Error menu: {e_menu}"); show_spinner(1, "Error...")
     return current_settings
 
-# --- FUNGSI PENGAMBILAN DATA --- (Sama, hanya timeframe mapping lebih robust)
+# --- FUNGSI PENGAMBILAN DATA (fetch_candles) ---
+# (Sama seperti di skrip Anda, tidak perlu diubah signifikan untuk logika ini)
 def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_api_key_to_use, timeframe_str="1h", pair_name="N/A"):
     timeframe_details = {"endpoint_segment": "histohour", "aggregate": 1}
     tf_lower = timeframe_str.lower()
@@ -462,26 +599,19 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     try:
         num_part = int("".join(filter(str.isdigit, tf_lower))) if any(char.isdigit() for char in tf_lower) else 1
         if 'm' in tf_lower:
-            timeframe_details["endpoint_segment"] = "histominute"
-            timeframe_details["aggregate"] = num_part
+            timeframe_details["endpoint_segment"] = "histominute"; timeframe_details["aggregate"] = num_part
         elif 'h' in tf_lower:
-            timeframe_details["endpoint_segment"] = "histohour"
-            timeframe_details["aggregate"] = num_part
+            timeframe_details["endpoint_segment"] = "histohour"; timeframe_details["aggregate"] = num_part
         elif 'd' in tf_lower:
-            timeframe_details["endpoint_segment"] = "histoday"
-            timeframe_details["aggregate"] = num_part
+            timeframe_details["endpoint_segment"] = "histoday"; timeframe_details["aggregate"] = num_part
         elif 'w' in tf_lower:
-            timeframe_details["endpoint_segment"] = "histoday"
-            timeframe_details["aggregate"] = 7 * num_part
-        else: # Default or unknown, try histohour
+            timeframe_details["endpoint_segment"] = "histoday"; timeframe_details["aggregate"] = 7 * num_part
+        else:
             log_warning(f"Timeframe '{timeframe_str}' tidak dikenali, menggunakan 1 hour.", pair_name=pair_name)
-            timeframe_details["endpoint_segment"] = "histohour"
-            timeframe_details["aggregate"] = 1
+            timeframe_details["endpoint_segment"] = "histohour"; timeframe_details["aggregate"] = 1
     except ValueError:
         log_warning(f"Error parsing timeframe '{timeframe_str}', menggunakan 1 hour.", pair_name=pair_name)
-        timeframe_details["endpoint_segment"] = "histohour"
-        timeframe_details["aggregate"] = 1
-
+        timeframe_details["endpoint_segment"] = "histohour"; timeframe_details["aggregate"] = 1
 
     if not current_api_key_to_use:
         log_error(f"Tidak ada API key untuk fetch_candles.", pair_name=pair_name); raise APIKeyError("API Key tidak tersedia.")
@@ -494,36 +624,23 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
     is_large_fetch = total_limit_desired > 20
     if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: simple_progress_bar(0, total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles')
 
-    retries_network_error = 3
-    current_network_retry = 0
+    retries_network_error = 3; current_network_retry = 0
 
     while len(all_accumulated_candles) < total_limit_desired:
         limit_call = min(total_limit_desired - len(all_accumulated_candles), CRYPTOCOMPARE_MAX_LIMIT)
         if limit_call <= 0: break
         
         params = {"fsym": symbol, "tsym": currency, "limit": limit_call, "api_key": current_api_key_to_use}
-        if timeframe_details["aggregate"] > 1: # Apply aggregate if not 1
-            params["aggregate"] = timeframe_details["aggregate"]
-        
-        # Aggregate Togethertots = false is usually better for exact candle counts when limit is applied
-        # However, for simplicity and standard CryptoCompare behavior, we'll omit it unless issues arise.
-        # params["agggregate"] = timeframe_details["aggregate"]
-        # params["aggregatePredictableTimePeriods"] = True # New parameter for more consistent time periods
-
+        if timeframe_details["aggregate"] > 1: params["aggregate"] = timeframe_details["aggregate"]
         if exchange_name and exchange_name.upper() != "CCCAGG": params["e"] = exchange_name
         if current_to_ts: params["toTs"] = current_to_ts
         
         try:
             response = requests.get(url, params=params, timeout=20)
-            if response.status_code in [401, 403, 429, 400]: # 400 can also be related to key or request limits
-                err_msg_detail = ""
-                try: err_msg_detail = response.json().get('Message', f"HTTP Error {response.status_code}")
-                except: err_msg_detail = f"HTTP Error {response.status_code}, no JSON body."
-                
-                # Log API key part for debugging
+            if response.status_code in [401, 403, 429, 400]:
+                err_msg_detail = response.json().get('Message', f"HTTP Error {response.status_code}") if response.content else f"HTTP Error {response.status_code}, no content"
                 key_display_for_log = current_api_key_to_use[-5:] if current_api_key_to_use and len(current_api_key_to_use) > 5 else "KEY_SHORT"
-                
-                log_warning(f"API Key/Request Error (HTTP {response.status_code}): {err_msg_detail} | Key ends: ...{key_display_for_log}", pair_name=pair_name)
+                log_warning(f"API Key/Req Error (HTTP {response.status_code}): {err_msg_detail} | Key ...{key_display_for_log}", pair_name=pair_name)
                 raise APIKeyError(f"HTTP {response.status_code}: {err_msg_detail}")
             response.raise_for_status() 
             data = response.json()
@@ -533,341 +650,153 @@ def fetch_candles(symbol, currency, total_limit_desired, exchange_name, current_
                 key_err_patterns = ["api key is invalid", "apikey_is_missing", "rate limit", "monthly_calls", "tier", "not valid"]
                 if any(p.lower() in err_msg.lower() for p in key_err_patterns):
                     key_display_for_log = current_api_key_to_use[-5:] if current_api_key_to_use and len(current_api_key_to_use) > 5 else "KEY_SHORT"
-                    log_warning(f"API Key Error (JSON): {err_msg} | Key ends: ...{key_display_for_log}", pair_name=pair_name)
+                    log_warning(f"API Key Error (JSON): {err_msg} | Key ...{key_display_for_log}", pair_name=pair_name)
                     raise APIKeyError(f"JSON Error: {err_msg}")
                 else: log_error(f"API Error: {err_msg}", pair_name=pair_name); break 
             
             raw_candles = data.get('Data', {}).get('Data', [])
             if not raw_candles:
-                if len(all_accumulated_candles) > 0 : log_debug(f"Tidak ada candle baru dari API (mungkin akhir histori atau toTs terlalu baru). Total: {len(all_accumulated_candles)}", pair_name=pair_name)
-                else: log_warning(f"Tidak ada data candle sama sekali dari API untuk {pair_name}.", pair_name=pair_name)
+                if len(all_accumulated_candles) > 0 : log_debug(f"Tidak ada candle baru. Total: {len(all_accumulated_candles)}", pair_name=pair_name)
+                else: log_warning(f"Tidak ada data candle dari API untuk {pair_name}.", pair_name=pair_name)
                 break
 
-            batch = []
-            for item in raw_candles:
-                if all(k in item and item[k] is not None for k in ['time', 'open', 'high', 'low', 'close', 'volumefrom']):
-                    batch.append({'timestamp': datetime.fromtimestamp(item['time']), 'open': item['open'], 'high': item['high'], 'low': item['low'], 'close': item['close'], 'volume': item['volumefrom']})
+            batch = [{'timestamp': datetime.fromtimestamp(item['time']), 'open': item['open'], 'high': item['high'], 'low': item['low'], 'close': item['close'], 'volume': item['volumefrom']}
+                     for item in raw_candles if all(k in item and item[k] is not None for k in ['time', 'open', 'high', 'low', 'close', 'volumefrom'])]
             
             if current_to_ts and all_accumulated_candles and batch and batch[-1]['timestamp'] == all_accumulated_candles[0]['timestamp']: batch.pop() 
             if not batch and current_to_ts: break 
 
             all_accumulated_candles = batch + all_accumulated_candles
-            if raw_candles: current_to_ts = raw_candles[0]['time'] # Fetch before this timestamp next
+            if raw_candles: current_to_ts = raw_candles[0]['time']
             else: break
 
             if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Candles')
-            if len(raw_candles) < limit_call: break # API returned fewer than requested, assume end of data for this segment
-            if len(all_accumulated_candles) >= total_limit_desired: break
-            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: time.sleep(0.2) # Small delay for large fetches
+            if len(raw_candles) < limit_call or len(all_accumulated_candles) >= total_limit_desired: break
+            if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT: time.sleep(0.2)
         
-        except APIKeyError: raise # Re-raise to be caught by caller for key switching
+        except APIKeyError: raise
         except requests.exceptions.RequestException as e_req:
             current_network_retry += 1
             if current_network_retry <= retries_network_error:
-                log_warning(f"Kesalahan Jaringan: {e_req}. Retry {current_network_retry}/{retries_network_error} dalam beberapa detik...", pair_name=pair_name)
-                time.sleep(current_network_retry * 2) # Exponential backoff-like delay
-                continue # Retry the while loop iteration
-            else:
-                log_error(f"Kesalahan Jaringan ({e_req}) setelah {retries_network_error} retries. Gagal fetch.", pair_name=pair_name); break 
-        except Exception as e_gen: log_exception(f"Error lain dalam fetch_candles: {e_gen}", pair_name=pair_name); break
+                log_warning(f"Network Error: {e_req}. Retry {current_network_retry}/{retries_network_error}...", pair_name=pair_name)
+                time.sleep(current_network_retry * 2)
+                continue
+            else: log_error(f"Network Error ({e_req}) after {retries_network_error} retries. Gagal.", pair_name=pair_name); break 
+        except Exception as e_gen: log_exception(f"Error lain fetch_candles: {e_gen}", pair_name=pair_name); break
     
     if len(all_accumulated_candles) > total_limit_desired: all_accumulated_candles = all_accumulated_candles[-total_limit_desired:]
     if is_large_fetch and total_limit_desired > CRYPTOCOMPARE_MAX_LIMIT : simple_progress_bar(len(all_accumulated_candles), total_limit_desired, prefix=f'{pair_name} Data:', suffix='Selesai')
     return all_accumulated_candles
 
-
-# --- LOGIKA DETEKSI LIKUIDITAS (BARU) ---
-def get_initial_liquidity_analysis_state():
-    return {
-        "current_liquidity_state": 0,  # 0: Undetermined, 1: Low, 2: High
-        "previous_liquidity_state": 0, # Untuk deteksi perubahan
-        "high_liq_consecutive_bars": 0,
-        "is_high_liquidity_confirmed_by_lookback": False,
-        "last_alerted_state_change_to": None, # Menyimpan state tujuan dari alert terakhir
-        "last_alerted_high_liq_confirmed_at_ts": None, # Timestamp konfirmasi high liq terakhir
-        # Untuk chart
-        "liquidity_bg_color_for_chart": "na" # 'na', 'low', 'high'
-    }
-
-def is_bullish_py(candle):
-    return candle and candle['close'] > candle['open']
-
-def is_bearish_py(candle):
-    return candle and candle['close'] < candle['open']
-
-def check_low_liquidity_pattern_py(candles_history, length):
-    if not candles_history or len(candles_history) < length:
-        return False
-
-    relevant_candles = candles_history[-length:] # Ambil `length` candle terakhir
-    
-    # Pola 1: Bullish, Bearish, Bullish, ... (candle terakhir adalah index length-1 dari relevant_candles)
-    # Pine: i=0 (candle saat ini/terbaru), i=len-1 (candle terlama)
-    # Python relevant_candles: index 0 (terlama), index length-1 (terbaru)
-    # Kita periksa dari candle terlama ke terbaru dalam slice
-    p1_match = True
-    for i in range(length):
-        candle_idx_in_slice = i # Iterasi dari terlama ke terbaru
-        # Pine (i % 2 == 0 is bullish) -> candle terlama (i=len-1) genap jika len ganjil, ganjil jika len genap
-        # Pine: (i % 2 == 0 and not is_bullish(i)) or (i % 2 != 0 and not is_bearish(i))
-        # Maksudnya: Jika index ke-i (dari terbaru) adalah genap, harus bullish. Jika ganjil, harus bearish.
-        # Di Python, kita iterate dari terlama (idx 0 di slice).
-        # Pola Bullish, Bearish, Bullish, Bearish ...
-        # Slice[0] (terlama) = Bullish, Slice[1] = Bearish, Slice[2] = Bullish
-        if (i % 2 == 0 and not is_bullish_py(relevant_candles[i])) or \
-           (i % 2 != 0 and not is_bearish_py(relevant_candles[i])):
-            p1_match = False
-            break
-    if p1_match: return True
-
-    # Pola 2: Bearish, Bullish, Bearish, ...
-    # Slice[0] (terlama) = Bearish, Slice[1] = Bullish, Slice[2] = Bearish
-    p2_match = True
-    for i in range(length):
-        if (i % 2 == 0 and not is_bearish_py(relevant_candles[i])) or \
-           (i % 2 != 0 and not is_bullish_py(relevant_candles[i])):
-            p2_match = False
-            break
-    if p2_match: return True
-            
-    return False
-
-
-def check_high_liquidity_pattern_py(candles_history, length):
-    if not candles_history or len(candles_history) < length:
-        return False
-    
-    relevant_candles = candles_history[-length:]
-    
-    all_bullish = True
-    for candle in relevant_candles:
-        if not is_bullish_py(candle):
-            all_bullish = False
-            break
-    if all_bullish: return True
-        
-    all_bearish = True
-    for candle in relevant_candles:
-        if not is_bearish_py(candle):
-            all_bearish = False
-            break
-    if all_bearish: return True
-            
-    return False
-
-def analyze_liquidity_and_alert(candles_history, crypto_config, current_analysis_state, global_settings, is_warmup=False):
-    pair_name = crypto_config['pair_name']
-    cfg = crypto_config 
-    
-    if not candles_history or len(candles_history) < max(cfg.get('lowliq_pattern_length',2), cfg.get('highliq_pattern_length',2)):
-        log_debug(f"Tidak cukup data candle untuk analisis likuiditas {pair_name}.", pair_name=pair_name)
-        # Pastikan state chart direset jika tidak ada data
-        current_analysis_state["liquidity_bg_color_for_chart"] = "na"
-        return current_analysis_state
-
-    current_candle_time = candles_history[-1]['timestamp']
-    
-    # Simpan state sebelumnya untuk deteksi perubahan
-    current_analysis_state["previous_liquidity_state"] = current_analysis_state["current_liquidity_state"]
-    
-    # Trigger deteksi
-    low_liq_trigger = False
-    if cfg.get('enable_lowliq_detector', True) and cfg.get('lowliq_pattern_length', 0) > 1:
-        low_liq_trigger = check_low_liquidity_pattern_py(candles_history, cfg['lowliq_pattern_length'])
-
-    high_liq_trigger = False
-    if cfg.get('enable_highliq_detector', True) and cfg.get('highliq_pattern_length', 0) > 1:
-        high_liq_trigger = check_high_liquidity_pattern_py(candles_history, cfg['highliq_pattern_length'])
-
-    # State Management (mengikuti logika PineScript)
-    current_state = current_analysis_state["current_liquidity_state"]
-    
-    if current_state == 0: # Undetermined
-        if high_liq_trigger:
-            current_analysis_state["current_liquidity_state"] = 2 # High
-        elif low_liq_trigger:
-            current_analysis_state["current_liquidity_state"] = 1 # Low
-    elif current_state == 1: # Currently Low
-        if high_liq_trigger:
-            current_analysis_state["current_liquidity_state"] = 2 # Switch to High
-        # Tidak ada transisi Low -> Low atau Low -> Undetermined di PineScript ini, state tetap Low jika tidak ada trigger High
-    elif current_state == 2: # Currently High
-        if low_liq_trigger:
-            current_analysis_state["current_liquidity_state"] = 1 # Switch to Low
-        # Tidak ada transisi High -> High atau High -> Undetermined, state tetap High jika tidak ada trigger Low
-
-    # Update High Liquidity Consecutive Bars & Confirmation
-    if current_analysis_state["current_liquidity_state"] == 2:
-        current_analysis_state["high_liq_consecutive_bars"] += 1
-    else:
-        current_analysis_state["high_liq_consecutive_bars"] = 0
-        current_analysis_state["is_high_liquidity_confirmed_by_lookback"] = False # Reset konfirmasi jika tidak lagi high
-
-    newly_confirmed_high_liq = False
-    if cfg.get('enable_highliq_detector', True) and current_analysis_state["current_liquidity_state"] == 2 and \
-       current_analysis_state["high_liq_consecutive_bars"] >= cfg.get('highliq_lookback_confirmation_bars', 1):
-        if not current_analysis_state["is_high_liquidity_confirmed_by_lookback"]: # Baru terkonfirmasi
-            newly_confirmed_high_liq = True
-        current_analysis_state["is_high_liquidity_confirmed_by_lookback"] = True
-    else: # Jika kondisi konfirmasi tidak terpenuhi (mis. state bukan 2, atau bars < lookback)
-        current_analysis_state["is_high_liquidity_confirmed_by_lookback"] = False
-
-
-    # --- ALERTING ---
-    if not is_warmup:
-        new_state = current_analysis_state["current_liquidity_state"]
-        prev_state = current_analysis_state["previous_liquidity_state"]
-        
-        state_map = {0: "Undetermined", 1: "Low Liquidity", 2: "High Liquidity"}
-        alert_title_prefix = f"Liq {pair_name}"
-
-        # 1. Alert on State Change
-        if cfg.get("alert_on_liquidity_state_change", True) and new_state != prev_state:
-            # Hindari alert duplikat jika state bolak-balik dengan cepat sebelum alert sempat di-reset
-            # if current_analysis_state.get("last_alerted_state_change_to") != new_state: # Ini mungkin terlalu ketat
-            
-            msg = f"STATE CHANGE: {state_map[prev_state]} -> {state_map[new_state]} on {pair_name} at {current_candle_time.strftime('%H:%M:%S')}."
-            log_color = AnsiColors.ORANGE
-            if new_state == 1: log_color = AnsiColors.LOW_LIQ_BG_CONSOLE # Biru
-            elif new_state == 2: log_color = AnsiColors.HIGH_LIQ_BG_CONSOLE # Putih
-
-            log_info(f"{log_color}{msg}{AnsiColors.ENDC}", pair_name=pair_name)
-            
-            termux_title = f"{alert_title_prefix}: {state_map[prev_state]} -> {state_map[new_state]}"
-            termux_content = f"Pair: {pair_name}. New state: {state_map[new_state]} at {current_candle_time.strftime('%H:%M:%S')}."
-            send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
-            
-            if crypto_config.get("enable_email_notifications", False):
-                email_subject = f"Liquidity State Change: {pair_name} to {state_map[new_state]}"
-                send_email_notification(email_subject, msg, crypto_config, pair_name_ctx_override=pair_name)
-            
-            current_analysis_state["last_alerted_state_change_to"] = new_state # Catat alert terakhir
-            play_notification_sound()
-
-
-        # 2. Alert on High Liquidity Confirmed
-        if cfg.get("alert_on_high_liquidity_confirmed", False) and newly_confirmed_high_liq:
-            # Hanya alert jika timestamp konfirmasi terakhir berbeda (menghindari spam jika state tetap confirmed)
-            if current_analysis_state.get("last_alerted_high_liq_confirmed_at_ts") != current_candle_time:
-                msg = f"CONFIRMED HIGH LIQUIDITY for {pair_name} ({current_analysis_state['high_liq_consecutive_bars']} bars) at {current_candle_time.strftime('%H:%M:%S')}."
-                log_info(f"{AnsiColors.HIGH_LIQ_BG_CONSOLE}{AnsiColors.BOLD}{msg}{AnsiColors.ENDC}", pair_name=pair_name)
-
-                termux_title = f"{alert_title_prefix}: High Liq Confirmed"
-                termux_content = f"{pair_name} entered Confirmed High Liquidity ({current_analysis_state['high_liq_consecutive_bars']} bars) at {current_candle_time.strftime('%H:%M:%S')}."
-                send_termux_notification(termux_title, termux_content, global_settings, pair_name_for_log=pair_name)
-
-                if crypto_config.get("enable_email_notifications", False):
-                    email_subject = f"Confirmed High Liquidity: {pair_name}"
-                    send_email_notification(email_subject, msg, crypto_config, pair_name_ctx_override=pair_name)
-                
-                current_analysis_state["last_alerted_high_liq_confirmed_at_ts"] = current_candle_time
-                play_notification_sound()
-
-    # Update chart state
-    if current_analysis_state["current_liquidity_state"] == 1 and cfg.get('enable_lowliq_detector', True):
-        current_analysis_state["liquidity_bg_color_for_chart"] = "low"
-    elif current_analysis_state["current_liquidity_state"] == 2 and cfg.get('enable_highliq_detector', True):
-        current_analysis_state["liquidity_bg_color_for_chart"] = "high"
-    else:
-        current_analysis_state["liquidity_bg_color_for_chart"] = "na"
-        
-    return current_analysis_state
-
-
-# CHART_INTEGRATION_START & Flask Endpoints (Modified for Liquidity Analysis Data)
+# CHART_INTEGRATION_START & Flask Endpoints
+# (Sama seperti di skrip Anda, hanya mengganti nama state jika perlu dan judul)
 shared_crypto_data_manager = {}
 shared_data_lock = threading.Lock()
+shared_aggregation_data = { # Data baru untuk chart agregasi jika diinginkan
+    "aggregated_series_for_chart": [], # Misal: {'timestamp': ..., 'value': ...}
+    "last_significant_drop_info_for_chart": None
+}
 
-def prepare_chart_data_for_pair(pair_id, snapshot):
+def prepare_chart_data_for_pair(pair_id, snapshot): # Untuk chart individual pair
     if pair_id not in snapshot: return None
     data = snapshot[pair_id]
-    # Untuk chart, tampilkan lebih banyak histori jika ada, misal 500, tapi kalkulasi utama hanya butuh TARGET_BIG_DATA_CANDLES
     chart_display_candles = 500 
     hist = data.get("all_candles_list", [])[-chart_display_candles:] 
     cfg = data.get("config", {})
-    state = data.get("liquidity_analysis_state", {}) # Ganti nama state
+    # Jika ada state analisis individual, bisa ditambahkan di sini
     
     ohlc_data = []
     pair_display_name = cfg.get('pair_name', pair_id)
 
-    default_state_for_chart = get_initial_liquidity_analysis_state()
-
     if not hist:
-        return {
-            "ohlc": [], 
-            "pair_name": pair_display_name, "last_updated_tv": None,
-            "liquidity_analysis_info": state or default_state_for_chart, # Kirim state analisis
-            "config_info": cfg,
-            "current_liquidity_state_for_bg": (state or default_state_for_chart).get("liquidity_bg_color_for_chart", "na")
-        }
+        return { "ohlc": [], "pair_name": pair_display_name, "last_updated_tv": None, "config_info": cfg }
 
-    for i, c in enumerate(hist):
+    for c in hist:
         if all(c.get(k) is not None for k in ['timestamp', 'open', 'high', 'low', 'close']):
             ts_ms = c['timestamp'].timestamp() * 1000
             ohlc_data.append({'x': ts_ms, 'y': [c['open'], c['high'], c['low'], c['close']]})
     
     return {
-        "ohlc": ohlc_data,
-        "pair_name": pair_display_name,
+        "ohlc": ohlc_data, "pair_name": pair_display_name,
         "last_updated_tv": hist[-1]['timestamp'].timestamp() * 1000 if hist else None,
-        "liquidity_analysis_info": state or default_state_for_chart,
-        "config_info": cfg,
-        "current_liquidity_state_for_bg": (state or default_state_for_chart).get("liquidity_bg_color_for_chart", "na")
+        "config_info": cfg
     }
 
 flask_app_instance = Flask(__name__)
-HTML_CHART_TEMPLATE = """
+HTML_CHART_TEMPLATE_AGGREGATOR = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exora Vulcan Futures - Liquidity Analysis</title>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exora Aggregator - Charts</title>
     <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <style>
         body { font-family: sans-serif; margin: 0; background-color: #1e1e1e; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; padding: 10px; }
+        .chart-section { width: 100%; max-width: 1200px; margin-bottom: 20px; }
         #controls { background-color: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 1200px; flex-wrap: wrap; }
         select, button { padding: 8px 12px; border-radius: 5px; border: 1px solid #444; background-color: #333; color: #e0e0e0; cursor: pointer; }
-        #chart-container { width: 100%; max-width: 1200px; background-color: #2a2a2a; padding: 15px; border-radius: 8px; transition: background-color 0.5s ease; }
-        h1 { color: #00bcd4; margin-bottom: 10px; font-size: 1.5em; }
-        #lastUpdatedLabel { font-size: .8em; color: #aaa; margin-left: auto; }
-        #liquidityInfoLabel { font-size: .9em; color: #ffd700; margin-left: 10px; white-space: pre-wrap; max-width: 400px; }
-        .liq-bg-low { background-color: rgba(38, 34, 171, 0.68) !important; /* #2622ab with alpha */ }
-        .liq-bg-high { background-color: rgba(255, 255, 255, 0.20) !important; /* #ffffff80 with alpha, but for chart bg, make it less opaque */ }
-        .liq-bg-na { background-color: #2a2a2a !important; /* Default chart bg */ }
+        .chart-container { width: 100%; background-color: #2a2a2a; padding: 15px; border-radius: 8px; }
+        h1, h2 { color: #00bcd4; margin-bottom: 10px; text-align: center; }
+        h1 { font-size: 1.8em; } h2 { font-size: 1.3em; }
+        #lastUpdatedLabel, #aggStatusLabel { font-size: .8em; color: #aaa; margin-left: auto; }
+        #aggStatusLabel { color: #ffd700; }
     </style>
 </head>
 <body>
-    <h1>Exora Vulcan Futures - Liquidity Analysis</h1>
-    <div id="controls">
-        <label for="pairSelector">Pair:</label>
-        <select id="pairSelector" onchange="handlePairSelectionChange()"></select>
-        <button onclick="loadChartDataForCurrentPair()">Refresh</button>
-        <span id="liquidityInfoLabel">Status: -</span>
-        <span id="lastUpdatedLabel">Memuat...</span>
+    <h1>Exora Aggregator - Monitoring</h1>
+    
+    <div class="chart-section">
+        <h2>Aggregated Index Tracker</h2>
+        <div id="controls-agg">
+             <button onclick="loadAggregatedChartData()">Refresh Aggregated</button>
+             <span id="aggStatusLabel">Agg Status: -</span>
+        </div>
+        <div class="chart-container"><div id="chart-aggregated"></div></div>
     </div>
-    <div id="chart-container"><div id="chart"></div></div>
+
+    <div class="chart-section">
+        <h2>Individual Crypto Pair</h2>
+        <div id="controls">
+            <label for="pairSelector">Pair:</label>
+            <select id="pairSelector" onchange="handlePairSelectionChange()"></select>
+            <button onclick="loadChartDataForCurrentPair()">Refresh Pair</button>
+            <span id="lastUpdatedLabel">Memuat...</span>
+        </div>
+        <div class="chart-container"><div id="chart-individual"></div></div>
+    </div>
+
     <script>
-        let activeChart, currentSelectedPairId = "", lastKnownDataTimestamp = null, autoRefreshIntervalId = null, isLoadingData = false;
-        const initialChartOptions = {
-            series: [{ name: "Candlestick", type: "candlestick", data: [] }],
-            chart: { type: "candlestick", height: 550, background: "transparent", animations: { enabled: false }, toolbar: { show: true } }, // Transparent for container bg
+        let activeIndividualChart, activeAggregatedChart, currentSelectedPairId = "", lastKnownIndividualDataTimestamp = null;
+        let lastKnownAggDataTimestamp = null, autoRefreshIntervalId = null, isLoadingIndividual = false, isLoadingAgg = false;
+
+        const commonChartOptions = {
+            chart: { background: "transparent", animations: { enabled: false }, toolbar: { show: true } },
             theme: { mode: "dark" },
-            title: { text: "Memuat Data Pair...", align: "left", style: { color: "#e0e0e0" } },
             xaxis: { type: "datetime", labels: { style: { colors: "#aaa" } }, tooltip: { enabled: false } },
             yaxis: { tooltip: { enabled: true }, labels: { style: { colors: "#aaa" }, formatter: v => v ? v.toFixed(5) : "" } },
-            stroke: { width: 1, curve: "straight" }, 
-            markers: { size: 0 },
-            colors: ["#FEB019"], 
+            stroke: { width: 1, curve: "straight" }, markers: { size: 0 },
             grid: { borderColor: "#444" },
             tooltip: { theme: "dark", shared: true, intersect: false, y: { formatter: val => val ? val.toFixed(5) : val } },
             noData: { text: "Tidak ada data.", align: "center", style: { color: "#ccc" } }
         };
 
+        const initialIndividualChartOptions = { ...commonChartOptions,
+            series: [{ name: "Candlestick", type: "candlestick", data: [] }],
+            chart: { ...commonChartOptions.chart, type: "candlestick", height: 450 },
+            title: { text: "Memuat Data Pair...", align: "left", style: { color: "#e0e0e0" } },
+        };
+        const initialAggregatedChartOptions = { ...commonChartOptions,
+             series: [{ name: "Aggregated Value", type: "line", data: [] }],
+             chart: { ...commonChartOptions.chart, type: "line", height: 350 },
+             title: { text: "Aggregated Index Value", align: "left", style: { color: "#e0e0e0" } },
+             yaxis: { ...commonChartOptions.yaxis, title: { text: "Avg. Price Index" }, labels:{ formatter: v => v ? v.toFixed(2) : "" } },
+             colors: ["#FF4560"], // Red color for the aggregated line
+        };
+
         async function fetchAvailablePairs() {
             try {
                 const response = await fetch("/api/available_pairs");
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
                 const pairs = await response.json();
                 const selector = document.getElementById("pairSelector");
                 selector.innerHTML = ""; 
@@ -881,108 +810,136 @@ HTML_CHART_TEMPLATE = """
                     loadChartDataForCurrentPair();
                 } else {
                     selector.innerHTML = '<option value="">No pairs</option>';
-                    if (activeChart) { activeChart.destroy(); activeChart = null; }
-                    document.getElementById("chart").innerHTML = "No pairs configured.";
-                    document.getElementById("chart-container").className = 'liq-bg-na';
+                    if (activeIndividualChart) { activeIndividualChart.destroy(); activeIndividualChart = null; }
+                    document.getElementById("chart-individual").innerHTML = "No pairs configured.";
                 }
             } catch (error) {
                 console.error("Error fetching available pairs:", error);
-                if (activeChart) { activeChart.destroy(); activeChart = null; }
-                document.getElementById("chart").innerHTML = `Error loading pairs: ${error.message}`;
-                document.getElementById("chart-container").className = 'liq-bg-na';
+                if (activeIndividualChart) { activeIndividualChart.destroy(); activeIndividualChart = null; }
+                document.getElementById("chart-individual").innerHTML = \`Error loading pairs: \${error.message}\`;
             }
         }
 
         function handlePairSelectionChange() {
             currentSelectedPairId = document.getElementById("pairSelector").value;
-            lastKnownDataTimestamp = null; 
+            lastKnownIndividualDataTimestamp = null; 
             loadChartDataForCurrentPair();
         }
 
         async function loadChartDataForCurrentPair() {
-            if (!currentSelectedPairId || isLoadingData) return;
-            isLoadingData = true;
-            document.getElementById("lastUpdatedLabel").textContent = `Loading ${currentSelectedPairId}...`;
-            const chartContainer = document.getElementById("chart-container");
+            if (!currentSelectedPairId || isLoadingIndividual) return;
+            isLoadingIndividual = true;
+            document.getElementById("lastUpdatedLabel").textContent = \`Loading \${currentSelectedPairId}...\`;
             try {
-                const response = await fetch(`/api/chart_data/${currentSelectedPairId}`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const response = await fetch(\`/api/chart_data/\${currentSelectedPairId}\`);
+                if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
                 const data = await response.json();
 
                 if (data && data.ohlc) {
-                    if (data.last_updated_tv && data.last_updated_tv === lastKnownDataTimestamp && !data.force_update_chart) {
-                        console.log("Chart data is unchanged based on timestamp.");
-                        document.getElementById("lastUpdatedLabel").textContent = `Last @ ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}`;
-                        // Update background and info even if ohlc is same
-                        chartContainer.className = 'liq-bg-' + (data.current_liquidity_state_for_bg || 'na');
-                        updateLiquidityInfoLabel(data.liquidity_analysis_info, data.config_info);
-                        isLoadingData = false;
-                        return;
+                    if (data.last_updated_tv && data.last_updated_tv === lastKnownIndividualDataTimestamp && !data.force_update_chart) {
+                        isLoadingIndividual = false; return;
                     }
-                    lastKnownDataTimestamp = data.last_updated_tv;
-                    document.getElementById("lastUpdatedLabel").textContent = lastKnownDataTimestamp ? `Last @ ${new Date(lastKnownDataTimestamp).toLocaleTimeString()}` : "Data Loaded";
-                    
-                    updateLiquidityInfoLabel(data.liquidity_analysis_info, data.config_info);
-                    chartContainer.className = 'liq-bg-' + (data.current_liquidity_state_for_bg || 'na');
+                    lastKnownIndividualDataTimestamp = data.last_updated_tv;
+                    document.getElementById("lastUpdatedLabel").textContent = lastKnownIndividualDataTimestamp ? \`Last @ \${new Date(lastKnownIndividualDataTimestamp).toLocaleTimeString()}\` : "Data Loaded";
                     
                     const chartOptionsUpdate = {
-                        title: { ...initialChartOptions.title, text: \`\${data.pair_name} - Exora Vulcan (\${data.config_info.timeframe})\` },
+                        title: { ...initialIndividualChartOptions.title, text: \`\${data.pair_name} (\${data.config_info.timeframe})\` },
                         series: [{ name: "Candlestick", type: "candlestick", data: data.ohlc || [] }],
                     };
                     
-                    if (activeChart) activeChart.updateOptions(chartOptionsUpdate);
-                    else { activeChart = new ApexCharts(document.querySelector("#chart"), initialChartOptions); activeChart.render(); activeChart.updateOptions(chartOptionsUpdate); } // Render then update for title etc.
+                    if (activeIndividualChart) activeIndividualChart.updateOptions(chartOptionsUpdate);
+                    else { activeIndividualChart = new ApexCharts(document.querySelector("#chart-individual"), initialIndividualChartOptions); activeIndividualChart.render(); activeIndividualChart.updateOptions(chartOptionsUpdate); }
                 } else {
-                     const noDataOptions = { ...initialChartOptions,
-                        title: { ...initialChartOptions.title, text: \`\${data.pair_name || currentSelectedPairId} - No Data\` },
-                        series: initialChartOptions.series.map(s => ({ ...s, data: [] }))
+                    const noDataOptions = { ...initialIndividualChartOptions,
+                        title: { ...initialIndividualChartOptions.title, text: \`\${data.pair_name || currentSelectedPairId} - No Data\` },
+                        series: initialIndividualChartOptions.series.map(s => ({ ...s, data: [] }))
                     };
-                    if (activeChart) activeChart.updateOptions(noDataOptions);
-                    else { activeChart = new ApexCharts(document.querySelector("#chart"), noDataOptions); activeChart.render(); }
-                    lastKnownDataTimestamp = data.last_updated_tv || null;
-                    document.getElementById("lastUpdatedLabel").textContent = lastKnownDataTimestamp ? \`Data (empty) @ \${new Date(lastKnownDataTimestamp).toLocaleTimeString()}\` : "No data";
-                    document.getElementById("liquidityInfoLabel").textContent = "Status: Data Kosong";
-                    chartContainer.className = 'liq-bg-na';
+                    if (activeIndividualChart) activeIndividualChart.updateOptions(noDataOptions);
+                    else { activeIndividualChart = new ApexCharts(document.querySelector("#chart-individual"), noDataOptions); activeIndividualChart.render(); }
+                    lastKnownIndividualDataTimestamp = data.last_updated_tv || null;
+                    document.getElementById("lastUpdatedLabel").textContent = "No data";
                 }
             } catch (error) {
-                console.error("Error loading chart data:", error);
-                if (activeChart) { activeChart.destroy(); activeChart = null; }
-                document.getElementById("chart").innerHTML = `Error loading chart: ${error.message}`;
-                chartContainer.className = 'liq-bg-na';
-            } finally {
-                isLoadingData = false;
-            }
+                console.error("Error loading individual chart:", error);
+                if (activeIndividualChart) { activeIndividualChart.destroy(); activeIndividualChart = null; }
+                document.getElementById("chart-individual").innerHTML = \`Error: \${error.message}\`;
+            } finally { isLoadingIndividual = false; }
         }
-        
-        function updateLiquidityInfoLabel(state, config) {
-            const stateMap = {0: "Undetermined", 1: "Low Liquidity", 2: "High Liquidity"};
-            let infoText = \`Current State: \${stateMap[state.current_liquidity_state] || 'N/A'}\\n\`;
-            if (state.current_liquidity_state === 2) {
-                infoText += \`High Liq Bars: \${state.high_liq_consecutive_bars} / \${config.highliq_lookback_confirmation_bars}\\n\`;
-                infoText += \`Confirmed High: \${state.is_high_liquidity_confirmed_by_lookback ? 'YES' : 'NO'}\`;
-            }
-            document.getElementById("liquidityInfoLabel").textContent = infoText;
+
+        async function loadAggregatedChartData() {
+            if (isLoadingAgg) return;
+            isLoadingAgg = true;
+            document.getElementById("aggStatusLabel").textContent = "Loading Aggregated Data...";
+            try {
+                const response = await fetch("/api/aggregated_chart_data");
+                if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
+                const data = await response.json();
+
+                if (data && data.aggregated_series_for_chart) {
+                    const seriesData = data.aggregated_series_for_chart.map(d => ({ x: d.timestamp, y: d.value }));
+                    const newTimestamp = data.aggregated_series_for_chart.length > 0 ? data.aggregated_series_for_chart[data.aggregated_series_for_chart.length - 1].timestamp : null;
+
+                    if (newTimestamp && newTimestamp === lastKnownAggDataTimestamp && !data.force_update_chart) {
+                        isLoadingAgg = false; return;
+                    }
+                    lastKnownAggDataTimestamp = newTimestamp;
+                    document.getElementById("aggStatusLabel").textContent = \`Agg. Last @ \${newTimestamp ? new Date(newTimestamp).toLocaleTimeString() : 'N/A'}\`;
+
+                    const aggChartOptionsUpdate = {
+                         series: [{ name: "Aggregated Value", data: seriesData }],
+                         title: { text: \`Aggregated Index (TF: \${data.aggregation_timeframe || 'N/A'})\`},
+                         annotations: {} // Clear previous annotations
+                    };
+
+                    if (data.last_significant_drop_info_for_chart) {
+                        const dropInfo = data.last_significant_drop_info_for_chart;
+                        aggChartOptionsUpdate.annotations = {
+                            points: [{
+                                x: dropInfo.timestamp,
+                                y: dropInfo.value_at_drop,
+                                marker: { size: 8, fillColor: '#FFFF00', strokeColor: '#FF0000', radius: 2, cssClass: 'apexcharts-custom- १६' },
+                                label: { borderColor: '#FF4560', offsetY: 0, style: { color: '#fff', background: '#FF4560'}, text: \`Drop \${dropInfo.percentage.toFixed(1)}%\`}
+                            }]
+                        };
+                    }
+
+                    if (activeAggregatedChart) activeAggregatedChart.updateOptions(aggChartOptionsUpdate);
+                    else { activeAggregatedChart = new ApexCharts(document.querySelector("#chart-aggregated"), initialAggregatedChartOptions); activeAggregatedChart.render(); activeAggregatedChart.updateOptions(aggChartOptionsUpdate); }
+                } else {
+                    if (activeAggregatedChart) activeAggregatedChart.updateOptions({ series: [{data:[]}], title: {text: "Aggregated Index - No Data"} });
+                    else { activeAggregatedChart = new ApexCharts(document.querySelector("#chart-aggregated"), {...initialAggregatedChartOptions, series: [{data:[]}], title: {text: "Aggregated Index - No Data"}}); activeAggregatedChart.render(); }
+                    document.getElementById("aggStatusLabel").textContent = "Agg. Status: No Data";
+                }
+
+            } catch (error) {
+                console.error("Error loading aggregated chart:", error);
+                 if (activeAggregatedChart) { activeAggregatedChart.destroy(); activeAggregatedChart = null; }
+                document.getElementById("chart-aggregated").innerHTML = \`Error: \${error.message}\`;
+            } finally { isLoadingAgg = false; }
         }
 
         document.addEventListener("DOMContentLoaded", () => {
-            if (!activeChart) { 
-                activeChart = new ApexCharts(document.querySelector("#chart"), initialChartOptions);
-                activeChart.render();
-            }
-            fetchAvailablePairs();
+            // Initialize charts with no data message
+            if (!activeIndividualChart) { activeIndividualChart = new ApexCharts(document.querySelector("#chart-individual"), initialIndividualChartOptions); activeIndividualChart.render(); }
+            if (!activeAggregatedChart) { activeAggregatedChart = new ApexCharts(document.querySelector("#chart-aggregated"), initialAggregatedChartOptions); activeAggregatedChart.render(); }
+            
+            fetchAvailablePairs(); // Load individual pairs for selector
+            loadAggregatedChartData(); // Load aggregated data on page load
+
             if (autoRefreshIntervalId) clearInterval(autoRefreshIntervalId);
             autoRefreshIntervalId = setInterval(async () => {
-                if (currentSelectedPairId && document.visibilityState === 'visible' && !isLoadingData) {
-                    await loadChartDataForCurrentPair();
+                if (document.visibilityState === 'visible') {
+                    if (currentSelectedPairId && !isLoadingIndividual) await loadChartDataForCurrentPair();
+                    if (!isLoadingAgg) await loadAggregatedChartData();
                 }
-            }, 5000); // Refresh every 5 seconds
+            }, 7000); // Refresh every 7 seconds
          });
     </script>
 </body>
 </html>
 """
 @flask_app_instance.route('/')
-def serve_index_page(): return render_template_string(HTML_CHART_TEMPLATE)
+def serve_index_page_agg(): return render_template_string(HTML_CHART_TEMPLATE_AGGREGATOR)
 
 @flask_app_instance.route('/api/available_pairs')
 def get_available_pairs_flask(): 
@@ -1002,13 +959,7 @@ def get_chart_data_for_frontend_flask(pair_id_from_request):
     if not pair_data_snapshot: 
         default_cfg_chart = get_default_crypto_config()
         pair_name_default = f"{default_cfg_chart['symbol']}-{default_cfg_chart['currency']}"
-        return jsonify({
-            "ohlc":[], 
-            "pair_name": pair_name_default, "last_updated_tv": None, 
-            "liquidity_analysis_info": get_initial_liquidity_analysis_state(), 
-            "config_info": default_cfg_chart,
-            "current_liquidity_state_for_bg": "na"
-        }), 200
+        return jsonify({"ohlc":[], "pair_name": pair_name_default, "last_updated_tv": None, "config_info": default_cfg_chart }), 200
 
     temp_manager = {pair_id_from_request: pair_data_snapshot}
     prepared_data = prepare_chart_data_for_pair(pair_id_from_request, temp_manager)
@@ -1016,42 +967,98 @@ def get_chart_data_for_frontend_flask(pair_id_from_request):
     if not prepared_data: return jsonify({"error": "Failed to process chart data"}), 500
     return jsonify(prepared_data)
 
+@flask_app_instance.route('/api/aggregated_chart_data')
+def get_aggregated_chart_data_flask():
+    with shared_data_lock:
+        # Kirim subset data agregasi untuk chart, misal 200 poin terakhir
+        chart_series = shared_aggregation_data.get("aggregated_series_for_chart", [])[-500:]
+        # Ubah timestamp ke ms untuk ApexCharts
+        chart_series_ms = [{'timestamp': s['timestamp'].timestamp() * 1000, 'value': s['value']} for s in chart_series]
+        
+        drop_info_for_chart = shared_aggregation_data.get("last_significant_drop_info_for_chart")
+        if drop_info_for_chart:
+            drop_info_for_chart['timestamp'] = drop_info_for_chart['timestamp'].timestamp() * 1000 # juga ke ms
+
+        settings_from_main_thread = load_settings() # Untuk mendapatkan timeframe agregasi
+        agg_tf_display = settings_from_main_thread.get("aggregation_settings", {}).get("aggregation_timeframe", "N/A")
+
+    return jsonify({
+        "aggregated_series_for_chart": chart_series_ms,
+        "last_significant_drop_info_for_chart": drop_info_for_chart,
+        "aggregation_timeframe": agg_tf_display
+    })
+
+
 def run_flask_server_thread():
-    log_info("Memulai Flask server Exora Vulcan Futures di http://localhost:5001", pair_name="SYSTEM_CHART")
+    port = 5002 # Ganti port jika 5001 sudah dipakai
+    log_info(f"Memulai Flask server Exora Aggregator di http://localhost:{port}", pair_name="SYSTEM_CHART")
     try:
         logging.getLogger('werkzeug').setLevel(logging.ERROR) 
-        flask_app_instance.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
+        flask_app_instance.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
     except Exception as e_flask: log_error(f"Flask server gagal dijalankan: {e_flask}", pair_name="SYSTEM_CHART")
 # CHART_INTEGRATION_END
 
 
-# --- FUNGSI UTAMA ANALYSIS LOOP (Dirombak untuk Deteksi Likuiditas) ---
-def start_analysis_loop(global_settings_dict, shared_dm_ref, lock_ref):
+# --- FUNGSI UTAMA ANALYSIS LOOP ---
+def start_analysis_loop(global_settings_dict, shared_dm_ref, lock_ref, shared_agg_data_ref):
     clear_screen_animated()
     api_settings = global_settings_dict.get("api_settings", {})
+    agg_settings = global_settings_dict.get("aggregation_settings", get_default_aggregation_settings())
+    
     api_key_manager = APIKeyManager(api_settings.get("primary_key"), api_settings.get("recovery_keys", []), api_settings)
 
     if not api_key_manager.has_valid_keys():
         log_error(f"{AnsiColors.RED}Tidak ada API key yang valid. Tidak dapat memulai.{AnsiColors.ENDC}")
         animated_text_display("Tekan Enter...", color=AnsiColors.ORANGE); input(); return
 
-    all_crypto_configs = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
-    if not all_crypto_configs:
-        log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto yang aktif.{AnsiColors.ENDC}")
-        animated_text_display("Tekan Enter...", color=AnsiColors.ORANGE); input(); return
+    all_crypto_configs_individual = [cfg for cfg in global_settings_dict.get("cryptos", []) if cfg.get("enabled", True)]
+    if not all_crypto_configs_individual:
+        log_warning(f"{AnsiColors.ORANGE}Tidak ada konfigurasi crypto individual yang aktif.{AnsiColors.ENDC}")
 
-    animated_text_display("=========== EXORA VULCAN FUTURES (Python) START (Multi-Pair) ===========", color=AnsiColors.HEADER, delay=0.005)
+    # --- Inisialisasi untuk Pelacak Agregasi ---
+    aggregated_close_series = [] # List of {'timestamp': ..., 'value': ...}
+    last_aggregation_calc_time = datetime.min
+    last_drop_alert_time_agg = datetime.min
+    is_significant_drop_previously_agg = False
     
-    local_crypto_data_manager = {}
-    for config in all_crypto_configs:
-        pair_id = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')}_{config.get('timeframe','DEF')}"
+    # Validasi ID kripto untuk agregasi
+    valid_crypto_ids_for_agg = []
+    if agg_settings.get("enabled_aggregation_tracker", False):
+        log_info("--- PELACAK AGREGRASI AKTIF ---", "AGGREGATOR")
+        all_individual_ids = [c.get('id') for c in all_crypto_configs_individual]
+        for req_id in agg_settings.get("crypto_ids_for_aggregation", []):
+            if req_id in all_individual_ids:
+                # Cari nama pair untuk log
+                pair_name_for_id = "UnknownID"
+                for c_ind in all_crypto_configs_individual:
+                    if c_ind.get('id') == req_id:
+                        pair_name_for_id = f"{c_ind.get('symbol')}-{c_ind.get('currency')}"
+                        break
+                valid_crypto_ids_for_agg.append({"id": req_id, "name": pair_name_for_id})
+            else:
+                log_warning(f"ID Kripto '{req_id}' untuk agregasi tidak ditemukan atau tidak aktif, akan diabaikan.", "AGGREGATOR")
+        
+        if not valid_crypto_ids_for_agg:
+            log_error("Tidak ada kripto valid yang terpilih untuk agregasi. Pelacak agregasi tidak akan berjalan.", "AGGREGATOR")
+            agg_settings["enabled_aggregation_tracker"] = False # Nonaktifkan jika tidak ada kripto
+        else:
+            log_info(f"Kripto yang akan diagregasi: {', '.join([p['name'] for p in valid_crypto_ids_for_agg])}", "AGGREGATOR")
+            log_info(f"Timeframe Agregasi: {agg_settings.get('aggregation_timeframe', 'N/A')}", "AGGREGATOR")
+            log_info(f"Cek Penurunan: {agg_settings.get('drop_percentage_threshold_agg')}% dalam {agg_settings.get('lookback_bars_drop_agg')} bar agregasi", "AGGREGATOR")
+
+    animated_text_display("=========== EXORA AGGREGATOR (Python) START ===========", color=AnsiColors.HEADER, delay=0.005)
+    
+    local_crypto_data_manager = {} # Untuk data individual pairs
+    for config in all_crypto_configs_individual:
+        pair_id = config.get('id', str(uuid.uuid4())) # Gunakan ID yang sudah ada atau buat baru
+        config['id'] = pair_id # Pastikan ID tersimpan di config
         config['pair_name'] = f"{config.get('symbol','DEF')}-{config.get('currency','DEF')} ({config.get('timeframe','DEF')})"
+        
         animated_text_display(f"\nMenginisialisasi untuk {AnsiColors.BOLD}{config['pair_name']}{AnsiColors.ENDC}...", color=AnsiColors.MAGENTA, delay=0.01)
         
         local_crypto_data_manager[pair_id] = {
             "config": config, 
             "all_candles_list": [], 
-            "liquidity_analysis_state": get_initial_liquidity_analysis_state(), # Ganti nama state
             "big_data_collection_phase_active": True, 
             "last_candle_fetch_time": datetime.min, 
             "data_fetch_failed_consecutively": 0,
@@ -1059,13 +1066,10 @@ def start_analysis_loop(global_settings_dict, shared_dm_ref, lock_ref):
         }
         with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
         
-        min_len_for_analysis_init = max(config.get('lowliq_pattern_length', 2), 
-                                        config.get('highliq_pattern_length', 2),
-                                        config.get('highliq_lookback_confirmation_bars',1) # Technically not needed for first pattern, but good buffer
-                                       ) + 5 # Buffer kecil
-        initial_candles_target = max(TARGET_BIG_DATA_CANDLES, min_len_for_analysis_init)
-        log_info(f"Target data awal: {initial_candles_target} candles. Min untuk analisis: {min_len_for_analysis_init - 5}", pair_name=config['pair_name'])
+        initial_candles_target = TARGET_BIG_DATA_CANDLES
+        log_info(f"Target data awal: {initial_candles_target} candles.", pair_name=config['pair_name'])
         
+        # Fetch data awal untuk pair individual (Logic sama seperti skrip Anda)
         initial_candles = []
         initial_fetch_successful = False
         max_initial_key_attempts = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
@@ -1073,245 +1077,285 @@ def start_analysis_loop(global_settings_dict, shared_dm_ref, lock_ref):
 
         while initial_key_attempts_done < max_initial_key_attempts and not initial_fetch_successful:
             current_api_key_init = api_key_manager.get_current_key()
-            if not current_api_key_init:
-                log_error(f"BIG DATA: Semua API key habis (global) sebelum mencoba fetch untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                break
-            log_info(f"BIG DATA: Mencoba fetch awal untuk {config['pair_name']} dengan key index {api_key_manager.get_current_key_index()} (Attempt {initial_key_attempts_done + 1}/{max_initial_key_attempts})", pair_name=config['pair_name'])
+            if not current_api_key_init: break
             try:
                 initial_candles = fetch_candles(config['symbol'], config['currency'], initial_candles_target, config['exchange'], current_api_key_init, config['timeframe'], pair_name=config['pair_name'])
                 initial_fetch_successful = True
             except APIKeyError:
-                log_warning(f"BIG DATA: API Key (Idx {api_key_manager.get_current_key_index()}) gagal untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                if not api_key_manager.switch_to_next_key():
-                    log_error(f"BIG DATA: Gagal beralih ke key berikutnya, semua key habis untuk {config['pair_name']}.", pair_name=config['pair_name'])
-                    break # Keluar dari while loop fetch awal untuk pair ini
-            except requests.exceptions.RequestException as e_req_init:
-                log_error(f"BIG DATA: Error Jaringan saat fetch awal {config['pair_name']}: {e_req_init}. Tidak ganti key.", pair_name=config['pair_name'])
-                break 
-            except Exception as e_gen_init:
-                log_exception(f"BIG DATA: Error Umum saat fetch awal {config['pair_name']}: {e_gen_init}. Tidak ganti key.", pair_name=config['pair_name'])
-                break
+                if not api_key_manager.switch_to_next_key(): break
+            except Exception: break # Handle other errors as needed
             initial_key_attempts_done += 1
 
         if not initial_fetch_successful or not initial_candles:
-            log_error(f"{AnsiColors.RED}BIG DATA: Gagal mengambil data awal untuk {config['pair_name']}. Pair ini akan dilewati sementara.{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            local_crypto_data_manager[pair_id]["data_fetch_failed_consecutively"] = max_initial_key_attempts + 1 # Tandai gagal parah
+            log_error(f"BIG DATA: Gagal ambil data awal {config['pair_name']}. Dilewati sementara.", pair_name=config['pair_name'])
+            local_crypto_data_manager[pair_id]["data_fetch_failed_consecutively"] = max_initial_key_attempts + 1
             local_crypto_data_manager[pair_id]["last_attempt_after_all_keys_failed"] = datetime.now()
-            local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False # Anggap selesai (gagal)
-            with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
-            continue
-
-        local_crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
-        log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima untuk {config['pair_name']}.", pair_name=config['pair_name'])
-
-        # Warm-up: Jalankan analisis pada data historis untuk set state awal, TANPA alert
-        if initial_candles:
-            min_len_for_warmup_run = max(config.get('lowliq_pattern_length', 2), config.get('highliq_pattern_length', 2)) # Hanya butuh panjang pola
-            if len(initial_candles) >= min_len_for_warmup_run:
-                log_info(f"Warm-up: Memproses {len(initial_candles) - min_len_for_warmup_run +1} candle historis untuk {config['pair_name']}...", pair_name=config['pair_name'])
-                for i_warmup in range(min_len_for_warmup_run -1, len(initial_candles)):
-                    historical_slice = initial_candles[:i_warmup+1]
-                    if len(historical_slice) < min_len_for_warmup_run: continue
-                    
-                    temp_state_for_warmup = local_crypto_data_manager[pair_id]["liquidity_analysis_state"].copy()
-                    local_crypto_data_manager[pair_id]["liquidity_analysis_state"] = analyze_liquidity_and_alert(
-                        historical_slice, config, temp_state_for_warmup, global_settings_dict, is_warmup=True
-                    )
-                log_info(f"{AnsiColors.CYAN}Warm-up state untuk {config['pair_name']} selesai. State: {local_crypto_data_manager[pair_id]['liquidity_analysis_state']['current_liquidity_state']}{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            else:
-                log_warning(f"Tidak cukup data untuk warm-up ({len(initial_candles)}/{min_len_for_warmup_run}) untuk {config['pair_name']}", pair_name=config['pair_name'])
-
-        if len(local_crypto_data_manager[pair_id]["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
             local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
-            log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {config['pair_name']}!{AnsiColors.ENDC}", pair_name=config['pair_name'])
-            log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({config['pair_name']}) ----------{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        else:
+            local_crypto_data_manager[pair_id]["all_candles_list"] = initial_candles
+            log_info(f"BIG DATA: {len(initial_candles)} candle awal diterima {config['pair_name']}.", pair_name=config['pair_name'])
+            if len(initial_candles) >= TARGET_BIG_DATA_CANDLES:
+                local_crypto_data_manager[pair_id]["big_data_collection_phase_active"] = False
+                log_info(f"{AnsiColors.GREEN}Target data awal tercapai {config['pair_name']}.{AnsiColors.ENDC}", pair_name=config['pair_name'])
+        
         with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(local_crypto_data_manager[pair_id])
     
-    animated_text_display(f"{AnsiColors.HEADER}----------------- SEMUA PAIR DIINISIALISASI -----------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
+    animated_text_display(f"{AnsiColors.HEADER}----------------- INISIALISASI PAIR SELESAI -----------------{AnsiColors.ENDC}", color=AnsiColors.HEADER, delay=0.005)
     
     try: 
         while True:
-            active_cryptos_still_in_big_data_collection = 0
+            current_loop_master_time = datetime.now()
             min_overall_next_refresh_seconds = float('inf')
             any_data_fetched_this_cycle = False
 
+            # --- PROSES PAIR INDIVIDUAL (Mirip dengan skrip Anda) ---
+            active_cryptos_still_in_big_data_collection = 0
             for pair_id, data_per_pair in local_crypto_data_manager.items():
                 config_for_pair = data_per_pair["config"]
                 pair_name_for_log = config_for_pair['pair_name']
 
-                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) + 1: 
-                    if (datetime.now() - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600: # Coba lagi setelah 1 jam jika semua key gagal
+                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) + 1:
+                    if (current_loop_master_time - data_per_pair.get("last_attempt_after_all_keys_failed", datetime.min)).total_seconds() < 3600:
                         min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, 3600)
                         continue
-                    else: # Reset counter setelah 1 jam agar mencoba lagi
-                        data_per_pair["data_fetch_failed_consecutively"] = 0 
-                        log_info(f"Mencoba lagi fetch data untuk {pair_name_for_log} setelah periode tunggu karena semua key gagal.", pair_name=pair_name_for_log)
-
-                current_loop_time = datetime.now()
-                time_since_last_fetch = (current_loop_time - data_per_pair["last_candle_fetch_time"]).total_seconds()
+                    else: data_per_pair["data_fetch_failed_consecutively"] = 0
+                
+                time_since_last_fetch = (current_loop_master_time - data_per_pair["last_candle_fetch_time"]).total_seconds()
                 required_interval = config_for_pair.get('refresh_interval_seconds', 60)
                 
                 if data_per_pair["big_data_collection_phase_active"]:
-                    active_cryptos_still_in_big_data_collection += 1
-                    tf_is_minute = 'm' in config_for_pair.get('timeframe','1h')
-                    required_interval = 60 if tf_is_minute else 120 # Fetch lebih sering saat big data (1 atau 2 menit)
+                    active_cryptos_still_in_big_data_collection +=1
+                    required_interval = 60 if 'm' in config_for_pair.get('timeframe','1h') else 120
                 
                 if time_since_last_fetch < required_interval:
                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval - time_since_last_fetch)
                     continue
                 
-                log_info(f"Memproses {pair_name_for_log} (Interval: {required_interval}s)...", pair_name=pair_name_for_log)
-                data_per_pair["last_candle_fetch_time"] = current_loop_time
-                num_candles_before_fetch = len(data_per_pair["all_candles_list"])
+                data_per_pair["last_candle_fetch_time"] = current_loop_master_time
                 
-                if data_per_pair["big_data_collection_phase_active"]: animated_text_display(f"\n--- BIG DATA {pair_name_for_log} ({num_candles_before_fetch}/{TARGET_BIG_DATA_CANDLES}) ---", color=AnsiColors.BOLD+AnsiColors.MAGENTA)
-                else: animated_text_display(f"\n--- LIVE {pair_name_for_log} ({current_loop_time.strftime('%H:%M:%S')}) | {num_candles_before_fetch} candles ---", color=AnsiColors.BOLD+AnsiColors.CYAN)
-
+                # Fetch update untuk pair individual (Logic sama seperti skrip Anda)
                 new_candles_batch = []
                 fetch_update_successful = False
-                limit_fetch_update = 3 # Untuk live, fetch beberapa candle terakhir
+                limit_fetch_update = 3 
                 if data_per_pair["big_data_collection_phase_active"]:
-                    needed_for_big_data = TARGET_BIG_DATA_CANDLES - num_candles_before_fetch
-                    if needed_for_big_data <=0 : 
-                        fetch_update_successful = True 
-                        limit_fetch_update = 3
-                    else: 
-                        limit_fetch_update = min(needed_for_big_data, CRYPTOCOMPARE_MAX_LIMIT)
+                    needed = TARGET_BIG_DATA_CANDLES - len(data_per_pair["all_candles_list"])
+                    limit_fetch_update = min(needed, CRYPTOCOMPARE_MAX_LIMIT) if needed > 0 else 3
                 
                 if limit_fetch_update > 0:
+                    # ... (logika fetch_candles dengan key switching, sama seperti di skrip Anda) ...
                     max_update_key_attempts = api_key_manager.total_keys() if api_key_manager.total_keys() > 0 else 1
                     update_key_attempts_done = 0
-                    original_api_key_index_for_this_update = api_key_manager.get_current_key_index()
-
                     while update_key_attempts_done < max_update_key_attempts and not fetch_update_successful:
                         current_api_key_update = api_key_manager.get_current_key()
-                        if not current_api_key_update:
-                            log_error(f"UPDATE: Semua API key habis (global) untuk {pair_name_for_log}.", pair_name=pair_name_for_log); break
-                        
-                        log_info(f"UPDATE: Mencoba fetch {limit_fetch_update} candle untuk {pair_name_for_log} dengan key index {api_key_manager.get_current_key_index()} (Attempt {update_key_attempts_done + 1}/{max_update_key_attempts})", pair_name=pair_name_for_log)
+                        if not current_api_key_update: break
                         try:
                             new_candles_batch = fetch_candles(config_for_pair['symbol'], config_for_pair['currency'], limit_fetch_update, config_for_pair['exchange'], current_api_key_update, config_for_pair['timeframe'], pair_name=pair_name_for_log)
-                            fetch_update_successful = True
-                            data_per_pair["data_fetch_failed_consecutively"] = 0 
-                            any_data_fetched_this_cycle = True
-                            if api_key_manager.get_current_key_index() != original_api_key_index_for_this_update:
-                                log_info(f"UPDATE: Fetch berhasil dengan key index {api_key_manager.get_current_key_index()} setelah retry untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
+                            fetch_update_successful = True; any_data_fetched_this_cycle = True
+                            data_per_pair["data_fetch_failed_consecutively"] = 0
                         except APIKeyError:
-                            log_warning(f"UPDATE: API Key (Idx {api_key_manager.get_current_key_index()}) gagal untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
                             data_per_pair["data_fetch_failed_consecutively"] +=1
-                            if not api_key_manager.switch_to_next_key():
-                                log_error(f"UPDATE: Gagal beralih, semua key habis untuk {pair_name_for_log}.", pair_name=pair_name_for_log); break
-                        except requests.exceptions.RequestException as e_req_upd:
-                            log_error(f"UPDATE: Error Jaringan {pair_name_for_log}: {e_req_upd}.", pair_name=pair_name_for_log); data_per_pair["data_fetch_failed_consecutively"] +=1; break 
-                        except Exception as e_gen_upd:
-                            log_exception(f"UPDATE: Error Umum {pair_name_for_log}: {e_gen_upd}.", pair_name=pair_name_for_log); data_per_pair["data_fetch_failed_consecutively"] +=1; break
-                        update_key_attempts_done += 1
-                else:
-                    fetch_update_successful = True
-                
-                if data_per_pair.get("data_fetch_failed_consecutively", 0) >= (api_key_manager.total_keys() or 1) +1:
-                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now() 
+                            if not api_key_manager.switch_to_next_key(): break
+                        except Exception: data_per_pair["data_fetch_failed_consecutively"] +=1; break
+                        update_key_attempts_done +=1
 
-                if not fetch_update_successful and limit_fetch_update > 0 :
-                     log_error(f"{AnsiColors.RED}Gagal mengambil update untuk {pair_name_for_log} setelah semua upaya di siklus ini.{AnsiColors.ENDC}", pair_name=pair_name_for_log)
-                     min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval)
-                     with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
-                     continue
+                if not fetch_update_successful and limit_fetch_update > 0:
+                     log_error(f"Gagal update {pair_name_for_log}.", pair_name=pair_name_for_log)
                 
-                if new_candles_batch:
+                if data_per_pair.get("data_fetch_failed_consecutively",0) >= (api_key_manager.total_keys() or 1)+1:
+                    data_per_pair["last_attempt_after_all_keys_failed"] = datetime.now()
+
+                if new_candles_batch: # Merge candles
                     merged_candles_dict = {c['timestamp']: c for c in data_per_pair["all_candles_list"]}
-                    newly_added_count_this_batch, updated_count_this_batch = 0,0
+                    added_count, updated_count = 0,0
                     for candle in new_candles_batch:
                         ts = candle['timestamp']
-                        if ts not in merged_candles_dict: merged_candles_dict[ts] = candle; newly_added_count_this_batch +=1
-                        elif merged_candles_dict[ts]['close'] != candle['close'] or merged_candles_dict[ts]['high'] != candle['high'] or merged_candles_dict[ts]['low'] != candle['low'] or merged_candles_dict[ts]['open'] != candle['open'] : 
-                            merged_candles_dict[ts] = candle; updated_count_this_batch +=1
-                    data_per_pair["all_candles_list"] = sorted(list(merged_candles_dict.values()), key=lambda c_sort: c_sort['timestamp'])
-                    if newly_added_count_this_batch + updated_count_this_batch > 0: 
-                        log_info(f"{newly_added_count_this_batch} candle baru, {updated_count_this_batch} diupdate untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
-                
-                if data_per_pair["big_data_collection_phase_active"]:
-                    if len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
-                        data_per_pair["big_data_collection_phase_active"] = False
-                        active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection -1) 
-                        log_info(f"{AnsiColors.GREEN}TARGET {TARGET_BIG_DATA_CANDLES} CANDLE TERCAPAI untuk {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
-                        log_info(f"{AnsiColors.HEADER}---------- MULAI LIVE ANALYSIS ({pair_name_for_log}) ----------{AnsiColors.ENDC}", pair_name=pair_name_for_log)
-                elif len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES + 200:
-                    data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-(TARGET_BIG_DATA_CANDLES + 100):]
+                        if ts not in merged_candles_dict: merged_candles_dict[ts] = candle; added_count +=1
+                        elif any(merged_candles_dict[ts][k] != candle[k] for k in ['open','high','low','close']):
+                            merged_candles_dict[ts] = candle; updated_count +=1
+                    data_per_pair["all_candles_list"] = sorted(list(merged_candles_dict.values()), key=lambda c: c['timestamp'])
+                    if added_count + updated_count > 0: log_info(f"{added_count} baru, {updated_count} diupdate untuk {pair_name_for_log}.", pair_name=pair_name_for_log)
 
-                min_len_for_logic_run_live = max(config_for_pair.get('lowliq_pattern_length', 2), config_for_pair.get('highliq_pattern_length', 2))
-                if len(data_per_pair["all_candles_list"]) >= min_len_for_logic_run_live:
-                    log_debug(f"Menjalankan analisis likuiditas untuk {pair_name_for_log}...", pair_name=pair_name_for_log)
-                    data_per_pair["liquidity_analysis_state"] = analyze_liquidity_and_alert(
-                         data_per_pair["all_candles_list"], 
-                         config_for_pair, 
-                         data_per_pair["liquidity_analysis_state"], 
-                         global_settings_dict,
-                         is_warmup=False
-                    )
-                else:
-                    log_debug(f"Belum cukup data ({len(data_per_pair['all_candles_list'])}/{min_len_for_logic_run_live}) untuk analisis {pair_name_for_log}", pair_name=pair_name_for_log)
+                if data_per_pair["big_data_collection_phase_active"] and len(data_per_pair["all_candles_list"]) >= TARGET_BIG_DATA_CANDLES:
+                    data_per_pair["big_data_collection_phase_active"] = False
+                    active_cryptos_still_in_big_data_collection = max(0, active_cryptos_still_in_big_data_collection - 1)
+                    log_info(f"{AnsiColors.GREEN}Target data tercapai {pair_name_for_log}!{AnsiColors.ENDC}", pair_name=pair_name_for_log)
+                elif len(data_per_pair["all_candles_list"]) > TARGET_BIG_DATA_CANDLES + 200: # Truncate
+                    data_per_pair["all_candles_list"] = data_per_pair["all_candles_list"][-(TARGET_BIG_DATA_CANDLES + 100):]
                 
                 min_overall_next_refresh_seconds = min(min_overall_next_refresh_seconds, required_interval)
                 with lock_ref: shared_dm_ref[pair_id] = copy.deepcopy(data_per_pair)
-            
+
+            # --- PROSES PELACAK AGREGRASI ---
+            if agg_settings.get("enabled_aggregation_tracker", False) and valid_crypto_ids_for_agg:
+                agg_timeframe_seconds = timeframe_to_seconds(agg_settings.get("aggregation_timeframe", "1h"))
+                
+                # Cek apakah sudah waktunya membuat bar agregasi baru
+                if (current_loop_master_time - last_aggregation_calc_time).total_seconds() >= agg_timeframe_seconds:
+                    last_aggregation_calc_time = current_loop_master_time # Atau timestamp pembulatan timeframe
+                    
+                    # Bulatkan timestamp ke awal periode timeframe agregasi
+                    # Misal agg_tf = 1h, current_time = 10:35 -> agg_ts = 10:00
+                    # Misal agg_tf = 15m, current_time = 10:37 -> agg_ts = 10:30
+                    current_agg_ts_seconds = int(current_loop_master_time.timestamp() / agg_timeframe_seconds) * agg_timeframe_seconds
+                    current_aggregation_bar_timestamp = datetime.fromtimestamp(current_agg_ts_seconds)
+
+                    prices_to_average = []
+                    constituent_names_for_alert = [] # Untuk pesan alert
+
+                    with lock_ref: # Akses data pair individual yang sudah diupdate
+                        for crypto_info_agg in valid_crypto_ids_for_agg:
+                            pair_id_agg = crypto_info_agg["id"]
+                            if pair_id_agg in shared_dm_ref and shared_dm_ref[pair_id_agg]["all_candles_list"]:
+                                # Ambil candle terakhir dari pair individual ini
+                                # Untuk kesederhanaan, kita ambil saja close terakhirnya.
+                                # Idealnya, kita akan mencari candle yang cocok dengan `current_aggregation_bar_timestamp`
+                                latest_candle_individual = shared_dm_ref[pair_id_agg]["all_candles_list"][-1]
+                                prices_to_average.append(latest_candle_individual['close'])
+                                constituent_names_for_alert.append(crypto_info_agg["name"].split(" ")[0]) # Ambil BTC/USD dari "BTC/USD (1h)"
+                            else:
+                                log_warning(f"Tidak ada data candle untuk {crypto_info_agg['name']} saat kalkulasi agregasi.", "AGGREGATOR")
+                    
+                    if prices_to_average:
+                        aggregated_value = sum(prices_to_average) / len(prices_to_average)
+                        log_info(f"Nilai Agregasi Baru ({current_aggregation_bar_timestamp.strftime('%H:%M:%S')}): {aggregated_value:.4f} (dari {len(prices_to_average)} kripto)", "AGGREGATOR")
+                        
+                        # Tambahkan ke series agregasi, pastikan timestamp unik jika ada pembulatan
+                        # Cek apakah bar dengan timestamp ini sudah ada (jika loop cepat dan pembulatan sama)
+                        add_new_agg_bar = True
+                        if aggregated_close_series and aggregated_close_series[-1]['timestamp'] == current_aggregation_bar_timestamp:
+                            aggregated_close_series[-1]['value'] = aggregated_value # Update nilai jika timestamp sama
+                            add_new_agg_bar = False
+                        
+                        if add_new_agg_bar:
+                            aggregated_close_series.append({'timestamp': current_aggregation_bar_timestamp, 'value': aggregated_value})
+
+                        # Jaga ukuran series agregasi
+                        max_agg_series_len = agg_settings.get("lookback_bars_drop_agg", 5) + 50 # Buffer
+                        if len(aggregated_close_series) > max_agg_series_len:
+                            aggregated_close_series = aggregated_close_series[-max_agg_series_len:]
+                        
+                        # Update data agregasi untuk chart
+                        with lock_ref:
+                            shared_agg_data_ref["aggregated_series_for_chart"] = copy.deepcopy(aggregated_close_series)
+
+                        # --- Logika Deteksi Penurunan pada Data Agregasi ---
+                        lookback_agg = agg_settings.get("lookback_bars_drop_agg", 5)
+                        drop_threshold_pct_agg = agg_settings.get("drop_percentage_threshold_agg", 3.0)
+
+                        if len(aggregated_close_series) > lookback_agg : # Perlu lookback_agg + 1 data point
+                            current_agg_close = aggregated_close_series[-1]['value']
+                            price_at_lookback_agg = aggregated_close_series[-1 - lookback_agg]['value'] # -1 adalah current, -1-lookback adalah N bar lalu
+
+                            is_significant_drop_now_agg = False
+                            percentage_drop_actual = 0
+                            if price_at_lookback_agg > 0: # Hindari ZeroDivisionError
+                                percentage_drop_actual = ((current_agg_close - price_at_lookback_agg) / price_at_lookback_agg) * 100
+                                if current_agg_close < (price_at_lookback_agg * (1 - drop_threshold_pct_agg / 100.0)):
+                                    is_significant_drop_now_agg = True
+                            
+                            # Sinyal non-repainting (hanya alert sekali saat kondisi pertama kali terpenuhi)
+                            actual_drop_signal_agg = is_significant_drop_now_agg and not is_significant_drop_previously_agg
+                            
+                            if actual_drop_signal_agg:
+                                time_since_last_alert = (current_loop_master_time - last_drop_alert_time_agg).total_seconds()
+                                cooldown_agg = agg_settings.get("alert_cooldown_seconds_agg", 300)
+                                if time_since_last_alert >= cooldown_agg:
+                                    alert_title = f"ALERT: INDEX AGREGRASI TURUN SIGNIFIKAN!"
+                                    alert_msg_console = (
+                                        f"{AnsiColors.AGG_DROP_ALERT_BG}"
+                                        f"Penurunan {abs(percentage_drop_actual):.2f}% pada Indeks Agregasi! "
+                                        f"(dari {price_at_lookback_agg:.4f} ke {current_agg_close:.4f} dalam {lookback_agg} bar agregasi). "
+                                        f"Kripto: {', '.join(constituent_names_for_alert)} @ {current_aggregation_bar_timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+                                        f"{AnsiColors.ENDC}"
+                                    )
+                                    alert_msg_termux = (
+                                        f"Penurunan {abs(percentage_drop_actual):.2f}% pada Indeks Agregasi! "
+                                        f"Val: {current_agg_close:.3f} (was {price_at_lookback_agg:.3f}). "
+                                        f"Bars: {lookback_agg}. "
+                                        f"Kripto: {', '.join(constituent_names_for_alert)}."
+                                    )
+                                    log_warning(alert_msg_console, "AGGREGATOR_DROP")
+                                    send_termux_notification(alert_title, alert_msg_termux, global_settings_dict, pair_name_for_log="AGG_DROP")
+                                    play_notification_sound()
+                                    last_drop_alert_time_agg = current_loop_master_time
+                                    
+                                    # Simpan info drop untuk chart
+                                    with lock_ref:
+                                        shared_agg_data_ref["last_significant_drop_info_for_chart"] = {
+                                            "timestamp": current_aggregation_bar_timestamp,
+                                            "value_at_drop": current_agg_close,
+                                            "percentage": percentage_drop_actual
+                                        }
+                                else:
+                                    log_info(f"Sinyal penurunan terdeteksi TAPI masih dalam cooldown. Drop: {abs(percentage_drop_actual):.2f}%", "AGGREGATOR_DROP")
+                            
+                            is_significant_drop_previously_agg = is_significant_drop_now_agg
+                        else:
+                             log_debug(f"Belum cukup data agregasi ({len(aggregated_close_series)}/{lookback_agg + 1}) untuk cek penurunan.", "AGGREGATOR")
+                    else:
+                        log_warning("Tidak ada harga valid untuk dihitung rata-rata agregasi.", "AGGREGATOR")
+
+            # --- Sleep Logic ---
             sleep_duration = 15 
             if not any_data_fetched_this_cycle and api_key_manager.get_current_key() is None: sleep_duration = 3600 
             elif active_cryptos_still_in_big_data_collection > 0: sleep_duration = 10
             elif min_overall_next_refresh_seconds != float('inf') and min_overall_next_refresh_seconds > 0:
                 sleep_duration = max(1, int(min_overall_next_refresh_seconds))
             
-            if sleep_duration > 0 : show_spinner(sleep_duration, f"Menunggu {int(sleep_duration)}s ({time.strftime('%H:%M:%S')})...")
-            else: time.sleep(0.1)
+            # Jika agregasi aktif, pastikan sleep tidak lebih lama dari interval agregasi berikutnya
+            if agg_settings.get("enabled_aggregation_tracker", False):
+                time_to_next_agg_calc = agg_timeframe_seconds - (current_loop_master_time - last_aggregation_calc_time).total_seconds()
+                if time_to_next_agg_calc > 0 :
+                     sleep_duration = min(sleep_duration, time_to_next_agg_calc)
+
+            sleep_duration = max(1, int(sleep_duration)) # Minimal 1 detik sleep
+            show_spinner(sleep_duration, f"Menunggu {sleep_duration}s ({time.strftime('%H:%M:%S')})...")
 
     except KeyboardInterrupt: animated_text_display(f"\n{AnsiColors.ORANGE}Proses dihentikan.{AnsiColors.ENDC}",color=AnsiColors.ORANGE)
-    except Exception as e_main_loop: log_exception(f"{AnsiColors.RED}Error loop utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM_ANALYSIS_LOOP")
-    finally: animated_text_display(f"{AnsiColors.HEADER}=========== EXORA VULCAN FUTURES (Python) STOP ==========={AnsiColors.ENDC}",color=AnsiColors.HEADER); input("Tekan Enter untuk kembali ke menu utama...")
+    except Exception as e_main_loop: log_exception(f"{AnsiColors.RED}Error loop utama: {e_main_loop}{AnsiColors.ENDC}", pair_name="SYSTEM_LOOP")
+    finally: animated_text_display(f"{AnsiColors.HEADER}=========== EXORA AGGREGATOR (Python) STOP ==========={AnsiColors.ENDC}",color=AnsiColors.HEADER); input("Tekan Enter untuk kembali...")
 
 
-# --- MENU UTAMA (Dirombak untuk Exora Vulcan Futures) ---
+# --- MENU UTAMA ---
 def main_menu():
     settings = load_settings()
-    # Start Flask server in a separate thread if not already running
-    is_flask_running = any(t.name == "FlaskServerThreadVulcan" for t in threading.enumerate()) # Unique name
+    is_flask_running = any(t.name == "FlaskServerThreadAggregator" for t in threading.enumerate())
     if not is_flask_running:
-        flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True, name="FlaskServerThreadVulcan")
+        flask_thread = threading.Thread(target=run_flask_server_thread, daemon=True, name="FlaskServerThreadAggregator")
         flask_thread.start()
-        time.sleep(1) # Give flask a moment to start
+        time.sleep(1)
     else:
-        log_info("Flask server Exora Vulcan Futures sudah berjalan di thread lain.", "SYSTEM_CHART")
+        log_info("Flask server Exora Aggregator sudah berjalan.", "SYSTEM_CHART")
 
     while True:
         clear_screen_animated()
-        animated_text_display("========= Exora Vulcan Futures (Deteksi Likuiditas) =========", color=AnsiColors.HEADER)
-        pick_title_main = ""
-        active_cfgs = [c for c in settings.get("cryptos",[]) if c.get("enabled",True)]
-        if active_cfgs: pick_title_main += f"--- Crypto Aktif ({len(active_cfgs)}) ---\n" + "".join([f"  {i+1}. {c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe','?')})\n" for i,c in enumerate(active_cfgs)])
-        else: pick_title_main += "Tidak ada konfigurasi crypto aktif.\n"
+        settings = load_settings() # Selalu load settings terbaru saat kembali ke menu
+        animated_text_display("========= Exora Aggregator (Price Index & Drop Alert) =========", color=AnsiColors.HEADER)
+        
+        agg_s_main = settings.get("aggregation_settings", {})
+        pick_title_main = f"Status Pelacak Agregasi: {AnsiColors.BOLD}{'Aktif' if agg_s_main.get('enabled_aggregation_tracker') else 'Nonaktif'}{AnsiColors.ENDC}\n"
+
+        active_cfgs_main = [c for c in settings.get("cryptos",[]) if c.get("enabled",True)]
+        if active_cfgs_main: pick_title_main += f"--- Crypto Individu Aktif ({len(active_cfgs_main)}) ---\n" + "".join([f"  {i+1}. {c.get('symbol','?')}-{c.get('currency','?')} ({c.get('timeframe','?')})\n" for i,c in enumerate(active_cfgs_main[:3])]) # Tampilkan maks 3
+        else: pick_title_main += "Tidak ada konfigurasi crypto individu aktif.\n"
+        if len(active_cfgs_main) > 3: pick_title_main += "  ... (dan lainnya)\n"
         
         api_s_main = settings.get("api_settings", {})
         pk_disp = api_s_main.get('primary_key','N/A'); pk_disp = ("..."+pk_disp[-5:]) if len(pk_disp)>10 and pk_disp not in ["YOUR_PRIMARY_KEY", "N/A"] else pk_disp
-        pick_title_main += f"-----------------------------------------------\nPrimary API Key: {pk_disp}\nChart Server: http://localhost:5001\n-----------------------------------------------\nPilih Opsi:"
+        pick_title_main += f"-----------------------------------------------\nPrimary API Key: {pk_disp}\nChart Server: http://localhost:5002\n-----------------------------------------------\nPilih Opsi:"
         
         main_opts = ["Mulai Analisa Realtime", "Pengaturan", "Keluar"]
-        options_for_pick_main = [opt[:70] + ('...' if len(opt) > 70 else '') for opt in main_opts]
         try:
-            _, main_idx = pick(options_for_pick_main, pick_title_main, indicator='=>')
-        except Exception as e_pick_main:
-            log_warning(f"Pick library error: {e_pick_main}. Gunakan input angka.")
-            print(pick_title_main)
-            for i, opt_disp_main in enumerate(options_for_pick_main): print(f"{i}. {opt_disp_main}")
-            try:
-                main_idx = int(input("Masukkan nomor pilihan: "))
-                if not (0 <= main_idx < len(options_for_pick_main)): raise ValueError("Diluar range")
-            except ValueError:
-                print("Input tidak valid."); time.sleep(1); continue
+            _, main_idx = pick(main_opts, pick_title_main, indicator='=>')
+        except Exception: # Fallback jika pick gagal
+            print(pick_title_main); [print(f"{i}. {o}") for i,o in enumerate(main_opts)]
+            try: main_idx = int(input("Pilihan: ")); assert 0 <= main_idx < len(main_opts)
+            except: print("Input tidak valid."); time.sleep(1); continue
 
         if main_idx == 0: 
-            settings = load_settings() # Reload settings before starting
-            start_analysis_loop(settings, shared_crypto_data_manager, shared_data_lock)
-        elif main_idx == 1: settings = settings_menu(settings)
-        elif main_idx == 2: log_info("Aplikasi Exora Vulcan Futures ditutup."); break
+            start_analysis_loop(settings, shared_crypto_data_manager, shared_data_lock, shared_aggregation_data)
+        elif main_idx == 1: settings = settings_menu(settings) # settings_menu akan save sendiri
+        elif main_idx == 2: log_info("Aplikasi Exora Aggregator ditutup."); break
     animated_text_display("Terima kasih!", color=AnsiColors.MAGENTA); show_spinner(0.5, "Exiting")
 
 if __name__ == "__main__":
@@ -1319,10 +1363,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt: clear_screen_animated(); animated_text_display("Aplikasi dihentikan paksa.", color=AnsiColors.ORANGE)
     except Exception as e_global: 
         clear_screen_animated()
-        print(f"{AnsiColors.RED}{AnsiColors.BOLD}ERROR KRITIKAL TIDAK TERDUGA:{AnsiColors.ENDC}")
+        print(f"{AnsiColors.RED}{AnsiColors.BOLD}ERROR KRITIKAL GLOBAL:{AnsiColors.ENDC}")
         print(f"{AnsiColors.RED}{str(e_global)}{AnsiColors.ENDC}")
         log_exception("MAIN CRITICAL ERROR:",pair_name="SYS_CRIT")
         input("Tekan Enter untuk keluar...")
     finally: 
-        sys.stdout.flush()
-        sys.stderr.flush()
+        sys.stdout.flush(); sys.stderr.flush()
