@@ -12,7 +12,8 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 OKX_API_URL = "https://www.okx.com/api/v5"
-REFRESH_INTERVAL_SECONDS = 5
+# DIUBAH: Interval refresh sekarang menjadi 3 detik untuk data yang lebih real-time
+REFRESH_INTERVAL_SECONDS = 3
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -42,9 +43,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("     Strategic AI Analyst (Local AI + EMA Logic)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (Real-time Refresh)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI ini menggunakan RSI & EMA (9, 50, 100) untuk analisis.", Fore.YELLOW)
+    print_colored(f"Analisis Cepat: Refresh data setiap {REFRESH_INTERVAL_SECONDS} detik.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
@@ -112,9 +113,7 @@ class LocalAI:
     def calculate_ema(self, data, period):
         if len(data) < period: return None
         multiplier = 2 / (period + 1)
-        # Seed EMA dengan SMA dari periode pertama
         ema = sum(d['close'] for d in data[:period]) / period
-        # Hitung sisa EMA
         for d in data[period:]:
             ema = (d['close'] - ema) * multiplier + ema
         return ema
@@ -134,7 +133,6 @@ class LocalAI:
         return 100 - (100 / (1 + rs))
 
     def get_market_analysis(self, candle_data):
-        # Membutuhkan setidaknya 100 candle untuk EMA 100
         if len(candle_data) < 100: return None
         
         ema9 = self.calculate_ema(candle_data, 9)
@@ -142,7 +140,6 @@ class LocalAI:
         ema100 = self.calculate_ema(candle_data, 100)
         rsi = self.calculate_rsi(candle_data, 14)
         
-        # Tentukan Bias berdasarkan "Urutan Sempurna" EMA
         bias = "RANGING"
         if ema9 > ema50 and ema50 > ema100:
             bias = "BULLISH_STRONG"
@@ -158,11 +155,8 @@ class LocalAI:
         for loss in losing_trades[-3:]:
             past_snapshot = loss.get("entry_snapshot")
             if not past_snapshot: continue
-
-            # Sistem belajar sekarang membandingkan bias tren EMA
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
-            
             if bias_same and rsi_similar:
                 print_colored(f"[LEARNING] Menghindari posisi karena mirip dengan loss trade #{loss['id']}", Fore.MAGENTA)
                 return True
@@ -178,7 +172,6 @@ class LocalAI:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
             trade_type = open_position.get('type')
             
-            # Kondisi Close jika ada tanda pembalikan (misalnya, RSI ekstrim atau harga menyebrang EMA penting)
             if trade_type == 'LONG' and (analysis['rsi'] > 78 or current_price < analysis['ema9']):
                 return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di bawah EMA9)."}
             if trade_type == 'SHORT' and (analysis['rsi'] < 22 or current_price > analysis['ema9']):
@@ -188,20 +181,15 @@ class LocalAI:
         if self.check_for_repeated_mistake(analysis):
             return {"action": "HOLD", "reason": "Menghindari pengulangan kesalahan masa lalu."}
 
-        # --- SNIPER ENTRY LOGIC DENGAN EMA ---
-        bias = analysis['bias']
-        rsi = analysis['rsi']
+        bias = analysis['bias']; rsi = analysis['rsi']
         
-        # Setup LONG: Tren Bullish Kuat + Pullback ke area dinamis
         if bias == "BULLISH_STRONG" and rsi < 55 and current_price > analysis['ema50']:
              return {"action": "BUY", "reason": f"Tren Bullish Kuat (EMA selaras) & RSI pullback ({rsi:.0f}).", "snapshot": analysis}
         
-        # Setup SHORT: Tren Bearish Kuat + Rally ke area dinamis
         if bias == "BEARISH_STRONG" and rsi > 45 and current_price < analysis['ema50']:
             return {"action": "SELL", "reason": f"Tren Bearish Kuat (EMA selaras) & RSI rally ({rsi:.0f}).", "snapshot": analysis}
             
         return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {bias}, RSI: {rsi:.0f}."}
-
 
 # --- LOGIKA TRADING UTAMA ---
 def calculate_pnl(entry_price, current_price, trade_type):
