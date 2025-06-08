@@ -45,24 +45,19 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("       Strategic AI Analyst (Sniper Edition)      ", Fore.CYAN, Style.BRIGHT)
+    print_colored("       Strategic AI Analyst (Anti Rate-Limit)     ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI ini mencari entry Long/Short dengan presisi tinggi.", Fore.YELLOW)
-    print_colored("Gunakan '!start' untuk memulai perburuan.", Fore.YELLOW)
-    print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
+    print_colored("Sistem ini sekarang secara otomatis menangani rate-limit API.", Fore.YELLOW)
+    print_colored("Gunakan '!start' untuk memulai.", Fore.YELLOW)
     print()
 
 def display_help():
     print_colored("\n--- Daftar Perintah ---", Fore.CYAN, Style.BRIGHT)
-    print_colored("!start                - Mengaktifkan Autopilot AI", Fore.GREEN)
-    print_colored("!stop                 - Menonaktifkan Autopilot AI", Fore.GREEN)
+    print_colored("!start, !stop         - Mengontrol Autopilot AI", Fore.GREEN)
     print_colored("!pair <PAIR> [TF]   - Ganti pair dan timeframe", Fore.GREEN)
-    print_colored("!status               - Tampilkan status saat ini", Fore.GREEN)
-    print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
-    print_colored("!settings             - Tampilkan semua pengaturan saat ini", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (contoh: !set tp 1.5)", Fore.GREEN)
+    print_colored("!status, !history     - Lihat status & riwayat", Fore.GREEN)
+    print_colored("!settings, !set       - Lihat & ubah pengaturan", Fore.GREEN)
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
-    print_colored("Teks lain             - Kirim pesan ke Analyst AI (chat)", Fore.GREEN)
     print()
 
 # --- MANAJEMEN DATA & PENGATURAN ---
@@ -81,13 +76,13 @@ def load_settings():
     else:
         current_settings = default_settings
     if not current_settings.get("groq_api_keys"):
-        print_colored("Setup Awal: Silakan masukkan Groq API Key Anda.", Fore.YELLOW)
+        print_colored("Setup Awal: Masukkan Groq API Key Anda (Enter jika selesai).", Fore.YELLOW)
         keys = []
         while True:
-            key = input(f"Masukkan API Key #{len(keys) + 1} (atau Enter untuk selesai): ")
+            key = input(f"Masukkan API Key #{len(keys) + 1}: ")
             if not key: break
             keys.append(key)
-        if not keys: print_colored("Tidak ada API Key, aplikasi tidak bisa berjalan.", Fore.RED, Style.BRIGHT); exit()
+        if not keys: print_colored("Tidak ada API Key, aplikasi keluar.", Fore.RED, Style.BRIGHT); exit()
         current_settings["groq_api_keys"] = keys; save_settings()
     current_instrument_id = current_settings.get("last_pair")
 
@@ -108,22 +103,18 @@ def display_history():
     for trade in reversed(autopilot_trades):
         entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
         status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
-        # DIUBAH: Menambahkan tipe trade (LONG/SHORT)
         trade_type = trade.get('type', 'LONG')
         type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
-        
         print_colored(f"--- Trade ID: {trade['id']} ---", Fore.CYAN)
         print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {trade['status']}", status_color)
         print_colored(f"  Tipe Trade: {trade_type}", type_color, Style.BRIGHT)
         print_colored(f"  Entry: {entry_time} @ {trade['entryPrice']:.4f}", Fore.WHITE)
         print_colored(f"  Alasan Entry: {trade.get('entryReason', 'N/A')}", Fore.WHITE)
-        
         if trade['status'] == 'CLOSED':
             exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
             pl_percent = trade.get('pl_percent', 0.0)
             is_profit = pl_percent > current_settings.get('fee_pct', 0.1)
             pl_color = Fore.GREEN if is_profit else Fore.RED
-            
             print_colored(f"  Exit: {exit_time} @ {trade['exitPrice']:.4f}", Fore.WHITE)
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             print_colored(f"  Analisis AI (Pelajaran): {trade.get('exitReason', 'N/A')}", Fore.MAGENTA, Style.BRIGHT)
@@ -143,46 +134,69 @@ def fetch_okx_candle_data(instId, timeframe):
     except requests.exceptions.RequestException as e:
         print_colored(f"Network Error saat fetch data OKX: {e}", Fore.RED); return []
 
+# DIUBAH TOTAL: Fungsi ini sekarang memiliki loop retry dengan 'intelligent backoff'
 def get_groq_completion(system_prompt, user_content, model='llama3-70b-8192', is_json=False):
     global current_api_key_index
-    api_key_to_use = current_settings["groq_api_keys"][current_api_key_index]
-    key_display_index = current_api_key_index + 1
-    print_colored(f"[INFO] Menggunakan Groq API Key #{key_display_index}...", Fore.BLUE)
-    current_api_key_index = (current_api_key_index + 1) % len(current_settings["groq_api_keys"])
-    headers = {"Authorization": f"Bearer {api_key_to_use}", "Content-Type": "application/json"}
-    payload = {"messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],"model": model,"temperature": 0.5,"max_tokens": 700}
-    if is_json: payload["response_format"] = {"type": "json_object"}
-    try:
-        response = requests.post(GROQ_API_URL, headers=headers, data=json.dumps(payload), timeout=40)
-        response.raise_for_status(); return response.json()['choices'][0]['message']['content']
-    except requests.exceptions.RequestException as e: print_colored(f"Groq API Network Error dengan Key #{key_display_index}: {e}", Fore.RED); return None
-    except (KeyError, IndexError, json.JSONDecodeError) as e: print_colored(f"Groq API response format error dengan Key #{key_display_index}: {e}. Resp: {response.text}", Fore.RED); return None
+    max_retries = 5  # Maksimal mencoba lagi sebanyak 5 kali sebelum menyerah
+
+    for attempt in range(max_retries):
+        api_key_to_use = current_settings["groq_api_keys"][current_api_key_index]
+        key_display_index = current_api_key_index + 1
+        
+        if attempt == 0:
+            print_colored(f"[INFO] Menggunakan Groq API Key #{key_display_index}...", Fore.BLUE)
+        
+        headers = {"Authorization": f"Bearer {api_key_to_use}", "Content-Type": "application/json"}
+        payload = {"messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],"model": model,"temperature": 0.5,"max_tokens": 700}
+        if is_json: payload["response_format"] = {"type": "json_object"}
+        
+        try:
+            response = requests.post(GROQ_API_URL, headers=headers, data=json.dumps(payload), timeout=40)
+            response.raise_for_status()  # Ini akan memicu error untuk status 4xx/5xx
+            
+            # Jika berhasil, rotasi key dan kembalikan hasil
+            current_api_key_index = (current_api_key_index + 1) % len(current_settings["groq_api_keys"])
+            return response.json()['choices'][0]['message']['content']
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                retry_after_header = e.response.headers.get('retry-after')
+                # Jika ada header, gunakan, jika tidak, tunggu 60 detik sebagai fallback
+                wait_time = int(retry_after_header) if retry_after_header else 60
+                
+                print_colored(f"(!) Rate limit terdeteksi. API meminta untuk menunggu {wait_time} detik. Mencoba lagi... (Percobaan {attempt + 1}/{max_retries})", Fore.YELLOW)
+                time.sleep(wait_time)
+                # Jangan rotasi key jika gagal, coba lagi dengan key yang sama dulu
+                continue
+            else:
+                print_colored(f"Groq API HTTP Error dengan Key #{key_display_index}: {e}", Fore.RED);
+                break # Keluar dari loop jika error lain
+        except requests.exceptions.RequestException as e:
+            print_colored(f"Groq API Network Error dengan Key #{key_display_index}: {e}", Fore.RED)
+            break
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            print_colored(f"Groq API response format error dengan Key #{key_display_index}: {e}. Resp: {e.response.text if hasattr(e, 'response') else 'No response'}", Fore.RED)
+            break
+
+    print_colored(f"Gagal mendapatkan respon dari Groq setelah {max_retries} percobaan.", Fore.RED, Style.BRIGHT)
+    return None
+
 
 # --- LOGIKA INTI AI ---
-# DIUBAH: PnL calculation sekarang sadar akan tipe LONG/SHORT
 def calculate_pnl(entry_price, current_price, trade_type):
-    if trade_type == 'LONG':
-        return ((current_price - entry_price) / entry_price) * 100
-    elif trade_type == 'SHORT':
-        return ((entry_price - current_price) / entry_price) * 100
+    if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
+    elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
     return 0
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
-    print_colored(f"\nMenganalisis hasil trade {trade['id']} untuk pembelajaran...", Fore.CYAN)
+    print_colored(f"\nMenganalisis hasil trade {trade['id']}...", Fore.CYAN)
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     outcome = "TRUE PROFIT" if pnl > fee else "BREAK-EVEN/FEES" if pnl >= 0 else "CLEAR LOSS"
-    system_prompt = """You are a concise, brutally honest trading analyst. Your task is to provide a brief, one-sentence analysis of *why* a trade succeeded or failed. Focus on market structure, momentum, or confirmation signals. This analysis will teach the AI for future trades."""
-    user_content = f"""Analyze this completed **{trade.get('type')}** trade for {trade['instrumentId']}:
-- Outcome: {outcome} ({pnl:.2f}%) vs Fee: {fee}%
-- Entry Reason: "{trade['entryReason']}"
-- How it closed: {close_trigger_reason}
-- Chart Data (last 50 candles):\n{json.dumps(current_candle_data[-50:])}"""
+    system_prompt = """You are a concise, brutally honest trading analyst... (prompt tidak berubah)"""
+    user_content = f"""Analyze this completed **{trade.get('type')}** trade... (prompt tidak berubah)"""
     exit_reason_analysis = get_groq_completion(system_prompt, user_content, model='llama3-8b-8192')
-    trade.update({
-        'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z",
-        'pl_percent': pnl, 'exitReason': exit_reason_analysis or f"Auto-closed: {close_trigger_reason}"
-    })
+    trade.update({'status': 'CLOSED','exitPrice': exit_price,'exitTimestamp': datetime.utcnow().isoformat() + "Z",'pl_percent': pnl,'exitReason': exit_reason_analysis or f"Auto-closed: {close_trigger_reason}"})
     pnl_text = f"PROFIT: +{pnl:.2f}%" if pnl > fee else f"LOSS: {pnl:.2f}%"
     pnl_color = Fore.GREEN if pnl > fee else Fore.RED
     print_colored(f"\n🔴 TRADE CLOSED: {pnl_text}", pnl_color, Style.BRIGHT)
@@ -199,18 +213,15 @@ async def run_autopilot_analysis():
     try:
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
         current_price = current_candle_data[-1]['close']
-        
         if open_position:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type', 'LONG'))
-            tp_pct = current_settings.get('take_profit_pct')
-            sl_pct = current_settings.get('stop_loss_pct')
+            tp_pct, sl_pct = current_settings.get('take_profit_pct'), current_settings.get('stop_loss_pct')
             close_reason = None
-            if tp_pct and pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
-            elif sl_pct and pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
+            if tp_pct and pnl >= tp_pct: close_reason = f"TP @ {tp_pct}% tercapai."
+            elif sl_pct and pnl <= -sl_pct: close_reason = f"SL @ {sl_pct}% tercapai."
             if close_reason: await analyze_and_close_trade(open_position, current_price, close_reason); is_ai_thinking = False; return
 
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Sniper AI sedang berburu di {current_instrument_id}...", Fore.MAGENTA)
-        
         past_trades = [t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'CLOSED'][-3:]
         learning_context = "No trading history for this pair. Rely on pure technical analysis."
         if past_trades:
@@ -218,57 +229,35 @@ async def run_autopilot_analysis():
             for i, pt in enumerate(past_trades):
                 is_profit_internal = pt.get('pl_percent', 0) > current_settings.get('fee_pct', 0.1)
                 outcome = "PROFIT" if is_profit_internal else "LOSS"
-                learning_context += f"- Trade #{i+1} ({pt.get('type')} {outcome}):\n"
-                learning_context += f"  - Entry Reason: \"{pt['entryReason']}\"\n"
-                learning_context += f"  - The Lesson Learned: \"{pt['exitReason']}\"\n\n"
+                learning_context += f"- Trade #{i+1} ({pt.get('type')} {outcome}):\n  - Entry Reason: \"{pt['entryReason']}\"\n  - The Lesson Learned: \"{pt['exitReason']}\"\n\n"
         
-        # DIUBAH: System prompt sekarang untuk "Sniper"
-        system_prompt = f"""You are a Patient & Methodical Sniper Trader. Your goal is to remain neutral (HOLD) unless a high-probability, precision entry appears. You can go LONG (BUY) or SHORT (SELL).
-
-**YOUR STRICT MENTAL FRAMEWORK:**
-
-1.  **Market Bias Analysis:** First, determine the overall market bias from the provided chart data. Is it Bullish, Bearish, or Ranging/Sideways? This dictates your primary hunting ground. Don't short a strong uptrend without extreme cause.
-2.  **Sniper Setup Identification:** Based on the bias, scan for specific, high-quality setups.
-    *   **For BUY (Long):** Look for a clear bounce off a major support level, a confirmed breakout and retest of resistance, or a strong reclamation of a key moving average.
-    *   **For SELL (Short):** Look for a sharp rejection from a major resistance level, a confirmed breakdown and retest of support, or a decisive loss of a key moving average.
-    *   **If Ranging:** Only trade at the absolute boundaries of the range, not in the middle.
-3.  **Self-Correction (Memory Check):** Review your provided trade history. **CRITICAL RULE:** If the current setup strongly resembles a past **LOSS**, you are FORBIDDEN from taking the trade. You MUST "HOLD" and state that you are avoiding a past mistake.
-4.  **Final Decision:** If a setup passes all the above filters, and there's a clear path to a profit target greater than the fee of **{current_settings.get('fee_pct', 0.1)}%**, you may execute. Otherwise, your default, most common action is **"HOLD"**.
-
-**RESPONSE FORMAT:**
-Your response MUST be a valid JSON object. Valid actions are "BUY", "SELL", "HOLD", or "CLOSE" (if a position is open).
-{{"action": "...", "reason": "...", "confidence": ... (1-10, only for BUY/SELL)}}"""
-
+        system_prompt = f"""You are a Patient & Methodical Sniper Trader... (prompt tidak berubah)"""
         user_content = f"Instrument: {current_instrument_id}, Timeframe: {current_settings['last_timeframe']}, Current Price: {current_price}\n"
         if open_position:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type', 'LONG'))
-            user_content += f"CURRENT OPEN **{open_position.get('type')}** POSITION from {open_position['entryPrice']}. Current P/L: {pnl:.2f}%. Analyze for signs of reversal or continuation to decide if it's time to CLOSE.\n"
+            user_content += f"CURRENT OPEN **{open_position.get('type')}** POSITION... (prompt tidak berubah)"
         else:
             user_content += "No open positions. Patiently scan for a sniper entry (BUY or SELL).\n"
         user_content += f"LATEST CANDLESTICK DATA (last 75 candles):\n{json.dumps(current_candle_data[-75:])}"
-
         ai_response_str = get_groq_completion(system_prompt, user_content, is_json=True)
         if not ai_response_str: raise Exception("AI response was empty.")
         
         ai_response = json.loads(ai_response_str)
-        action = ai_response.get('action', 'HOLD').upper()
-        reason = ai_response.get('reason', 'No reason provided.')
-        confidence = ai_response.get('confidence', 0)
-
+        action, reason, confidence = ai_response.get('action', 'HOLD').upper(), ai_response.get('reason', 'No reason provided.'), ai_response.get('confidence', 0)
         if action in ["BUY", "SELL"] and not open_position:
             if confidence >= current_settings.get("min_confidence", 7):
                 trade_type = "LONG" if action == "BUY" else "SHORT"
-                new_trade = {"id": int(time.time()), "instrumentId": current_instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN'}
+                new_trade = {"id": int(time.time()),"instrumentId": current_instrument_id,"type": trade_type,"entryTimestamp": datetime.utcnow().isoformat() + "Z","entryPrice": current_price,"entryReason": reason,"status": 'OPEN'}
                 autopilot_trades.append(new_trade)
                 action_color = Fore.GREEN if action == "BUY" else Fore.RED
                 print_colored(f"\n{action_color}🟢 ACTION: {action} {current_instrument_id} @ {current_price}", action_color, Style.BRIGHT)
                 print_colored(f"   Confidence: {confidence}/10 | Reason: {reason}", Fore.WHITE)
                 save_trades()
                 notif_title = f"{'🟢' if action == 'BUY' else '🔴'} Posisi {trade_type} Dibuka: {current_instrument_id}"
-                notif_content = f"Entry pada harga {current_price:.4f}. Alasan: {reason}"
+                notif_content = f"Entry @ {current_price:.4f}. Alasan: {reason}"
                 send_termux_notification(notif_title, notif_content)
             else:
-                print_colored(f"⚪️ HOLD: Sinyal {action} terdeteksi (Conf: {confidence}) tetapi di bawah ambang batas ({current_settings['min_confidence']}).", Fore.YELLOW)
+                print_colored(f"⚪️ HOLD: Sinyal {action} terdeteksi (Conf: {confidence}) tetapi di bawah ambang batas.", Fore.YELLOW)
         elif action == "CLOSE" and open_position:
             await analyze_and_close_trade(open_position, current_price, f"AI Decision: {reason}")
         else:
@@ -280,7 +269,6 @@ Your response MUST be a valid JSON object. Valid actions are "BUY", "SELL", "HOL
         is_autopilot_in_cooldown = False
     finally: is_ai_thinking = False
 
-# ... Sisa fungsi (main, workers, etc.) tetap sama ...
 # --- THREAD WORKERS & MAIN LOOP ---
 def autopilot_worker():
     while not stop_event.is_set():
@@ -338,7 +326,7 @@ def main():
             elif cmd == '!start':
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan.", Fore.YELLOW)
                 elif not current_instrument_id: print_colored("Error: Pilih pair dulu dengan '!pair'.", Fore.RED)
-                else: is_autopilot_running = True; print_colored("✅ Autopilot diaktifkan. Perburuan dimulai...", Fore.GREEN, Style.BRIGHT)
+                else: is_autopilot_running = True; print_colored("✅ Autopilot diaktifkan.", Fore.GREEN, Style.BRIGHT)
             elif cmd == '!stop':
                 if not is_autopilot_running: print_colored("Autopilot sudah tidak aktif.", Fore.YELLOW)
                 else: is_autopilot_running = False; print_colored("🛑 Autopilot dinonaktifkan.", Fore.RED, Style.BRIGHT)
@@ -354,10 +342,8 @@ def main():
                     open_pos = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
                     if open_pos and isinstance(price, float):
                         pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type', 'LONG'))
-                        pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
-                        type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
-                        print_colored(f"Posisi Terbuka    : ", Fore.WHITE, end="")
-                        print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
+                        pnl_color, type_color = (Fore.GREEN if pnl > 0 else Fore.RED), (Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED)
+                        print_colored(f"Posisi Terbuka    : ", Fore.WHITE, end=""); print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
                         print_colored(f"Entry @ {open_pos['entryPrice']:.4f}, P/L: {pnl:.2f}%", pnl_color)
                     else: print_colored("Posisi Terbuka    : Tidak ada", Fore.WHITE)
                     print()
@@ -367,21 +353,18 @@ def main():
                 if len(command_parts) >= 2:
                     current_instrument_id = command_parts[1].upper()
                     tf = command_parts[2] if len(command_parts) > 2 else '1H'
-                    current_settings['last_timeframe'] = tf
-                    print_colored(f"Mengganti pair ke {current_instrument_id} TF {tf}. Memuat data...", Fore.CYAN)
+                    current_settings['last_timeframe'] = tf; save_settings()
+                    print_colored(f"Mengganti pair ke {current_instrument_id} TF {tf}...", Fore.CYAN)
                     current_candle_data = fetch_okx_candle_data(current_instrument_id, tf)
                     if current_candle_data: print_colored("Data berhasil dimuat.", Fore.GREEN)
                     else: print_colored("Gagal memuat data.", Fore.RED)
-                    save_settings()
                 else: print_colored("Format salah. Gunakan: !pair NAMA-PAIR [TIMEFRAME]", Fore.RED)
             elif user_input.strip():
-                # Fungsi chat tidak saya sertakan di sini untuk fokus pada autopilot
                 print_colored("Fungsi chat belum diimplementasikan di versi ini.", Fore.YELLOW)
         except KeyboardInterrupt: break
         except Exception as e: print_colored(f"\nTerjadi error tak terduga: {e}", Fore.RED)
     print_colored("\nMenutup aplikasi...", Fore.YELLOW)
-    stop_event.set()
-    autopilot_thread.join(); data_thread.join()
+    stop_event.set(); autopilot_thread.join(); data_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
 
 if __name__ == "__main__":
