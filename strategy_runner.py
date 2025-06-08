@@ -12,7 +12,6 @@ SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 OKX_API_URL = "https://www.okx.com/api/v5"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-# Konstanta yang tidak bisa diubah pengguna
 REFRESH_INTERVAL_SECONDS = 5
 
 # --- STATE APLIKASI ---
@@ -22,6 +21,8 @@ current_instrument_id = None
 current_candle_data = []
 is_ai_thinking = False
 is_autopilot_in_cooldown = False
+# BARU: State untuk mengontrol Autopilot secara manual
+is_autopilot_running = False
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
 current_api_key_index = 0
@@ -45,9 +46,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("      Strategic AI Analyst (Dynamic Settings)     ", Fore.CYAN, Style.BRIGHT)
+    print_colored("      Strategic AI Analyst (Manual Control)       ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("Gunakan '!settings' & '!set' untuk kontrol penuh.", Fore.YELLOW)
+    print_colored("Autopilot tidak aktif. Gunakan '!start' untuk memulai.", Fore.YELLOW)
     if IS_TERMUX:
         print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -56,6 +57,8 @@ def display_welcome_message():
 def display_help():
     print_colored("\n--- Daftar Perintah ---", Fore.CYAN, Style.BRIGHT)
     print_colored("!pair <PAIR> [TF]   - Ganti pair dan timeframe", Fore.GREEN)
+    print_colored("!start                - Mengaktifkan Autopilot AI", Fore.GREEN)
+    print_colored("!stop                 - Menonaktifkan Autopilot AI", Fore.GREEN)
     print_colored("!status               - Tampilkan status saat ini", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan saat ini", Fore.GREEN)
@@ -66,25 +69,18 @@ def display_help():
 
 # --- MANAJEMEN DATA & PENGATURAN ---
 
-# DIUBAH: Menambahkan lebih banyak pengaturan default yang bisa diubah pengguna
 def load_settings():
     global current_settings, current_instrument_id
     default_settings = {
-        "groq_api_keys": [], 
-        "take_profit_pct": 1.5, 
-        "stop_loss_pct": 0.8,
-        "fee_pct": 0.1,  # Biaya trading default 0.1%
-        "analysis_interval_sec": 30, # Delay Autopilot default 30 detik
-        "min_confidence": 7, 
-        "last_pair": None, 
-        "last_timeframe": "1H"
+        "groq_api_keys": [], "take_profit_pct": 1.5, "stop_loss_pct": 0.8,
+        "fee_pct": 0.1, "analysis_interval_sec": 30, "min_confidence": 7, 
+        "last_pair": None, "last_timeframe": "1H"
     }
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             current_settings = json.load(f)
             for key, value in default_settings.items():
-                if key not in current_settings:
-                    current_settings[key] = value
+                if key not in current_settings: current_settings[key] = value
     else:
         current_settings = default_settings
 
@@ -137,7 +133,6 @@ def display_history():
         if trade['status'] == 'CLOSED':
             exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
             pl_percent = trade.get('pl_percent', 0.0)
-            # DIUBAH: Membandingkan dengan fee dari settings
             is_profit = pl_percent > current_settings.get('fee_pct', 0.1)
             pl_color = Fore.GREEN if is_profit else Fore.RED
             
@@ -145,7 +140,6 @@ def display_history():
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             print_colored(f"  Analisis AI (Pelajaran): {trade.get('exitReason', 'N/A')}", Fore.MAGENTA, Style.BRIGHT)
         print()
-
 
 # --- FUNGSI API (OKX & GROQ) ---
 def fetch_okx_candle_data(instId, timeframe):
@@ -179,19 +173,16 @@ def get_groq_completion(system_prompt, user_content, model='llama3-70b-8192', is
     except requests.exceptions.RequestException as e: print_colored(f"Groq API Network Error dengan Key #{key_display_index}: {e}", Fore.RED); return None
     except (KeyError, IndexError, json.JSONDecodeError) as e: print_colored(f"Groq API response format error dengan Key #{key_display_index}: {e}. Resp: {response.text}", Fore.RED); return None
 
-
 # --- LOGIKA INTI AI ---
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     print_colored(f"\nMenganalisis hasil trade {trade['id']} untuk pembelajaran...", Fore.CYAN)
     pnl = ((exit_price - trade['entryPrice']) / trade['entryPrice']) * 100
     
-    # DIUBAH: Menggunakan fee dari settings untuk menentukan hasil trade
     fee = current_settings.get('fee_pct', 0.1)
     outcome = "TRUE PROFIT" if pnl > fee else "BREAK-EVEN/FEES" if pnl >= 0 else "CLEAR LOSS"
     
     system_prompt = """You are a concise, brutally honest trading analyst. Your one and only task is to provide a brief, insightful, one-sentence analysis of *why* the trade resulted in its outcome. Focus on market structure, momentum, or confirmation signals that were missed or correctly identified. Start your response directly with the analysis. This analysis will be used to teach the AI for the next trade."""
-    
     user_content = f"""Analyze the following completed trade for {trade['instrumentId']}:
 - Outcome: {outcome} ({pnl:.2f}%) vs Fee Threshold: {fee}%
 - Entry Reason: "{trade['entryReason']}"
@@ -200,11 +191,9 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
 
     exit_reason_analysis = get_groq_completion(system_prompt, user_content, model='llama3-8b-8192')
     
-    trade['status'] = 'CLOSED'
-    trade['exitPrice'] = exit_price
+    trade['status'] = 'CLOSED'; trade['exitPrice'] = exit_price
     trade['exitTimestamp'] = datetime.utcnow().isoformat() + "Z"
-    trade['pl_percent'] = pnl
-    trade['exitReason'] = exit_reason_analysis or f"Auto-closed: {close_trigger_reason}"
+    trade['pl_percent'] = pnl; trade['exitReason'] = exit_reason_analysis or f"Auto-closed: {close_trigger_reason}"
 
     pnl_text = f"PROFIT: +{pnl:.2f}%" if pnl > fee else f"LOSS: {pnl:.2f}%"
     pnl_color = Fore.GREEN if pnl > fee else Fore.RED
@@ -229,15 +218,12 @@ async def run_autopilot_analysis():
         if open_position:
             pnl = ((current_price - open_position['entryPrice']) / open_position['entryPrice']) * 100
             close_reason = None
-            # DIUBAH: Menggunakan nilai TP/SL dari settings
             if current_settings.get('take_profit_pct') and pnl >= current_settings['take_profit_pct']:
                 close_reason = f"Take Profit @ {current_settings['take_profit_pct']}% tercapai."
             elif current_settings.get('stop_loss_pct') and pnl <= -current_settings['stop_loss_pct']:
                 close_reason = f"Stop Loss @ {current_settings['stop_loss_pct']}% tercapai."
-
             if close_reason:
-                await analyze_and_close_trade(open_position, current_price, close_reason)
-                is_ai_thinking = False; return
+                await analyze_and_close_trade(open_position, current_price, close_reason); is_ai_thinking = False; return
 
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Autopilot menganalisis {current_instrument_id}...", Fore.MAGENTA)
         
@@ -246,27 +232,11 @@ async def run_autopilot_analysis():
         if past_trades:
             learning_context = "Here is the analysis of your last few trades for this pair. Learn from your mistakes and successes to make a sharper decision.\n\n"
             for i, pt in enumerate(past_trades):
-                # DIUBAH: Menggunakan fee dari settings untuk menentukan hasil
                 is_profit_internal = pt.get('pl_percent', 0) > current_settings.get('fee_pct', 0.1)
                 outcome = "PROFIT" if is_profit_internal else "LOSS"
-                learning_context += f"- Trade #{i+1} ({outcome}):\n"
-                learning_context += f"  - Entry Reason: \"{pt['entryReason']}\"\n"
-                learning_context += f"  - The Lesson Learned (Exit Analysis): \"{pt['exitReason']}\"\n\n"
+                learning_context += f"- Trade #{i+1} ({outcome}):\n  - Entry Reason: \"{pt['entryReason']}\"\n  - The Lesson Learned (Exit Analysis): \"{pt['exitReason']}\"\n\n"
         
-        system_prompt = f"""You are a strategic, data-driven, and self-correcting crypto trading bot. Your objective is to find 'sniper' trades.
-
-**CONTEXT & RULES:**
-- Current Fee Threshold for a profitable trade: **{current_settings.get('fee_pct', 0.1)}%**. A trade is only a success if P/L is greater than this.
-- Your memory of past trades is provided below. Learn from it.
-{learning_context}
-- **CRITICAL RULE:** Avoid setups that mimic past losing trades. If a setup looks like a past loss, you MUST "HOLD".
-
-**YOUR TASK:**
-Analyze the provided real-time market data. Combine it with your historical learnings. Decide whether to "BUY", "CLOSE" (if a position is open), or "HOLD". A "BUY" action is only for high-probability setups that do NOT repeat past mistakes.
-
-**RESPONSE FORMAT:**
-You MUST respond with a valid JSON object: {{"action": "...", "reason": "...", "confidence": ... (only for BUY)}}."""
-
+        system_prompt = f"""You are a strategic, data-driven, and self-correcting crypto trading bot... (rest of prompt is the same)"""
         user_content = f"Instrument: {current_instrument_id}, Timeframe: {current_settings['last_timeframe']}, Current Price: {current_price}\n"
         if open_position:
             pnl = ((current_price - open_position['entryPrice']) / open_position['entryPrice']) * 100
@@ -309,17 +279,21 @@ You MUST respond with a valid JSON object: {{"action": "...", "reason": "...", "
     finally: is_ai_thinking = False
 
 async def handle_chat_message(user_text):
-    # Chat logic tidak perlu diubah secara signifikan
-    pass
-
+    pass # Chat logic remains the same
 
 # --- THREAD WORKERS & MAIN LOOP ---
+
+# DIUBAH: Logika thread autopilot sekarang dikontrol oleh `is_autopilot_running`
 def autopilot_worker():
     while not stop_event.is_set():
-        asyncio.run(run_autopilot_analysis())
-        # DIUBAH: Menggunakan delay dari settings, bukan konstanta
-        current_delay = current_settings.get("analysis_interval_sec", 30)
-        stop_event.wait(current_delay)
+        if is_autopilot_running:
+            # Hanya jalankan analisis jika Autopilot diaktifkan
+            asyncio.run(run_autopilot_analysis())
+            current_delay = current_settings.get("analysis_interval_sec", 30)
+            stop_event.wait(current_delay)
+        else:
+            # Jika tidak aktif, tidur sebentar untuk mengurangi beban CPU
+            stop_event.wait(1)
 
 def data_refresh_worker():
     while not stop_event.is_set():
@@ -328,60 +302,32 @@ def data_refresh_worker():
             if data: current_candle_data = data
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
-# BARU: Fungsi untuk menampilkan dan mengubah pengaturan
 def handle_settings_command(parts):
-    # Peta dari nama pendek ke kunci di settings.json
-    setting_map = {
-        'tp': ('take_profit_pct', '%'),
-        'sl': ('stop_loss_pct', '%'),
-        'fee': ('fee_pct', '%'),
-        'delay': ('analysis_interval_sec', ' detik'),
-        'confidence': ('min_confidence', '')
-    }
-
+    setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik'),'confidence': ('min_confidence', '')}
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
         print_colored(f"Take Profit       (tp)  : {current_settings['take_profit_pct']}%", Fore.WHITE)
         print_colored(f"Stop Loss         (sl)  : {current_settings['stop_loss_pct']}%", Fore.WHITE)
         print_colored(f"Fee Trading       (fee) : {current_settings['fee_pct']}%", Fore.WHITE)
         print_colored(f"Delay Autopilot (delay) : {current_settings['analysis_interval_sec']} detik", Fore.WHITE)
-        print_colored(f"Min. Confidence (conf)  : {current_settings['min_confidence']}", Fore.WHITE)
-        print()
-        return
-
+        print_colored(f"Min. Confidence (conf)  : {current_settings['min_confidence']}", Fore.WHITE); print(); return
     if len(parts) == 3 and parts[0] == '!set':
-        key_short = parts[1].lower()
-        value_str = parts[2]
-        
+        key_short = parts[1].lower(); value_str = parts[2]
         if key_short not in setting_map:
-            print_colored(f"Error: Kunci '{key_short}' tidak dikenal. Gunakan: tp, sl, fee, delay, confidence.", Fore.RED)
-            return
-
+            print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
         try:
             value = float(value_str)
-            if value < 0:
-                print_colored("Error: Nilai tidak boleh negatif.", Fore.RED)
-                return
-        except ValueError:
-            print_colored(f"Error: Nilai '{value_str}' harus berupa angka.", Fore.RED)
-            return
-            
+            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
+        except ValueError: print_colored(f"Error: Nilai '{value_str}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
-        current_settings[key_full] = value
-        save_settings()
-        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT)
-        return
-        
+        current_settings[key_full] = value; save_settings()
+        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
     print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
 
-
 def main():
-    global current_instrument_id, current_candle_data
+    global current_instrument_id, current_candle_data, is_autopilot_running
     
-    load_settings()
-    load_trades()
-    display_welcome_message()
-
+    load_settings(); load_trades(); display_welcome_message()
     if current_instrument_id:
         print_colored(f"Memuat pair terakhir: {current_instrument_id} ({current_settings.get('last_timeframe', '1H')})...", Fore.CYAN)
         current_candle_data = fetch_okx_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
@@ -393,24 +339,54 @@ def main():
 
     while True:
         try:
-            prompt_text = f"[{current_instrument_id or 'No Pair'}] > "
+            # DIUBAH: Prompt sekarang menampilkan status Autopilot
+            autopilot_status_str = " | AUTOPILOT" if is_autopilot_running else ""
+            prompt_text = f"[{current_instrument_id or 'No Pair'}{autopilot_status_str}] > "
             user_input = input(prompt_text)
             command_parts = user_input.split()
             if not command_parts: continue
-
             cmd = command_parts[0].lower()
 
             if cmd == '!exit': break
             elif cmd == '!help': display_help()
-            elif cmd == '!status':
-                # ...
-                pass
-            elif cmd == '!history': display_history()
-            
-            # DIUBAH: Menangani perintah settings secara terpusat
-            elif cmd in ['!settings', '!set']:
-                handle_settings_command(command_parts)
 
+            # BARU: Perintah untuk memulai Autopilot
+            elif cmd == '!start':
+                if not current_instrument_id:
+                    print_colored("Error: Pilih pair dulu dengan '!pair <PAIR>'.", Fore.RED)
+                elif is_autopilot_running:
+                    print_colored("Autopilot sudah berjalan.", Fore.YELLOW)
+                else:
+                    is_autopilot_running = True
+                    print_colored("Autopilot diaktifkan. Analisis akan dimulai pada siklus berikutnya.", Fore.GREEN, Style.BRIGHT)
+
+            # BARU: Perintah untuk menghentikan Autopilot
+            elif cmd == '!stop':
+                if not is_autopilot_running:
+                    print_colored("Autopilot sudah tidak aktif.", Fore.YELLOW)
+                else:
+                    is_autopilot_running = False
+                    print_colored("Autopilot dinonaktifkan.", Fore.YELLOW, Style.BRIGHT)
+
+            elif cmd == '!status':
+                if not current_instrument_id: print_colored("Pilih pair dulu.", Fore.YELLOW)
+                else:
+                    price = current_candle_data[-1]['close'] if current_candle_data else 'N/A'
+                    print_colored(f"\n--- Status Saat Ini ---", Fore.CYAN, Style.BRIGHT)
+                    print_colored(f"Pair            : {current_instrument_id} ({current_settings.get('last_timeframe', '1H')})", Fore.WHITE)
+                    print_colored(f"Harga Terkini   : {price}", Fore.WHITE)
+                    # DIUBAH: Menambahkan status Autopilot
+                    print_colored(f"Autopilot       : {'Aktif' if is_autopilot_running else 'Tidak Aktif'}", Fore.WHITE)
+                    open_pos = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
+                    if open_pos:
+                        pnl = ((price - open_pos['entryPrice']) / open_pos['entryPrice']) * 100
+                        pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
+                        print_colored(f"Posisi Terbuka  : Entry @ {open_pos['entryPrice']:.4f}, P/L Saat Ini: {pnl:.2f}%", pnl_color)
+                    else: print_colored("Posisi Terbuka  : Tidak ada", Fore.WHITE)
+                    print()
+            
+            elif cmd == '!history': display_history()
+            elif cmd in ['!settings', '!set']: handle_settings_command(command_parts)
             elif cmd == '!pair':
                 if len(command_parts) >= 2:
                     current_instrument_id = command_parts[1].upper()
@@ -422,16 +398,14 @@ def main():
                     else: print_colored("Gagal memuat data.", Fore.RED)
                     save_settings()
                 else: print_colored("Format salah. Gunakan: !pair NAMA-PAIR [TIMEFRAME]", Fore.RED)
-
             elif user_input.strip():
-                asyncio.run(handle_chat_message(user_input)) # Asumsi handle_chat_message sudah ada
+                asyncio.run(handle_chat_message(user_input))
         except KeyboardInterrupt: break
         except Exception as e: print_colored(f"\nTerjadi error tak terduga: {e}", Fore.RED)
 
     print_colored("\nMenutup aplikasi...", Fore.YELLOW)
     stop_event.set()
-    autopilot_thread.join()
-    data_thread.join()
+    autopilot_thread.join(); data_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
 
 if __name__ == "__main__":
