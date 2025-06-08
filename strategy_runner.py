@@ -14,7 +14,6 @@ OKX_API_URL = "https://www.okx.com/api/v5"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MIN_PROFIT_PERCENTAGE = 0.1
 DEFAULT_TIMEFRAME = '1H'
-# DIUBAH: Interval Autopilot sekarang menjadi 30 detik
 ANALYSIS_INTERVAL_SECONDS = 30
 REFRESH_INTERVAL_SECONDS = 5
 
@@ -26,8 +25,9 @@ current_candle_data = []
 is_ai_thinking = False
 is_autopilot_in_cooldown = False
 stop_event = threading.Event()
-# BARU: Deteksi otomatis lingkungan Termux
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
+# BARU: Index untuk melacak API key yang sedang digunakan
+current_api_key_index = 0
 
 # --- INISIALISASI ---
 init(autoreset=True)
@@ -36,12 +36,9 @@ init(autoreset=True)
 def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL):
     print(bright + color + text)
 
-# BARU: Fungsi untuk mengirim notifikasi ke sistem Termux
 def send_termux_notification(title, content):
-    if not IS_TERMUX:
-        return  # Jangan lakukan apa-apa jika tidak berjalan di Termux
+    if not IS_TERMUX: return
     try:
-        # Membersihkan quotes untuk keamanan command line
         safe_title = title.replace('"', "'")
         safe_content = content.replace('"', "'")
         command = f'termux-notification --title "{safe_title}" --content "{safe_content}"'
@@ -51,9 +48,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("   Strategic AI Analyst (Notification Edition)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("     Strategic AI Analyst (API Key Rotation)      ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI ini belajar dari setiap trade untuk mempertajam analisis.", Fore.YELLOW)
+    print_colored("AI ini menggunakan rotasi API Key untuk performa maksimal.", Fore.YELLOW)
     if IS_TERMUX:
         print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -69,10 +66,12 @@ def display_help():
     print()
 
 # --- MANAJEMEN DATA & PENGATURAN ---
+
+# DIUBAH: Logika load_settings sekarang menangani daftar API key
 def load_settings():
     global current_settings, current_instrument_id, DEFAULT_TIMEFRAME
     default_settings = {
-        "groq_api_key": "", "take_profit_pct": 1.0, "stop_loss_pct": 0.5,
+        "groq_api_keys": [], "take_profit_pct": 1.0, "stop_loss_pct": 0.5,
         "min_confidence": 7, "last_pair": None, "last_timeframe": "1H"
     }
     if os.path.exists(SETTINGS_FILE):
@@ -83,14 +82,25 @@ def load_settings():
                     current_settings[key] = value
     else:
         current_settings = default_settings
-        key = input("Masukkan Groq API Key Anda: ")
-        current_settings["groq_api_key"] = key
+
+    # Jika tidak ada API key yang tersimpan, minta pengguna untuk memasukkan
+    if not current_settings.get("groq_api_keys"):
+        print_colored("Setup Awal: Silakan masukkan Groq API Key Anda.", Fore.YELLOW)
+        print_colored("Anda bisa memasukkan lebih dari satu. Tekan Enter pada baris kosong untuk selesai.", Fore.YELLOW)
+        keys = []
+        while True:
+            key = input(f"Masukkan API Key #{len(keys) + 1} (atau Enter untuk selesai): ")
+            if not key:
+                break
+            keys.append(key)
+        
+        if not keys:
+            print_colored("Tidak ada API Key yang dimasukkan. Aplikasi tidak bisa berjalan.", Fore.RED, Style.BRIGHT)
+            exit()
+            
+        current_settings["groq_api_keys"] = keys
         save_settings()
 
-    if not current_settings.get("groq_api_key"):
-        print_colored("ERROR: Groq API Key tidak ditemukan. Harap edit 'settings.json'.", Fore.RED, Style.BRIGHT)
-        exit()
-    
     current_instrument_id = current_settings.get("last_pair")
     DEFAULT_TIMEFRAME = current_settings.get("last_timeframe")
 
@@ -149,16 +159,30 @@ def fetch_okx_candle_data(instId, timeframe):
     except requests.exceptions.RequestException as e:
         print_colored(f"Network Error saat fetch data OKX: {e}", Fore.RED); return []
 
+# DIUBAH: Fungsi ini sekarang melakukan rotasi API key
 def get_groq_completion(system_prompt, user_content, model='llama3-70b-8192', is_json=False):
-    headers = {"Authorization": f"Bearer {current_settings['groq_api_key']}", "Content-Type": "application/json"}
+    global current_api_key_index
+    
+    # Pilih API key saat ini
+    api_key_to_use = current_settings["groq_api_keys"][current_api_key_index]
+    
+    # Tampilkan info key yang digunakan
+    key_display_index = current_api_key_index + 1
+    print_colored(f"[INFO] Menggunakan Groq API Key #{key_display_index}...", Fore.BLUE)
+    
+    # Siapkan untuk rotasi berikutnya
+    current_api_key_index = (current_api_key_index + 1) % len(current_settings["groq_api_keys"])
+
+    headers = {"Authorization": f"Bearer {api_key_to_use}", "Content-Type": "application/json"}
     payload = {"messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],"model": model,"temperature": 0.7,"max_tokens": 700}
     if is_json: payload["response_format"] = {"type": "json_object"}
+    
     try:
         response = requests.post(GROQ_API_URL, headers=headers, data=json.dumps(payload), timeout=40)
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content']
-    except requests.exceptions.RequestException as e: print_colored(f"Groq API Network Error: {e}", Fore.RED); return None
-    except (KeyError, IndexError, json.JSONDecodeError) as e: print_colored(f"Groq API response format error: {e}. Resp: {response.text}", Fore.RED); return None
+    except requests.exceptions.RequestException as e: print_colored(f"Groq API Network Error dengan Key #{key_display_index}: {e}", Fore.RED); return None
+    except (KeyError, IndexError, json.JSONDecodeError) as e: print_colored(f"Groq API response format error dengan Key #{key_display_index}: {e}. Resp: {response.text}", Fore.RED); return None
 
 
 # --- LOGIKA INTI AI ---
@@ -169,7 +193,7 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
 
     outcome = "TRUE PROFIT" if pnl > MIN_PROFIT_PERCENTAGE else "BREAK-EVEN/FEES" if pnl >= 0 else "CLEAR LOSS"
     
-    system_prompt = """You are a concise, brutally honest trading analyst. You will receive details of a completed trade. Your one and only task is to provide a brief, insightful, one-sentence analysis of *why* the trade resulted in its outcome. Focus on market structure, momentum, or confirmation signals that were missed or correctly identified. Start your response directly with the analysis. This analysis will be used to teach the AI for the next trade."""
+    system_prompt = """You are a concise, brutally honest trading analyst. Your one and only task is to provide a brief, insightful, one-sentence analysis of *why* the trade resulted in its outcome. Focus on market structure, momentum, or confirmation signals that were missed or correctly identified. Start your response directly with the analysis. This analysis will be used to teach the AI for the next trade."""
     
     user_content = f"""Analyze the following completed trade for {trade['instrumentId']}:
 - Outcome: {outcome} ({pnl:.2f}%)
@@ -192,7 +216,6 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     
     save_trades()
 
-    # DIUBAH: Kirim notifikasi saat posisi ditutup
     notification_title = f"🔴 Posisi Ditutup: {trade['instrumentId']}"
     notification_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
     send_termux_notification(notification_title, notification_content)
@@ -276,7 +299,6 @@ Finally, combine your historical learnings with your real-time analysis to make 
                 print_colored(f"   Confidence: {confidence}/10 | Reason: {reason}", Fore.WHITE)
                 save_trades()
                 
-                # DIUBAH: Kirim notifikasi saat posisi dibuka
                 notification_title = f"🟢 Posisi Dibuka: {current_instrument_id}"
                 notification_content = f"Entry pada harga {current_price:.4f}. Alasan: {reason}"
                 send_termux_notification(notification_title, notification_content)
