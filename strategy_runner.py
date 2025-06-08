@@ -19,7 +19,6 @@ current_settings = {}
 autopilot_trades = []
 current_instrument_id = None
 current_candle_data = []
-last_price = 0 # Untuk membandingkan pergerakan harga
 is_ai_thinking = False
 is_autopilot_in_cooldown = False
 is_autopilot_running = False
@@ -31,8 +30,6 @@ init(autoreset=True)
 
 # --- FUNGSI UTILITAS & TAMPILAN ---
 def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL):
-    # Membersihkan baris live log sebelum mencetak log baru
-    print(f"\r\x1b[K", end="")
     print(bright + color + text)
 
 def send_termux_notification(title, content):
@@ -45,17 +42,17 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("      Strategic AI Analyst (Live PnL Edition)     ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (Real-time TP/SL)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored(f"Live Log PnL akan muncul setelah Autopilot di-start.", Fore.YELLOW)
+    print_colored(f"Monitoring TP/SL & PnL setiap {REFRESH_INTERVAL_SECONDS} detik.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
 
 def display_help():
     print_colored("\n--- Daftar Perintah ---", Fore.CYAN, Style.BRIGHT)
-    print_colored("!start                - Mengaktifkan Autopilot AI & Live Log", Fore.GREEN)
-    print_colored("!stop                 - Menonaktifkan Autopilot AI & Live Log", Fore.GREEN)
+    print_colored("!start                - Mengaktifkan Autopilot AI", Fore.GREEN)
+    print_colored("!stop                 - Menonaktifkan Autopilot AI", Fore.GREEN)
     print_colored("!pair <PAIR> [TF]   - Ganti pair dan timeframe", Fore.GREEN)
     print_colored("!status               - Tampilkan status saat ini", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
@@ -95,16 +92,12 @@ def save_trades():
 
 # --- FUNGSI API (HANYA OKX) ---
 def fetch_okx_candle_data(instId, timeframe):
-    global last_price
     try:
         url = f"{OKX_API_URL}/market/history-candles?instId={instId}&bar={timeframe}&limit=300"
         response = requests.get(url, timeout=10)
         response.raise_for_status(); data = response.json()
         if data.get("code") == "0" and isinstance(data.get("data"), list):
-            candles = [{"time": int(d[0]),"open": float(d[1]),"high": float(d[2]),"low": float(d[3]),"close": float(d[4])} for d in data["data"]][::-1]
-            if candles:
-                last_price = candles[-1]['close']
-            return candles
+            return [{"time": int(d[0]),"open": float(d[1]),"high": float(d[2]),"low": float(d[3]),"close": float(d[4])} for d in data["data"]][::-1]
         else:
             print_colored(f"OKX API Error: {data.get('msg', 'Data tidak valid')}", Fore.RED); return []
     except requests.exceptions.RequestException as e:
@@ -132,14 +125,18 @@ class LocalAI:
             change = closes[i] - closes[i-1]
             if change > 0: gains.append(change); losses.append(0)
             else: losses.append(abs(change)); gains.append(0)
-        avg_gain = sum(gains[-period:]) / period; avg_loss = sum(losses[-period:]) / period
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
         if avg_loss == 0: return 100
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100: return None
-        ema9 = self.calculate_ema(candle_data, 9); ema50 = self.calculate_ema(candle_data, 50); ema100 = self.calculate_ema(candle_data, 100); rsi = self.calculate_rsi(candle_data, 14)
+        ema9 = self.calculate_ema(candle_data, 9)
+        ema50 = self.calculate_ema(candle_data, 50)
+        ema100 = self.calculate_ema(candle_data, 100)
+        rsi = self.calculate_rsi(candle_data, 14)
         bias = "RANGING"
         if ema9 > ema50 and ema50 > ema100: bias = "BULLISH_STRONG"
         elif ema9 < ema50 and ema50 < ema100: bias = "BEARISH_STRONG"
@@ -154,7 +151,7 @@ class LocalAI:
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
             if bias_same and rsi_similar:
-                print_colored(f"\n[LEARNING] Menghindari posisi karena mirip dengan loss trade #{loss['id']}", Fore.MAGENTA)
+                print_colored(f"[LEARNING] Menghindari posisi karena mirip dengan loss trade #{loss['id']}", Fore.MAGENTA)
                 return True
         return False
 
@@ -165,13 +162,18 @@ class LocalAI:
         if open_position:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
             trade_type = open_position.get('type')
-            if trade_type == 'LONG' and (analysis['rsi'] > 78 or current_price < analysis['ema9']): return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di bawah EMA9)."}
-            if trade_type == 'SHORT' and (analysis['rsi'] < 22 or current_price > analysis['ema9']): return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di atas EMA9)."}
+            if trade_type == 'LONG' and (analysis['rsi'] > 78 or current_price < analysis['ema9']):
+                return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di bawah EMA9)."}
+            if trade_type == 'SHORT' and (analysis['rsi'] < 22 or current_price > analysis['ema9']):
+                return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di atas EMA9)."}
             return {"action": "HOLD", "reason": f"Holding {trade_type}, P/L: {pnl:.2f}%"}
-        if self.check_for_repeated_mistake(analysis): return {"action": "HOLD", "reason": "Menghindari pengulangan kesalahan masa lalu."}
+        if self.check_for_repeated_mistake(analysis):
+            return {"action": "HOLD", "reason": "Menghindari pengulangan kesalahan masa lalu."}
         bias = analysis['bias']; rsi = analysis['rsi']
-        if bias == "BULLISH_STRONG" and rsi < 55 and current_price > analysis['ema50']: return {"action": "BUY", "reason": f"Tren Bullish Kuat (EMA selaras) & RSI pullback ({rsi:.0f}).", "snapshot": analysis}
-        if bias == "BEARISH_STRONG" and rsi > 45 and current_price < analysis['ema50']: return {"action": "SELL", "reason": f"Tren Bearish Kuat (EMA selaras) & RSI rally ({rsi:.0f}).", "snapshot": analysis}
+        if bias == "BULLISH_STRONG" and rsi < 55 and current_price > analysis['ema50']:
+             return {"action": "BUY", "reason": f"Tren Bullish Kuat (EMA selaras) & RSI pullback ({rsi:.0f}).", "snapshot": analysis}
+        if bias == "BEARISH_STRONG" and rsi > 45 and current_price < analysis['ema50']:
+            return {"action": "SELL", "reason": f"Tren Bearish Kuat (EMA selaras) & RSI rally ({rsi:.0f}).", "snapshot": analysis}
         return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {bias}, RSI: {rsi:.0f}."}
 
 # --- LOGIKA TRADING UTAMA ---
@@ -181,9 +183,13 @@ def calculate_pnl(entry_price, current_price, trade_type):
     return 0
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
+    global is_ai_thinking
+    # Mengunci proses untuk mencegah penutupan ganda
+    is_ai_thinking = True
     print_colored(f"\nMenutup trade {trade['id']}...", Fore.CYAN)
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
-    fee = current_settings.get('fee_pct', 0.1); is_profit = pnl > fee
+    fee = current_settings.get('fee_pct', 0.1)
+    is_profit = pnl > fee
     trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 'pl_percent': pnl})
     if not is_profit and entry_snapshot:
         trade['entry_snapshot'] = entry_snapshot
@@ -193,7 +199,9 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     print_colored(f"\n🔴 TRADE CLOSED: {pnl_text}", pnl_color, Style.BRIGHT)
     save_trades()
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
-    notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"; send_termux_notification(notif_title, notif_content)
+    notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
+    send_termux_notification(notif_title, notif_content)
+    is_ai_thinking = False
 
 async def run_autopilot_analysis():
     global is_ai_thinking, is_autopilot_in_cooldown
@@ -201,18 +209,17 @@ async def run_autopilot_analysis():
     is_ai_thinking = True
     try:
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
-        current_price = current_candle_data[-1]['close']
-        if open_position:
-            pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
-            tp_pct = current_settings.get('take_profit_pct'); sl_pct = current_settings.get('stop_loss_pct')
-            close_reason = None
-            if tp_pct and pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
-            elif sl_pct and pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
-            if close_reason: await analyze_and_close_trade(open_position, current_price, close_reason, open_position.get("entry_snapshot")); is_ai_thinking = False; return
+        # Pemeriksaan TP/SL sekarang dipindahkan ke worker data, bagian ini bisa dilewati untuk efisiensi
+        # Namun, kita tetap membutuhkan `open_position` untuk logika di bawahnya.
+        
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Local AI sedang menganalisis {current_instrument_id}...", Fore.MAGENTA)
         local_brain = LocalAI(current_settings, [t for t in autopilot_trades if t['instrumentId'] == current_instrument_id])
         decision = local_brain.get_decision(current_candle_data, open_position)
-        action = decision.get('action', 'HOLD').upper(); reason = decision.get('reason', 'No reason provided.')
+        
+        action = decision.get('action', 'HOLD').upper()
+        reason = decision.get('reason', 'No reason provided.')
+        current_price = current_candle_data[-1]['close']
+
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
             new_trade = {"id": int(time.time()), "instrumentId": current_instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot")}
@@ -221,12 +228,13 @@ async def run_autopilot_analysis():
             print_colored(f"\n{'🟢' if action == 'BUY' else '🔴'} ACTION: {action} {current_instrument_id} @ {current_price}", action_color, Style.BRIGHT)
             print_colored(f"   Reason: {reason}", Fore.WHITE)
             save_trades()
-            notif_title = f"{'🟢' if action == 'BUY' else '🔴'} Posisi {trade_type} Dibuka"; notif_content = f"Entry @ {current_price:.4f} | Alasan: {reason}"
+            notif_title = f"{'🟢' if action == 'BUY' else '🔴'} Posisi {trade_type} Dibuka"
+            notif_content = f"Entry @ {current_price:.4f} | Alasan: {reason}"
             send_termux_notification(notif_title, notif_content)
         elif action == "CLOSE" and open_position:
             await analyze_and_close_trade(open_position, current_price, f"Local AI Decision: {reason}", open_position.get("entry_snapshot"))
         else:
-            print_colored(f"\n⚪️ HOLD: {reason}", Fore.CYAN)
+            print_colored(f"⚪️ HOLD: {reason}", Fore.CYAN)
     except Exception as e:
         print_colored(f"Autopilot Error: {e}. Cooldown 5 detik...", Fore.RED)
         is_autopilot_in_cooldown = True; await asyncio.sleep(5); is_autopilot_in_cooldown = False
@@ -240,46 +248,38 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 30))
         else: time.sleep(1)
 
+# BARU: Fungsi ringan untuk memeriksa TP/SL secara cepat
+async def check_realtime_tp_sl(latest_price):
+    global is_ai_thinking
+    if is_ai_thinking or not is_autopilot_running: return # Jangan ganggu jika AI sedang berpikir/tidak aktif
+
+    open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
+    if not open_position: return
+
+    pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
+    tp_pct = current_settings.get('take_profit_pct')
+    sl_pct = current_settings.get('stop_loss_pct')
+    close_reason = None
+    
+    if tp_pct and pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
+    elif sl_pct and pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
+    
+    if close_reason:
+        await analyze_and_close_trade(open_position, latest_price, close_reason, open_position.get("entry_snapshot"))
+
+# DIUBAH: Worker data sekarang juga memicu pemeriksaan TP/SL
 def data_refresh_worker():
+    global current_candle_data
     while not stop_event.is_set():
         if current_instrument_id:
-            fetch_okx_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
+            data = fetch_okx_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
+            if data: 
+                current_candle_data = data
+                # Setelah data baru diterima, langsung cek TP/SL
+                latest_price = data[-1]['close']
+                asyncio.run(check_realtime_tp_sl(latest_price))
+
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
-
-# BARU: Thread khusus untuk menampilkan status real-time
-def live_log_worker():
-    global last_price
-    price_color = Fore.WHITE
-    while not stop_event.is_set():
-        if is_autopilot_running and current_instrument_id and current_candle_data:
-            current_price = current_candle_data[-1]['close']
-            
-            # Tentukan warna harga berdasarkan pergerakan
-            if current_price > last_price: price_color = Fore.GREEN
-            elif current_price < last_price: price_color = Fore.RED
-            
-            price_str = f"{Style.BRIGHT}{price_color}{current_price:<10.4f}{Style.RESET_ALL}"
-            live_string = f" {Style.BRIGHT}[LIVE] {current_instrument_id} | Harga: {price_str}"
-            
-            open_pos = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
-            
-            if open_pos:
-                pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type'))
-                pnl_color = Fore.GREEN if pnl >= 0 else Fore.RED
-                type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
-                
-                pnl_str = f"{pnl_color}{pnl:+.2f}%{Style.RESET_ALL}"
-                type_str = f"{type_color}{open_pos.get('type'):<5}{Style.RESET_ALL}"
-                live_string += f"| Posisi: {type_str} | P/L: {pnl_str}"
-            
-            # Cetak baris live log, timpa yang lama
-            print(f"\r\x1b[K{live_string}", end="", flush=True)
-            last_price = current_price
-        else:
-            # Jika autopilot tidak berjalan, pastikan baris live log bersih
-            print(f"\r\x1b[K", end="", flush=True)
-
-        time.sleep(1) # Update live log setiap detik
 
 def handle_settings_command(parts):
     setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
@@ -298,7 +298,7 @@ def handle_settings_command(parts):
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
         current_settings[key_full] = value; save_settings()
-        print_colored(f"\nPengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
+        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
     print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
 
 def main():
@@ -306,21 +306,15 @@ def main():
     load_settings(); load_trades(); display_welcome_message()
     if current_instrument_id:
         print_colored(f"Memuat pair terakhir: {current_instrument_id} ({current_settings.get('last_timeframe', '1H')})...", Fore.CYAN)
-        fetch_okx_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
+        current_candle_data = fetch_okx_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
         if current_candle_data: print_colored("Data berhasil dimuat.", Fore.GREEN)
         else: print_colored("Gagal memuat data terakhir.", Fore.RED)
-        
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True); autopilot_thread.start()
     data_thread = threading.Thread(target=data_refresh_worker, daemon=True); data_thread.start()
-    # BARU: Mulai thread untuk live log
-    live_log_thread = threading.Thread(target=live_log_worker, daemon=True); live_log_thread.start()
-    
     while True:
         try:
-            # Tampilkan prompt di baris baru agar tidak tertimpa live log
             prompt_text = f"[{current_instrument_id or 'No Pair'}] > "
             user_input = input(prompt_text)
-            
             command_parts = user_input.split()
             if not command_parts: continue
             cmd = command_parts[0].lower()
@@ -347,7 +341,8 @@ def main():
                         pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type', 'LONG'))
                         pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
                         type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
-                        print_colored(f"Posisi Terbuka    : ", Fore.WHITE, end=""); print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
+                        print_colored(f"Posisi Terbuka    : ", Fore.WHITE, end="")
+                        print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
                         print_colored(f"Entry @ {open_pos['entryPrice']:.4f}, P/L: {pnl:.2f}%", pnl_color)
                     else: print_colored("Posisi Terbuka    : Tidak ada", Fore.WHITE)
                     print()
@@ -359,7 +354,7 @@ def main():
                     tf = command_parts[2] if len(command_parts) > 2 else '1H'
                     current_settings['last_timeframe'] = tf
                     print_colored(f"Mengganti pair ke {current_instrument_id} TF {tf}. Memuat data...", Fore.CYAN)
-                    fetch_okx_candle_data(current_instrument_id, tf)
+                    current_candle_data = fetch_okx_candle_data(current_instrument_id, tf)
                     if current_candle_data: print_colored("Data berhasil dimuat.", Fore.GREEN)
                     else: print_colored("Gagal memuat data.", Fore.RED)
                     save_settings()
@@ -370,7 +365,7 @@ def main():
         except Exception as e: print_colored(f"\nTerjadi error tak terduga: {e}", Fore.RED)
     print_colored("\nMenutup aplikasi...", Fore.YELLOW)
     stop_event.set()
-    autopilot_thread.join(); data_thread.join(); live_log_thread.join()
+    autopilot_thread.join(); data_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
 
 if __name__ == "__main__":
