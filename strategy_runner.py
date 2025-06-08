@@ -5,16 +5,16 @@ import threading
 import requests
 from datetime import datetime
 from colorama import init, Fore, Style
-from groq import Groq
 
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 OKX_API_URL = "https://www.okx.com/api/v5"
-MIN_PROFIT_PERCENTAGE = 0.1 # Ambang batas profit di atas biaya trading
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions" # DIUBAH: URL API Groq
+MIN_PROFIT_PERCENTAGE = 0.1
 DEFAULT_TIMEFRAME = '1H'
-ANALYSIS_INTERVAL_SECONDS = 20 # Interval analisis Autopilot
-REFRESH_INTERVAL_SECONDS = 5    # Interval refresh data chart
+ANALYSIS_INTERVAL_SECONDS = 20
+REFRESH_INTERVAL_SECONDS = 5
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -24,7 +24,6 @@ current_candle_data = []
 is_ai_thinking = False
 is_autopilot_in_cooldown = False
 stop_event = threading.Event()
-client = None # Klien Groq API
 
 # --- INISIALISASI WARNA ---
 init(autoreset=True)
@@ -37,6 +36,7 @@ def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL):
 def display_welcome_message():
     print_colored("==============================================", Fore.CYAN, Style.BRIGHT)
     print_colored("   Strategic AI Analyst for Termux (v1.0)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("         (Versi Tanpa Library Groq)           ", Fore.CYAN, Style.NORMAL)
     print_colored("==============================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Data dari OKX, AI ditenagai oleh Groq.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -54,7 +54,7 @@ def display_help():
 # --- MANAJEMEN PENGATURAN & DATA ---
 
 def load_settings():
-    global current_settings, client
+    global current_settings
     default_settings = {
         "groq_api_key": "",
         "take_profit_pct": 1.0,
@@ -73,9 +73,6 @@ def load_settings():
     if not current_settings.get("groq_api_key"):
         print_colored("ERROR: Groq API Key tidak ditemukan. Harap edit 'settings.json'.", Fore.RED, Style.BRIGHT)
         exit()
-        
-    client = Groq(api_key=current_settings["groq_api_key"])
-
 
 def save_settings():
     with open(SETTINGS_FILE, 'w') as f:
@@ -114,13 +111,12 @@ def display_history():
             print_colored(f"  Analisis Exit: {trade.get('exitReason', 'N/A')}", Fore.WHITE)
         print()
 
-
 # --- PENGAMBILAN DATA ---
 
 def fetch_okx_candle_data(instId, timeframe):
     try:
         url = f"{OKX_API_URL}/market/history-candles?instId={instId}&bar={timeframe}&limit=300"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10) # Menambahkan timeout
         response.raise_for_status()
         data = response.json()
         if data.get("code") == "0" and isinstance(data.get("data"), list):
@@ -134,34 +130,49 @@ def fetch_okx_candle_data(instId, timeframe):
                 }
                 for d in data["data"]
             ]
-            return formatted_data[::-1] # Reverse to get oldest first
+            return formatted_data[::-1]
         else:
             print_colored(f"OKX API Error: {data.get('msg', 'Data tidak valid')}", Fore.RED)
             return []
     except requests.exceptions.RequestException as e:
-        print_colored(f"Network Error: {e}", Fore.RED)
+        print_colored(f"Network Error saat fetch data OKX: {e}", Fore.RED)
         return []
 
 # --- LOGIKA INTI AI ---
 
+# DIUBAH: Fungsi ini sekarang menggunakan 'requests' secara langsung.
 def get_groq_completion(system_prompt, user_content, model='llama3-70b-8192', is_json=False):
-    try:
-        messages = [
+    headers = {
+        "Authorization": f"Bearer {current_settings['groq_api_key']}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
-        ]
-        response_format = {"type": "json_object"} if is_json else None
+        ],
+        "model": model,
+        "temperature": 0.7,
+        "max_tokens": 700
+    }
+    if is_json:
+        payload["response_format"] = {"type": "json_object"}
         
-        chat_completion = client.chat.completions.create(
-            messages=messages,
-            model=model,
-            temperature=0.7,
-            max_tokens=700,
-            response_format=response_format
+    try:
+        response = requests.post(
+            GROQ_API_URL, 
+            headers=headers, 
+            data=json.dumps(payload),
+            timeout=30 # Menambahkan timeout untuk panggilan AI
         )
-        return chat_completion.choices[0].message.content
-    except Exception as e:
-        print_colored(f"Groq API Error: {e}", Fore.RED)
+        response.raise_for_status()
+        result_json = response.json()
+        return result_json['choices'][0]['message']['content']
+    except requests.exceptions.RequestException as e:
+        print_colored(f"Groq API Network Error: {e}", Fore.RED)
+        return None
+    except (KeyError, IndexError) as e:
+        print_colored(f"Groq API response format error: {e}. Full response: {response.text}", Fore.RED)
         return None
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
@@ -170,10 +181,7 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
 
     outcome = "TRUE PROFIT" if pnl > MIN_PROFIT_PERCENTAGE else "BREAK-EVEN/FEES" if pnl >= 0 else "CLEAR LOSS"
     
-    system_prompt = """You are a concise trading analyst. You will receive details of a completed trade. Your task is to provide a brief, insightful, one-sentence analysis of *why* the trade resulted in its outcome. Be brutally honest. Focus on market structure, momentum, or confirmation signals.
-Example for Profit: "The entry correctly identified the bounce from support, and the bullish momentum carried the price to the target."
-Example for Loss: "The entry was premature, buying into resistance before a confirmed breakout, leading to a reversal."
-Start your response directly with the analysis."""
+    system_prompt = """You are a concise trading analyst. You will receive details of a completed trade. Your task is to provide a brief, insightful, one-sentence analysis of *why* the trade resulted in its outcome. Be brutally honest. Focus on market structure, momentum, or confirmation signals. Start your response directly with the analysis."""
     
     user_content = f"""Analyze the following completed trade for {trade['instrumentId']}:
 - Outcome: {outcome} ({pnl:.2f}%)
@@ -342,12 +350,10 @@ def data_refresh_worker():
     global current_candle_data
     while not stop_event.is_set():
         if current_instrument_id:
-            # print_colored(f"[{datetime.now().strftime('%H:%M:%S')}] Refreshing data for {current_instrument_id}...", Fore.BLUE)
             data = fetch_okx_candle_data(current_instrument_id, DEFAULT_TIMEFRAME)
             if data:
                 current_candle_data = data
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
-
 
 # --- FUNGSI UTAMA ---
 
@@ -358,7 +364,6 @@ def main():
     load_trades()
     display_welcome_message()
 
-    # Mulai thread di latar belakang
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True)
     autopilot_thread.start()
     
@@ -415,7 +420,7 @@ def main():
                 else:
                     print_colored("Format salah. Gunakan: !pair NAMA-PAIR [TIMEFRAME]", Fore.RED)
 
-            else: # Dianggap sebagai chat
+            else:
                 asyncio.run(handle_chat_message(user_input))
 
         except KeyboardInterrupt:
@@ -428,7 +433,6 @@ def main():
     autopilot_thread.join()
     data_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
-
 
 if __name__ == "__main__":
     main()
