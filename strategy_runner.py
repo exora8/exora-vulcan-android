@@ -14,7 +14,8 @@ OKX_API_URL = "https://www.okx.com/api/v5"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MIN_PROFIT_PERCENTAGE = 0.1
 DEFAULT_TIMEFRAME = '1H'
-ANALYSIS_INTERVAL_SECONDS = 20
+# DIUBAH: Interval Autopilot sekarang menjadi 30 detik
+ANALYSIS_INTERVAL_SECONDS = 30
 REFRESH_INTERVAL_SECONDS = 5
 
 # --- STATE APLIKASI ---
@@ -25,6 +26,8 @@ current_candle_data = []
 is_ai_thinking = False
 is_autopilot_in_cooldown = False
 stop_event = threading.Event()
+# BARU: Deteksi otomatis lingkungan Termux
+IS_TERMUX = 'TERMUX_VERSION' in os.environ
 
 # --- INISIALISASI ---
 init(autoreset=True)
@@ -33,11 +36,26 @@ init(autoreset=True)
 def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL):
     print(bright + color + text)
 
+# BARU: Fungsi untuk mengirim notifikasi ke sistem Termux
+def send_termux_notification(title, content):
+    if not IS_TERMUX:
+        return  # Jangan lakukan apa-apa jika tidak berjalan di Termux
+    try:
+        # Membersihkan quotes untuk keamanan command line
+        safe_title = title.replace('"', "'")
+        safe_content = content.replace('"', "'")
+        command = f'termux-notification --title "{safe_title}" --content "{safe_content}"'
+        os.system(command)
+    except Exception as e:
+        print_colored(f"Gagal mengirim notifikasi: {e}", Fore.RED)
+
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("   Strategic AI Analyst (Self-Learning Edition)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (Notification Edition)    ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("AI ini belajar dari setiap trade untuk mempertajam analisis.", Fore.YELLOW)
+    if IS_TERMUX:
+        print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
 
@@ -60,7 +78,6 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             current_settings = json.load(f)
-            # Isi yang kosong dengan default
             for key, value in default_settings.items():
                 if key not in current_settings:
                     current_settings[key] = value
@@ -99,7 +116,6 @@ def display_history():
         return
         
     for trade in reversed(autopilot_trades):
-        # ... (fungsi display_history tidak berubah, tapi datanya lebih kaya)
         entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
         status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
         
@@ -121,7 +137,6 @@ def display_history():
 
 # --- FUNGSI API (OKX & GROQ) ---
 def fetch_okx_candle_data(instId, timeframe):
-    # ... (tidak berubah)
     try:
         url = f"{OKX_API_URL}/market/history-candles?instId={instId}&bar={timeframe}&limit=300"
         response = requests.get(url, timeout=10)
@@ -135,7 +150,6 @@ def fetch_okx_candle_data(instId, timeframe):
         print_colored(f"Network Error saat fetch data OKX: {e}", Fore.RED); return []
 
 def get_groq_completion(system_prompt, user_content, model='llama3-70b-8192', is_json=False):
-    # ... (tidak berubah)
     headers = {"Authorization": f"Bearer {current_settings['groq_api_key']}", "Content-Type": "application/json"}
     payload = {"messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],"model": model,"temperature": 0.7,"max_tokens": 700}
     if is_json: payload["response_format"] = {"type": "json_object"}
@@ -147,9 +161,8 @@ def get_groq_completion(system_prompt, user_content, model='llama3-70b-8192', is
     except (KeyError, IndexError, json.JSONDecodeError) as e: print_colored(f"Groq API response format error: {e}. Resp: {response.text}", Fore.RED); return None
 
 
-# --- LOGIKA INTI AI (DITINGKATKAN) ---
+# --- LOGIKA INTI AI ---
 
-# BARU: Fungsi untuk menganalisis trade yang sudah selesai dan menyimpannya sebagai "pelajaran".
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     print_colored(f"\nMenganalisis hasil trade {trade['id']} untuk pembelajaran...", Fore.CYAN)
     pnl = ((exit_price - trade['entryPrice']) / trade['entryPrice']) * 100
@@ -164,14 +177,12 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
 - How it was closed: {close_trigger_reason}
 - Chart Data around Exit (last 50 candles):\n{json.dumps(current_candle_data[-50:])}"""
 
-    # Menggunakan model kecil dan cepat untuk analisis ini
     exit_reason_analysis = get_groq_completion(system_prompt, user_content, model='llama3-8b-8192')
     
     trade['status'] = 'CLOSED'
     trade['exitPrice'] = exit_price
     trade['exitTimestamp'] = datetime.utcnow().isoformat() + "Z"
     trade['pl_percent'] = pnl
-    # Menyimpan "pelajaran" ke dalam riwayat trade
     trade['exitReason'] = exit_reason_analysis or f"Auto-closed: {close_trigger_reason}"
 
     pnl_text = f"PROFIT: +{pnl:.2f}%" if pnl > MIN_PROFIT_PERCENTAGE else f"LOSS: {pnl:.2f}%"
@@ -181,8 +192,12 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     
     save_trades()
 
+    # DIUBAH: Kirim notifikasi saat posisi ditutup
+    notification_title = f"🔴 Posisi Ditutup: {trade['instrumentId']}"
+    notification_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
+    send_termux_notification(notification_title, notification_content)
 
-# DIUBAH: Fungsi utama Autopilot sekarang menyertakan logika pembelajaran
+
 async def run_autopilot_analysis():
     global is_ai_thinking, is_autopilot_in_cooldown
     if is_ai_thinking or not current_instrument_id or not current_candle_data or is_autopilot_in_cooldown: return
@@ -192,7 +207,6 @@ async def run_autopilot_analysis():
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
         current_price = current_candle_data[-1]['close']
         
-        # 1. Hard Rules Check (TP/SL) - Selalu jadi prioritas
         if open_position:
             pnl = ((current_price - open_position['entryPrice']) / open_position['entryPrice']) * 100
             close_reason = None
@@ -205,10 +219,8 @@ async def run_autopilot_analysis():
                 await analyze_and_close_trade(open_position, current_price, close_reason)
                 is_ai_thinking = False; return
 
-        # 2. AI Decision Making dengan Konteks Pembelajaran
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Autopilot menganalisis {current_instrument_id}...", Fore.MAGENTA)
         
-        # --- MEMBANGUN KONTEKS PEMBELAJARAN ---
         past_trades = [t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'CLOSED'][-3:]
         learning_context = "There is no trading history for this pair yet. Perform your best analysis based on the current market structure."
         if past_trades:
@@ -219,7 +231,6 @@ async def run_autopilot_analysis():
                 learning_context += f"  - Entry Reason: \"{pt['entryReason']}\"\n"
                 learning_context += f"  - The Lesson Learned (Exit Analysis): \"{pt['exitReason']}\"\n\n"
         
-        # --- PROMPT ENGINEERING YANG CANGGIH ---
         system_prompt = f"""You are a strategic, data-driven, and self-correcting crypto trading bot. Your primary objective is to identify and execute only high-quality, 'sniper' trades with significant profit potential.
 
 **MANDATORY THREE-STEP ANALYSIS PROCESS:**
@@ -264,6 +275,11 @@ Finally, combine your historical learnings with your real-time analysis to make 
                 print_colored(f"\n🟢 ACTION: BUY {current_instrument_id} @ {current_price}", Fore.GREEN, Style.BRIGHT)
                 print_colored(f"   Confidence: {confidence}/10 | Reason: {reason}", Fore.WHITE)
                 save_trades()
+                
+                # DIUBAH: Kirim notifikasi saat posisi dibuka
+                notification_title = f"🟢 Posisi Dibuka: {current_instrument_id}"
+                notification_content = f"Entry pada harga {current_price:.4f}. Alasan: {reason}"
+                send_termux_notification(notification_title, notification_content)
             else:
                 print_colored(f"⚪️ HOLD: Sinyal BUY terdeteksi (Conf: {confidence}) tetapi di bawah ambang batas ({current_settings['min_confidence']}).", Fore.YELLOW)
         elif action == "CLOSE" and open_position:
@@ -279,14 +295,13 @@ Finally, combine your historical learnings with your real-time analysis to make 
     finally: is_ai_thinking = False
 
 async def handle_chat_message(user_text):
-    # ... (fungsi ini tidak perlu diubah, karena sudah kontekstual)
     global is_ai_thinking
     if is_ai_thinking: print_colored("AI sedang sibuk...", Fore.YELLOW); return
     if not current_instrument_id or not current_candle_data: print_colored("Pilih pair dulu.", Fore.YELLOW); return
     is_ai_thinking = True
     print_colored("\nAnalyst AI sedang berpikir...", Fore.MAGENTA)
     try:
-        system_prompt = """You are "ChartWise", an expert crypto chart analyst... (etc.)"""
+        system_prompt = """You are "ChartWise", an expert crypto chart analyst. Your personality is professional and insightful. Use the provided context to answer accurately. Focus on price action (support, resistance, trends). Do not give financial advice. Start your response directly."""
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
         user_content = f"Candlestick Data (Pair: {current_instrument_id}, Timeframe: {DEFAULT_TIMEFRAME}):\n{json.dumps(current_candle_data[-75:])}\n\n"
         if open_position:
@@ -340,7 +355,6 @@ def main():
             if user_input.lower() == '!exit': break
             elif user_input.lower() == '!help': display_help()
             elif user_input.lower() == '!status':
-                # ... (kode status tidak berubah)
                 if not current_instrument_id: print_colored("Pilih pair dulu.", Fore.YELLOW)
                 else:
                     price = current_candle_data[-1]['close'] if current_candle_data else 'N/A'
@@ -363,7 +377,7 @@ def main():
                     current_candle_data = fetch_okx_candle_data(current_instrument_id, DEFAULT_TIMEFRAME)
                     if current_candle_data: print_colored("Data berhasil dimuat.", Fore.GREEN)
                     else: print_colored("Gagal memuat data.", Fore.RED)
-                    save_settings() # Simpan pair terakhir
+                    save_settings()
                 else: print_colored("Format salah. Gunakan: !pair NAMA-PAIR [TIMEFRAME]", Fore.RED)
             elif user_input.strip():
                 asyncio.run(handle_chat_message(user_input))
