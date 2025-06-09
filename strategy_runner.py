@@ -29,6 +29,7 @@ init(autoreset=True)
 
 # --- FUNGSI UTILITAS & TAMPILAN ---
 def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL, end='\n'):
+    # Menambahkan Style.RESET_ALL untuk memastikan warna tidak "bocor" ke print berikutnya
     print(bright + color + text + Style.RESET_ALL, end=end)
 
 def send_termux_notification(title, content):
@@ -41,10 +42,11 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("      Strategic AI Analyst (Vulcan's Edition)     ", Fore.CYAN, Style.BRIGHT)
+    print_colored("    Strategic AI Analyst (Smooth Dashboard)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
+    print_colored("Dashboard sekarang memiliki transisi yang mulus tanpa kedip.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
+    print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
 
@@ -83,22 +85,42 @@ def load_trades():
 def save_trades():
     with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
 
+def display_history():
+    if not autopilot_trades: print_colored("Belum ada riwayat trade.", Fore.YELLOW); return
+    for trade in reversed(autopilot_trades):
+        entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
+        status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
+        trade_type = trade.get('type', 'LONG'); type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
+        print_colored(f"--- Trade ID: {trade['id']} ---", Fore.CYAN)
+        print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {trade['status']}", status_color)
+        print_colored(f"  Tipe Trade: {trade_type}", type_color, Style.BRIGHT)
+        print_colored(f"  Entry: {entry_time} @ {trade['entryPrice']:.4f}", Fore.WHITE)
+        print_colored(f"  Alasan Entry: {trade.get('entryReason', 'N/A')}", Fore.WHITE)
+        if trade['status'] == 'CLOSED':
+            exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
+            pl_percent = trade.get('pl_percent', 0.0); is_profit = pl_percent > current_settings.get('fee_pct', 0.1)
+            pl_color = Fore.GREEN if is_profit else Fore.RED
+            print_colored(f"  Exit: {exit_time} @ {trade['exitPrice']:.4f}", Fore.WHITE)
+            print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
+            run_up = trade.get('run_up_percent', pl_percent)
+            print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
+            if 'entry_snapshot' in trade:
+                snapshot = trade['entry_snapshot']
+                print_colored(f"  Pelajaran (Snapshot): Bias={snapshot.get('bias', 'N/A')}, RSI={snapshot.get('rsi', 0):.0f}", Fore.MAGENTA)
+        print()
+
 # --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
-    bybit_interval = timeframe_map.get(timeframe, '60')
-    bybit_symbol = instId.replace('-', '')
+    bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
     try:
         url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit=300"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status(); data = response.json()
+        response = requests.get(url, timeout=10); response.raise_for_status(); data = response.json()
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
-        else:
-            return None
-    except Exception:
-        return None
+        else: return None
+    except Exception: return None
 
 # --- OTAK LOCAL AI ---
 class LocalAI:
@@ -141,8 +163,7 @@ class LocalAI:
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
             if bias_same and rsi_similar:
-                # Log di dashboard akan terlalu ramai, jadi kita print hanya di memori jika perlu
-                # print_colored(f"[LEARNING] Menghindari posisi {trade_type} di {instrument_id} karena mirip dengan loss trade #{loss['id']}", Fore.MAGENTA); 
+                # Tidak perlu print di sini karena akan mengganggu dashboard
                 return True
         return False
     def get_decision(self, candle_data, open_position, instrument_id):
@@ -207,7 +228,7 @@ async def run_autopilot_analysis(instrument_id):
             send_termux_notification(notif_title, notif_content)
         elif action == "CLOSE" and open_position:
             await analyze_and_close_trade(open_position, current_price, f"Local AI Decision: {reason}", open_position.get("entry_snapshot"))
-    except Exception as e:
+    except Exception:
         is_autopilot_in_cooldown[instrument_id] = True; await asyncio.sleep(60); is_autopilot_in_cooldown[instrument_id] = False
     finally: is_ai_thinking = False
 
@@ -218,9 +239,7 @@ def autopilot_worker():
             watched_pairs = list(current_settings.get("watched_pairs", {}).keys())
             if watched_pairs:
                 for pair_id in watched_pairs:
-                    # Pastikan tidak ada race condition saat close trade
-                    if not next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None):
-                         asyncio.run(run_autopilot_analysis(pair_id))
+                    asyncio.run(run_autopilot_analysis(pair_id))
                     time.sleep(1) 
             stop_event.wait(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
@@ -258,12 +277,14 @@ def data_refresh_worker():
 def run_dashboard_mode():
     try:
         while True:
-            # DIUBAH: Menggunakan ANSI escape codes untuk refresh tanpa kedip
+            # DIUBAH: Menggunakan ANSI escape codes untuk menggambar ulang tanpa flicker
+            # \033[H memindahkan kursor ke pojok kiri atas
+            # \033[J membersihkan layar dari kursor hingga akhir
             print("\033[H\033[J", end="")
-            
+
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
             print_colored(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s", Fore.WHITE)
-            print_colored("="*60, Fore.CYAN)
+            print_colored("="*50, Fore.CYAN)
             
             watched_pairs = current_settings.get("watched_pairs", {})
             if not watched_pairs:
@@ -282,9 +303,10 @@ def run_dashboard_mode():
                     
                     print_colored("  Status    : ", end=''); print_colored("POSITION OPEN", Fore.YELLOW, Style.BRIGHT)
                     print_colored("  Tipe      : ", end=''); print_colored(f"{open_pos.get('type')}", type_color, Style.BRIGHT)
-                    print_colored(f"  Entry @{open_pos['entryPrice']:.4f} | PnL: ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
+                    print_colored("  Entry     : ", end=''); print_colored(f"{open_pos['entryPrice']:.4f}", Fore.WHITE)
+                    print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
                     run_up = open_pos.get('run_up_percent', 0.0)
-                    print_colored(f"  Run-up    : {run_up:.2f}%", Fore.YELLOW)
+                    print_colored("  Run-up    : ", end=''); print_colored(f"{run_up:.2f}%", Fore.YELLOW)
 
                 else:
                     print_colored("  Status    : ", end=''); print_colored("Searching for setup...", Fore.BLUE)
@@ -296,10 +318,10 @@ def run_dashboard_mode():
                     else:
                         print_colored("  Trend     : Menunggu data...", Fore.WHITE)
 
-            print_colored("\n"+"="*60, Fore.CYAN)
+            print_colored("\n"+"="*50, Fore.CYAN)
             print_colored("Tekan Ctrl+C untuk keluar dari dashboard dan kembali ke command prompt.", Fore.YELLOW)
             
-            time.sleep(1)
+            time.sleep(REFRESH_INTERVAL_SECONDS) # Redraw dashboard sesuai interval refresh data
     except KeyboardInterrupt:
         return
 
@@ -330,11 +352,8 @@ def main():
                     time.sleep(1)
                     run_dashboard_mode()
                     is_autopilot_running = False
-                    os.system('clear') # Membersihkan sisa dashboard setelah keluar
-                    display_welcome_message()
                     print_colored("\n🛑 Live Dashboard ditutup. Autopilot dinonaktifkan.", Fore.RED, Style.BRIGHT)
                     print_colored("Ketik '!start' untuk masuk lagi atau '!exit' untuk keluar.", Fore.YELLOW)
-
             elif cmd == '!stop': print_colored("Gunakan '!start' untuk masuk ke dashboard, lalu Ctrl+C untuk berhenti.", Fore.YELLOW)
             elif cmd == '!watchlist':
                 watched = current_settings.get("watched_pairs", {})
