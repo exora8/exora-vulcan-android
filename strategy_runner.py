@@ -163,7 +163,7 @@ class LocalAI:
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
             if bias_same and rsi_similar:
-                # Tidak perlu print di sini karena akan mengganggu dashboard
+                # Tidak print di sini agar tidak mengganggu dashboard
                 return True
         return False
     def get_decision(self, candle_data, open_position, instrument_id):
@@ -277,9 +277,7 @@ def data_refresh_worker():
 def run_dashboard_mode():
     try:
         while True:
-            # DIUBAH: Menggunakan ANSI escape codes untuk menggambar ulang tanpa flicker
-            # \033[H memindahkan kursor ke pojok kiri atas
-            # \033[J membersihkan layar dari kursor hingga akhir
+            # Menggunakan ANSI escape codes untuk menggambar ulang tanpa flicker
             print("\033[H\033[J", end="")
 
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
@@ -321,7 +319,7 @@ def run_dashboard_mode():
             print_colored("\n"+"="*50, Fore.CYAN)
             print_colored("Tekan Ctrl+C untuk keluar dari dashboard dan kembali ke command prompt.", Fore.YELLOW)
             
-            time.sleep(REFRESH_INTERVAL_SECONDS) # Redraw dashboard sesuai interval refresh data
+            time.sleep(1)
     except KeyboardInterrupt:
         return
 
@@ -383,8 +381,8 @@ def main():
                 display_history()
             elif cmd in ['!settings', '!set']:
                 handle_settings_command(command_parts)
-            else:
-                print_colored(f"Perintah '{cmd}' tidak dikenal. Ketik '!help' untuk daftar perintah.", Fore.RED)
+            elif user_input.strip():
+                print_colored(f"Perintah '{user_input}' tidak dikenal. Ketik '!help'.", Fore.RED)
         except KeyboardInterrupt: break
         except Exception as e: print_colored(f"\nTerjadi error tak terduga di main loop: {e}", Fore.RED)
 
@@ -392,6 +390,26 @@ def main():
     stop_event.set()
     autopilot_thread.join(); data_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
+
+def handle_settings_command(parts):
+    setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
+    if len(parts) == 1 and parts[0] == '!settings':
+        print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
+        for key, (full_key, unit) in setting_map.items():
+            display_key = key.capitalize().ljust(10)
+            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
+        print(); return
+    if len(parts) == 3 and parts[0] == '!set':
+        key_short = parts[1].lower()
+        if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
+        try:
+            value = float(parts[2])
+            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
+        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
+        key_full, unit = setting_map[key_short]
+        current_settings[key_full] = value; save_settings()
+        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
+    print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
 
 if __name__ == "__main__":
     main()
