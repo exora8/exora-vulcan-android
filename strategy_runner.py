@@ -124,6 +124,12 @@ def fetch_bybit_candle_data(instId, timeframe):
         else: return None
     except Exception: return None
 
+# DIPINDAHKAN KE ATAS: Fungsi ini sekarang didefinisikan sebelum digunakan oleh LocalAI
+def calculate_pnl(entry_price, current_price, trade_type):
+    if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
+    elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
+    return 0
+
 # --- OTAK LOCAL AI ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
@@ -158,12 +164,8 @@ class LocalAI:
         analysis["bias"] = bias; return analysis
     
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
-        # DIUBAH: AI sekarang belajar dari loss DAN dari trade yang hampir kena Stop Loss (high drawdown)
         sl_threshold = -self.settings.get('stop_loss_pct', 0.8)
-        undesirable_trades = [
-            t for t in self.past_trades 
-            if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1) or t.get('max_drawdown_percent', 0) <= sl_threshold
-        ]
+        undesirable_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1) or t.get('max_drawdown_percent', 0) <= sl_threshold]
         if not undesirable_trades: return False
         
         for bad_trade in undesirable_trades[-3:]:
@@ -204,7 +206,6 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     is_profit = pnl > fee
-    # DIUBAH: max_drawdown_percent sudah ada di object `trade`, jadi kita hanya perlu menyimpannya
     trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 'pl_percent': pnl})
     if not is_profit and entry_snapshot:
         trade['entry_snapshot'] = entry_snapshot
@@ -229,7 +230,6 @@ async def run_autopilot_analysis(instrument_id):
         current_price = candle_data[-1]['close']
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
-            # DIUBAH: Inisialisasi max_drawdown_percent saat trade baru dibuat
             new_trade = {"id": int(time.time()), "instrumentId": instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot"), "run_up_percent": 0.0, "max_drawdown_percent": 0.0}
             autopilot_trades.append(new_trade)
             save_trades()
@@ -254,18 +254,15 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
 
-# DIUBAH: Nama fungsi dan logikanya untuk melacak drawdown
 async def update_realtime_metrics_and_check_sl(instrument_id, latest_price):
     open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
     if not open_position: return
     
     current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
     
-    # Lacak Run-up (Profit Tertinggi)
     if current_pnl > open_position.get('run_up_percent', 0.0):
         open_position['run_up_percent'] = current_pnl
     
-    # Lacak Drawdown (Kerugian Terdalam)
     if current_pnl < open_position.get('max_drawdown_percent', 0.0):
         open_position['max_drawdown_percent'] = current_pnl
 
