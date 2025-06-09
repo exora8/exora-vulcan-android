@@ -123,6 +123,12 @@ def fetch_bybit_candle_data(instId, timeframe):
         else: return None
     except Exception: return None
 
+# DIUBAH: Fungsi ini dipindahkan ke atas agar bisa diakses oleh kelas LocalAI
+def calculate_pnl(entry_price, current_price, trade_type):
+    if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
+    elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
+    return 0
+
 # --- OTAK LOCAL AI ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
