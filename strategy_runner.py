@@ -13,6 +13,8 @@ SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 3
+# BARU: Interval untuk live log
+LIVE_LOG_INTERVAL_SECONDS = 2
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -22,8 +24,6 @@ data_lock = threading.Lock()
 is_autopilot_running = False
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
-
-# Variabel ini didefinisikan di sini, di lingkup global, untuk mengatasi error.
 is_ai_thinking = False
 is_autopilot_in_cooldown = False
 
@@ -44,23 +44,23 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("    Strategic AI Analyst (Final Corrected)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("      Strategic AI Analyst (Live Log Edition)     ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("Semua fitur aktif dan telah diperbaiki. Siap digunakan.", Fore.YELLOW)
+    print_colored("Gunakan '!start' untuk memulai Autopilot & Live Log.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
 
 def display_help():
     print_colored("\n--- Daftar Perintah ---", Fore.CYAN, Style.BRIGHT)
-    print_colored("!start                - Mengaktifkan Autopilot AI untuk semua pair", Fore.GREEN)
-    print_colored("!stop                 - Menonaktifkan Autopilot AI", Fore.GREEN)
-    print_colored("!add <PAIR> [TF]      - Tambah pair ke pantauan (misal: !add BTC-USDT 1H)", Fore.GREEN)
+    print_colored("!start                - Mengaktifkan Autopilot & Live Log", Fore.GREEN)
+    print_colored("!stop                 - Menonaktifkan Autopilot & Live Log", Fore.GREEN)
+    print_colored("!add <PAIR> [TF]      - Tambah pair ke pantauan", Fore.GREEN)
     print_colored("!remove <PAIR>        - Hapus pair dari pantauan", Fore.GREEN)
-    print_colored("!status               - Tampilkan status semua pair yang dipantau", Fore.GREEN)
-    print_colored("!history [PAIR]       - Tampilkan riwayat trade (opsional: filter per pair)", Fore.GREEN)
-    print_colored("!settings             - Tampilkan semua pengaturan saat ini", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (contoh: !set tp 1.5)", Fore.GREEN)
+    print_colored("!status               - Tampilkan status snapshot tanpa me-refresh layar", Fore.GREEN)
+    print_colored("!history [PAIR]       - Tampilkan riwayat trade", Fore.GREEN)
+    print_colored("!settings             - Tampilkan semua pengaturan", Fore.GREEN)
+    print_colored("!set <key> <value>    - Ubah pengaturan", Fore.GREEN)
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -169,23 +169,25 @@ def calculate_pnl(entry_price, current_price, trade_type):
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
     with data_lock:
-        if trade.get('status') == 'CLOSED': return # Mencegah penutupan ganda
-        print_colored(f"\nMenutup trade {trade['id']} untuk {trade['instrumentId']}...", Fore.CYAN)
-        pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
-        fee = current_settings.get('fee_pct', 0.1); is_profit = pnl > fee
+        if trade.get('status') == 'CLOSED': return
+        trade['status'] = 'CLOSING' # Menandai sedang ditutup untuk mencegah duplikasi
+    print_colored(f"\nMenutup trade {trade['id']} untuk {trade['instrumentId']}...", Fore.CYAN)
+    pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
+    fee = current_settings.get('fee_pct', 0.1); is_profit = pnl > fee
+    with data_lock:
         trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 'pl_percent': pnl})
         if not is_profit and entry_snapshot:
             trade['entry_snapshot'] = entry_snapshot
             print_colored(f"   [LEARNING] Menyimpan snapshot kegagalan untuk {trade['instrumentId']} #{trade['id']}", Fore.MAGENTA)
-        pnl_text = f"PROFIT: +{pnl:.2f}%" if is_profit else f"LOSS: {pnl:.2f}%"
-        pnl_color = Fore.GREEN if is_profit else Fore.RED
-        print_colored(f"\n🔴 TRADE CLOSED: {pnl_text}", pnl_color, Style.BRIGHT)
-        run_up = trade.get('run_up_percent', pnl)
-        print_colored(f"   Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
-        save_trades()
-        notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
-        notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
-        send_termux_notification(notif_title, notif_content)
+    pnl_text = f"PROFIT: +{pnl:.2f}%" if is_profit else f"LOSS: {pnl:.2f}%"
+    pnl_color = Fore.GREEN if is_profit else Fore.RED
+    print_colored(f"\n🔴 TRADE CLOSED: {pnl_text}", pnl_color, Style.BRIGHT)
+    run_up = trade.get('run_up_percent', pnl)
+    print_colored(f"   Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
+    save_trades()
+    notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
+    notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
+    send_termux_notification(notif_title, notif_content)
 
 async def run_autopilot_analysis(pair_id):
     global is_ai_thinking, is_autopilot_in_cooldown
@@ -232,7 +234,7 @@ def autopilot_worker():
             with data_lock: pairs_to_analyze = list(monitored_pairs.keys())
             for pair_id in pairs_to_analyze:
                 asyncio.run(run_autopilot_analysis(pair_id))
-                time.sleep(1)
+                time.sleep(1) # Jeda kecil antar analisis
             stop_event.wait(current_settings.get("analysis_interval_sec", 30))
         else: time.sleep(1)
 
@@ -265,6 +267,46 @@ def data_refresh_worker():
             time.sleep(0.5)
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
+# BARU: Fungsi untuk menampilkan status (digunakan oleh live log dan !status)
+def display_live_status(clear_screen=False):
+    if clear_screen: os.system('clear')
+    with data_lock:
+        if not monitored_pairs:
+            if not clear_screen: print_colored("Tidak ada pair yang dipantau. Gunakan '!add'.", Fore.YELLOW)
+            return
+        
+        print_colored(f"--- AUTOPILOT LIVE LOG (Refresh: {LIVE_LOG_INTERVAL_SECONDS}s) ---", Fore.YELLOW, Style.BRIGHT)
+        print_colored(f"Waktu: {datetime.now().strftime('%H:%M:%S')}", Fore.WHITE)
+        
+        for pair_id, pair_data in monitored_pairs.items():
+            price_str = 'N/A'; bias_str = 'N/A'; rsi_str = 'N/A'
+            candle_data = pair_data.get('candle_data')
+            if candle_data:
+                price_str = f"{candle_data[-1]['close']:.4f}"
+                analysis = LocalAI(current_settings, []).get_market_analysis(candle_data)
+                if analysis:
+                    bias_str = analysis['bias']
+                    rsi_str = f"{analysis['rsi']:.1f}"
+
+            status_line = f"{Style.BRIGHT}{Fore.WHITE}{pair_id:<12}{Style.RESET_ALL} | Harga: {price_str:<10} | Tren: {bias_str:<15} | RSI: {rsi_str:<5} | Posisi: "
+            
+            open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+            if open_pos:
+                pnl = calculate_pnl(open_pos['entryPrice'], float(price_str) if price_str != 'N/A' else 0, open_pos.get('type'))
+                pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
+                type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
+                status_line += f"{Style.BRIGHT}{type_color}{open_pos.get('type'):<5}{Style.RESET_ALL} | P/L: {pnl_color}{pnl: >6.2f}%{Style.RESET_ALL}"
+            else:
+                status_line += f"{Fore.CYAN}Tidak Ada{Style.RESET_ALL}"
+            print(status_line)
+
+# BARU: Worker thread khusus untuk live log
+def live_log_worker():
+    while not stop_event.is_set():
+        if is_autopilot_running and not is_ai_thinking:
+            display_live_status(clear_screen=True)
+        time.sleep(LIVE_LOG_INTERVAL_SECONDS)
+
 def handle_settings_command(parts):
     setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
     if len(parts) == 1 and parts[0] == '!settings':
@@ -293,10 +335,8 @@ def handle_history_command(parts):
             target_pair = parts[1].upper()
             trades_to_show = [t for t in autopilot_trades if t.get('instrumentId') == target_pair]
             title = f"--- Riwayat Trade untuk {target_pair} ---"
-        
         if not trades_to_show:
             print_colored("Tidak ada riwayat trade yang cocok.", Fore.YELLOW); return
-        
         print_colored(f"\n{title}", Fore.CYAN, Style.BRIGHT)
         for trade in reversed(trades_to_show):
             entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
@@ -330,11 +370,13 @@ def main():
     for pair_id, data in monitored_pairs.items():
         print_colored(f"Memuat data awal untuk {pair_id}...", Fore.CYAN)
         candle_data = fetch_bybit_candle_data(pair_id, data['timeframe'])
-        if candle_data:
-            data['candle_data'] = candle_data; print_colored(f"Data {pair_id} berhasil dimuat.", Fore.GREEN)
+        if candle_data: data['candle_data'] = candle_data; print_colored(f"Data {pair_id} berhasil dimuat.", Fore.GREEN)
         else: print_colored(f"Gagal memuat data untuk {pair_id}.", Fore.RED)
+    
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True); autopilot_thread.start()
     data_thread = threading.Thread(target=data_refresh_worker, daemon=True); data_thread.start()
+    live_log_thread = threading.Thread(target=live_log_worker, daemon=True); live_log_thread.start()
+
     while True:
         try:
             prompt_text = f"[{len(monitored_pairs)} Pairs] > "
@@ -347,27 +389,11 @@ def main():
             elif cmd == '!start':
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan.", Fore.YELLOW)
                 elif not monitored_pairs: print_colored("Error: Tidak ada pair yang dipantau. Gunakan '!add'.", Fore.RED)
-                else: is_autopilot_running = True; print_colored("✅ Autopilot Lokal diaktifkan untuk semua pair.", Fore.GREEN, Style.BRIGHT)
+                else: is_autopilot_running = True; print_colored("✅ Autopilot & Live Log diaktifkan.", Fore.GREEN, Style.BRIGHT)
             elif cmd == '!stop':
                 if not is_autopilot_running: print_colored("Autopilot sudah tidak aktif.", Fore.YELLOW)
-                else: is_autopilot_running = False; print_colored("🛑 Autopilot Lokal dinonaktifkan.", Fore.RED, Style.BRIGHT)
-            elif cmd == '!status':
-                with data_lock:
-                    if not monitored_pairs: print_colored("Tidak ada pair yang dipantau. Gunakan '!add'.", Fore.YELLOW)
-                    for pair_id, pair_data in monitored_pairs.items():
-                        price = pair_data['candle_data'][-1]['close'] if pair_data.get('candle_data') else 'N/A'
-                        print_colored(f"\n--- Status untuk {pair_id} ---", Fore.CYAN, Style.BRIGHT)
-                        ap_status, ap_color = ("Aktif", Fore.GREEN) if is_autopilot_running else ("Tidak Aktif", Fore.RED)
-                        print_colored(f"  Autopilot: {ap_status} | TF: {pair_data['timeframe']} | Harga: {price}", ap_color)
-                        open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                        if open_pos and isinstance(price, float):
-                            pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
-                            pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
-                            type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
-                            print_colored(f"  Posisi: ", Fore.WHITE, end=""); print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
-                            print_colored(f"| Entry @ {open_pos['entryPrice']:.4f} | P/L: {pnl:.2f}%", pnl_color)
-                            run_up = open_pos.get('run_up_percent', 0.0); print_colored(f"    Run-up: {run_up:.2f}%", Fore.YELLOW)
-                        else: print_colored("  Posisi: Tidak ada", Fore.WHITE)
+                else: is_autopilot_running = False; os.system('clear'); display_welcome_message(); print_colored("🛑 Autopilot & Live Log dinonaktifkan.", Fore.RED, Style.BRIGHT)
+            elif cmd == '!status': display_live_status(clear_screen=False)
             elif cmd == '!history': handle_history_command(command_parts)
             elif cmd in ['!settings', '!set']: handle_settings_command(command_parts)
             elif cmd == '!add':
@@ -381,8 +407,7 @@ def main():
                             monitored_pairs[pair_id] = {"timeframe": tf, "candle_data": []}
                             data = fetch_bybit_candle_data(pair_id, tf)
                             if data:
-                                monitored_pairs[pair_id]['candle_data'] = data
-                                print_colored(f"Data awal untuk {pair_id} berhasil dimuat.", Fore.GREEN)
+                                monitored_pairs[pair_id]['candle_data'] = data; print_colored(f"Data awal untuk {pair_id} berhasil dimuat.", Fore.GREEN)
                             else:
                                 print_colored(f"Gagal memuat data awal untuk {pair_id}, pair mungkin tidak valid.", Fore.RED); del monitored_pairs[pair_id]
                     save_settings()
@@ -392,8 +417,7 @@ def main():
                     pair_id = command_parts[1].upper()
                     with data_lock:
                         if pair_id in monitored_pairs:
-                            del monitored_pairs[pair_id]
-                            print_colored(f"{pair_id} berhasil dihapus dari pantauan.", Fore.YELLOW)
+                            del monitored_pairs[pair_id]; print_colored(f"{pair_id} berhasil dihapus dari pantauan.", Fore.YELLOW)
                         else: print_colored(f"Error: {pair_id} tidak ada dalam daftar pantauan.", Fore.RED)
                     save_settings()
                 else: print_colored("Format salah. Gunakan: !remove PAIR-USDT", Fore.RED)
@@ -402,7 +426,7 @@ def main():
     
     print_colored("\nMenutup aplikasi...", Fore.YELLOW)
     stop_event.set()
-    autopilot_thread.join(); data_thread.join()
+    autopilot_thread.join(); data_thread.join(); live_log_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
 
 if __name__ == "__main__":
