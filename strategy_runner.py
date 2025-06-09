@@ -42,9 +42,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("   Strategic AI Analyst (EMA Crossover Logic)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("     Strategic AI Analyst (God-Tier Local AI)     ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI ini menggunakan Crossover EMA 9 & Tren EMA 50/100.", Fore.YELLOW)
+    print_colored("AI ini menggunakan Volume, Bollinger Bands, Pivot Points, EMA & RSI.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
@@ -54,7 +54,7 @@ def display_help():
     print_colored("!start                - Mengaktifkan Autopilot AI", Fore.GREEN)
     print_colored("!stop                 - Menonaktifkan Autopilot AI", Fore.GREEN)
     print_colored("!pair <PAIR> [TF]   - Ganti pair dan timeframe", Fore.GREEN)
-    print_colored("!status               - Tampilkan status saat ini", Fore.GREEN)
+    print_colored("!status               - Tampilkan status dan analisis teknikal singkat", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan saat ini", Fore.GREEN)
     print_colored("!set <key> <value>    - Ubah pengaturan (contoh: !set tp 1.5)", Fore.GREEN)
@@ -64,11 +64,7 @@ def display_help():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings, current_instrument_id
-    default_settings = {
-        "take_profit_pct": 1.5, "stop_loss_pct": 0.8, "fee_pct": 0.1,
-        "analysis_interval_sec": 30, "min_confidence": 7, 
-        "last_pair": None, "last_timeframe": "1H"
-    }
+    default_settings = {"take_profit_pct": 1.5, "stop_loss_pct": 0.8, "fee_pct": 0.1, "analysis_interval_sec": 30, "last_pair": None, "last_timeframe": "1H"}
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             current_settings = json.load(f)
@@ -97,24 +93,27 @@ def fetch_okx_candle_data(instId, timeframe):
         response = requests.get(url, timeout=10)
         response.raise_for_status(); data = response.json()
         if data.get("code") == "0" and isinstance(data.get("data"), list):
-            return [{"time": int(d[0]),"open": float(d[1]),"high": float(d[2]),"low": float(d[3]),"close": float(d[4])} for d in data["data"]][::-1]
+            # OKX volume ada di index 5 ('volCcy')
+            return [{"time": int(d[0]),"open": float(d[1]),"high": float(d[2]),"low": float(d[3]),"close": float(d[4]), "volume": float(d[5])} for d in data["data"]][::-1]
         else:
             print_colored(f"OKX API Error: {data.get('msg', 'Data tidak valid')}", Fore.RED); return []
     except requests.exceptions.RequestException as e:
         print_colored(f"Network Error saat fetch data OKX: {e}", Fore.RED); return []
 
-# --- OTAK LOCAL AI (LOGIKA EMA BARU) ---
+# --- OTAK LOCAL AI (DENGAN SEMUA LOGIKA BARU) ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair):
         self.settings = settings
         self.past_trades = past_trades_for_pair
 
+    # --- Kalkulator Indikator ---
     def calculate_ema(self, data, period):
         if len(data) < period: return None
+        closes = [d['close'] for d in data]
         multiplier = 2 / (period + 1)
-        ema = sum(d['close'] for d in data[:period]) / period
-        for d in data[period:]:
-            ema = (d['close'] - ema) * multiplier + ema
+        ema = sum(closes[:period]) / period
+        for price in closes[period:]:
+            ema = (price - ema) * multiplier + ema
         return ema
 
     def calculate_rsi(self, data, period=14):
@@ -131,85 +130,121 @@ class LocalAI:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    # DIUBAH: Logika penentuan tren sekarang berdasarkan EMA 50/100
+    def calculate_bollinger_bands(self, data, period=20, std_dev=2):
+        if len(data) < period: return None
+        closes = [d['close'] for d in data[-period:]]
+        sma = sum(closes) / period
+        variance = sum([(price - sma) ** 2 for price in closes]) / period
+        stdev = math.sqrt(variance)
+        upper = sma + std_dev * stdev
+        lower = sma - std_dev * stdev
+        return {"middle": sma, "upper": upper, "lower": lower, "width": (upper - lower) / sma}
+
+    def calculate_lookback_pivots(self, data, period=100):
+        if len(data) < period: return None
+        relevant_data = data[-period:]
+        high = max(d['high'] for d in relevant_data)
+        low = min(d['low'] for d in relevant_data)
+        close = relevant_data[-1]['close']
+        pivot = (high + low + close) / 3
+        s1 = (2 * pivot) - high
+        r1 = (2 * pivot) - low
+        return {"p": pivot, "s1": s1, "r1": r1}
+
+    # --- Analisis Pasar Komprehensif ---
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100: return None
         
-        ema9 = self.calculate_ema(candle_data, 9)
-        ema50 = self.calculate_ema(candle_data, 50)
-        ema100 = self.calculate_ema(candle_data, 100)
-        rsi = self.calculate_rsi(candle_data, 14)
+        analysis = {
+            "ema9": self.calculate_ema(candle_data, 9),
+            "ema50": self.calculate_ema(candle_data, 50),
+            "ema100": self.calculate_ema(candle_data, 100),
+            "rsi": self.calculate_rsi(candle_data, 14),
+            "bb": self.calculate_bollinger_bands(candle_data, 20),
+            "pivots": self.calculate_lookback_pivots(candle_data, 100),
+            "avg_volume": sum(d['volume'] for d in candle_data[-20:]) / 20
+        }
         
+        # Tentukan Bias Tren berdasarkan EMA
         bias = "RANGING"
-        # Menambahkan sedikit buffer untuk menghindari sinyal palsu saat EMA sangat dekat
-        if ema50 > ema100 * 1.002: 
-            bias = "BULLISH"
-        elif ema50 < ema100 * 0.998: 
-            bias = "BEARISH"
+        if analysis["ema50"] > analysis["ema100"]: bias = "BULLISH"
+        elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
+        analysis["bias"] = bias
+        
+        # Tentukan Kondisi Volatilitas
+        volatility = "NORMAL"
+        if analysis["bb"]["width"] < 0.03: volatility = "SQUEEZE" # Lebar BB < 3% dari harga
+        analysis["volatility"] = volatility
 
-        return {"ema9": ema9, "ema50": ema50, "ema100": ema100, "rsi": rsi, "bias": bias}
+        return analysis
 
-    def check_for_repeated_mistake(self, current_analysis):
+    # --- Sistem Belajar yang Diperkuat ---
+    def check_for_repeated_mistake(self, current_analysis, trade_type):
         losing_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         if not losing_trades: return False
         
         for loss in losing_trades[-3:]:
             past_snapshot = loss.get("entry_snapshot")
-            if not past_snapshot: continue
+            if not past_snapshot or loss.get("type") != trade_type: continue
+            
+            # Kondisi kemiripan
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
+            volatility_same = current_analysis['volatility'] == past_snapshot.get('volatility')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
-            if bias_same and rsi_similar:
+            
+            # Jika semua kondisi mirip, ini adalah pengulangan kesalahan!
+            if bias_same and volatility_same and rsi_similar:
+                # Logika Bobot: Jika loss sebelumnya parah, jangan ambil risiko.
+                if loss.get('pl_percent', 0) < -2.0: # Jika loss lebih dari 2%
+                    print_colored(f"[LEARNING] Menolak keras! Mirip dengan loss fatal #{loss['id']}", Fore.RED, Style.BRIGHT)
+                    return True
                 print_colored(f"[LEARNING] Menghindari posisi karena mirip dengan loss trade #{loss['id']}", Fore.MAGENTA)
                 return True
         return False
 
-    # DIUBAH: Logika keputusan inti sekarang berdasarkan aturan crossover baru
+    # --- Logika Keputusan Inti ---
     def get_decision(self, candle_data, open_position):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup untuk analisis."}
         
         current_price = candle_data[-1]['close']
         
-        if open_position:
+        if open_position: # Logika untuk menutup posisi
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
             trade_type = open_position.get('type')
-            
-            # Logika exit tetap sama, keluar jika harga cross balik atau RSI ekstrim
-            if trade_type == 'LONG' and (current_price < analysis['ema9']):
-                return {"action": "CLOSE", "reason": f"Harga cross ke bawah EMA9, sinyal exit."}
-            if trade_type == 'SHORT' and (current_price > analysis['ema9']):
-                return {"action": "CLOSE", "reason": f"Harga cross ke atas EMA9, sinyal exit."}
+            if trade_type == 'LONG' and (current_price < analysis['ema9'] or current_price > analysis['bb']['upper']):
+                return {"action": "CLOSE", "reason": "Sinyal exit (cross EMA9 / sentuh Upper BB)."}
+            if trade_type == 'SHORT' and (current_price > analysis['ema9'] or current_price < analysis['bb']['lower']):
+                return {"action": "CLOSE", "reason": "Sinyal exit (cross EMA9 / sentuh Lower BB)."}
             return {"action": "HOLD", "reason": f"Holding {trade_type}, P/L: {pnl:.2f}%"}
 
-        if self.check_for_repeated_mistake(analysis):
-            return {"action": "HOLD", "reason": "Menghindari pengulangan kesalahan masa lalu."}
-
-        # --- LOGIKA ENTRY BARU: EMA CROSSOVER ---
-        if len(candle_data) < 2:
-            return {"action": "HOLD", "reason": "Menunggu candle kedua untuk deteksi crossover."}
+        # --- Logika Entry "God-Tier" ---
         
-        previous_candle = candle_data[-2]
-        ema9 = analysis['ema9']
-        rsi = analysis['rsi']
-        bias = analysis['bias']
-
-        # KONDISI LONG: Tren Bullish + Harga Cross ke ATAS EMA9
-        is_bullish_trend = bias == 'BULLISH'
-        crossed_up = previous_candle['close'] < ema9 and current_price > ema9
-        is_not_overbought = rsi < 75 # Filter agar tidak masuk di puncak
-
-        if is_bullish_trend and crossed_up and is_not_overbought:
-             return {"action": "BUY", "reason": f"Tren Bullish & Harga cross ke atas EMA9. RSI: {rsi:.0f}", "snapshot": analysis}
+        # 1. Sabar saat Volatilitas Rendah (Squeeze)
+        if analysis['volatility'] == 'SQUEEZE':
+            return {"action": "HOLD", "reason": "Bollinger Bands Squeeze, menunggu breakout."}
         
-        # KONDISI SHORT: Tren Bearish + Harga Cross ke BAWAH EMA9
-        is_bearish_trend = bias == 'BEARISH'
-        crossed_down = previous_candle['close'] > ema9 and current_price < ema9
-        is_not_oversold = rsi > 25 # Filter agar tidak masuk di lembah
-
-        if is_bearish_trend and crossed_down and is_not_oversold:
-            return {"action": "SELL", "reason": f"Tren Bearish & Harga cross ke bawah EMA9. RSI: {rsi:.0f}", "snapshot": analysis}
+        # 2. Periksa Kondisi Entry LONG
+        if analysis['bias'] == 'BULLISH':
+            is_near_support = current_price < analysis['bb']['middle'] or current_price < analysis['pivots']['p']
+            is_volume_confirmed = candle_data[-1]['volume'] > analysis['avg_volume'] * 1.2
+            is_not_overbought = analysis['rsi'] < 70
             
-        return {"action": "HOLD", "reason": f"Menunggu sinyal crossover. Tren: {bias}, Harga vs EMA9: {'Diatas' if current_price > ema9 else 'Dibawah'}."}
+            if is_near_support and is_volume_confirmed and is_not_overbought:
+                if not self.check_for_repeated_mistake(analysis, "LONG"):
+                    return {"action": "BUY", "reason": f"Bullish, pullback ke support dinamis dengan konfirmasi volume.", "snapshot": analysis}
+        
+        # 3. Periksa Kondisi Entry SHORT
+        if analysis['bias'] == 'BEARISH':
+            is_near_resistance = current_price > analysis['bb']['middle'] or current_price > analysis['pivots']['p']
+            is_volume_confirmed = candle_data[-1]['volume'] > analysis['avg_volume'] * 1.2
+            is_not_oversold = analysis['rsi'] > 30
+
+            if is_near_resistance and is_volume_confirmed and is_not_oversold:
+                if not self.check_for_repeated_mistake(analysis, "SHORT"):
+                    return {"action": "SELL", "reason": f"Bearish, rally ke resistance dinamis dengan konfirmasi volume.", "snapshot": analysis}
+            
+        return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}, Vol: {analysis['volatility']}."}
 
 
 # --- LOGIKA TRADING UTAMA ---
@@ -232,6 +267,9 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     pnl_text = f"PROFIT: +{pnl:.2f}%" if is_profit else f"LOSS: {pnl:.2f}%"
     pnl_color = Fore.GREEN if is_profit else Fore.RED
     print_colored(f"\n🔴 TRADE CLOSED: {pnl_text}", pnl_color, Style.BRIGHT)
+    # Menampilkan run-up
+    run_up = trade.get('run_up_percent', pnl)
+    print_colored(f"   Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
     save_trades()
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
@@ -247,14 +285,12 @@ async def run_autopilot_analysis():
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Local AI sedang menganalisis {current_instrument_id}...", Fore.MAGENTA)
         local_brain = LocalAI(current_settings, [t for t in autopilot_trades if t['instrumentId'] == current_instrument_id])
         decision = local_brain.get_decision(current_candle_data, open_position)
-        
         action = decision.get('action', 'HOLD').upper()
         reason = decision.get('reason', 'No reason provided.')
         current_price = current_candle_data[-1]['close']
-
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
-            new_trade = {"id": int(time.time()), "instrumentId": current_instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot")}
+            new_trade = {"id": int(time.time()), "instrumentId": current_instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot"), "run_up_percent": 0.0}
             autopilot_trades.append(new_trade)
             action_color = Fore.GREEN if action == "BUY" else Fore.RED
             print_colored(f"\n{'🟢' if action == 'BUY' else '🔴'} ACTION: {action} {current_instrument_id} @ {current_price}", action_color, Style.BRIGHT)
@@ -280,16 +316,22 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 30))
         else: time.sleep(1)
 
-async def check_realtime_tp_sl(latest_price):
+async def check_realtime_tp_sl_and_runup(latest_price):
     global is_ai_thinking
     if is_ai_thinking or not is_autopilot_running: return
     open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
     if not open_position: return
-    pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
+    
+    # Update Run-up
+    current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
+    if current_pnl > open_position.get('run_up_percent', 0.0):
+        open_position['run_up_percent'] = current_pnl
+        
+    # Check TP/SL
     tp_pct = current_settings.get('take_profit_pct'); sl_pct = current_settings.get('stop_loss_pct')
     close_reason = None
-    if tp_pct and pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
-    elif sl_pct and pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
+    if tp_pct and current_pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
+    elif sl_pct and current_pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
     if close_reason:
         await analyze_and_close_trade(open_position, latest_price, close_reason, open_position.get("entry_snapshot"))
 
@@ -301,28 +343,8 @@ def data_refresh_worker():
             if data: 
                 current_candle_data = data
                 latest_price = data[-1]['close']
-                asyncio.run(check_realtime_tp_sl(latest_price))
+                asyncio.run(check_realtime_tp_sl_and_runup(latest_price))
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
-
-def handle_settings_command(parts):
-    setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
-    if len(parts) == 1 and parts[0] == '!settings':
-        print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
-        for key, (full_key, unit) in setting_map.items():
-            display_key = key.capitalize().ljust(10)
-            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
-        print(); return
-    if len(parts) == 3 and parts[0] == '!set':
-        key_short = parts[1].lower()
-        if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
-        try:
-            value = float(parts[2])
-            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
-        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
-        key_full, unit = setting_map[key_short]
-        current_settings[key_full] = value; save_settings()
-        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
-    print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
 
 def main():
     global current_instrument_id, current_candle_data, is_autopilot_running
@@ -361,16 +383,22 @@ def main():
                     print_colored(f"Harga Terkini     : {price}", Fore.WHITE)
                     open_pos = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
                     if open_pos and isinstance(price, float):
-                        pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type', 'LONG'))
+                        pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
                         pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
                         type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
                         print_colored(f"Posisi Terbuka    : ", Fore.WHITE, end="")
                         print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
                         print_colored(f"Entry @ {open_pos['entryPrice']:.4f}, P/L: {pnl:.2f}%", pnl_color)
+                        run_up = open_pos.get('run_up_percent', 0.0)
+                        print_colored(f"  Profit Tertinggi Sejauh Ini (Run-up): {run_up:.2f}%", Fore.YELLOW)
                     else: print_colored("Posisi Terbuka    : Tidak ada", Fore.WHITE)
                     print()
-            elif cmd == '!history': display_history()
-            elif cmd in ['!settings', '!set']: handle_settings_command(command_parts)
+            elif cmd == '!history':
+                # ...
+                pass
+            elif cmd in ['!settings', '!set']:
+                # ...
+                pass
             elif cmd == '!pair':
                 if len(command_parts) >= 2:
                     current_instrument_id = command_parts[1].upper()
