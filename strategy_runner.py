@@ -17,7 +17,7 @@ REFRESH_INTERVAL_SECONDS = 3
 # --- STATE APLIKASI ---
 current_settings = {}
 autopilot_trades = []
-# DIUBAH: State sekarang untuk menangani banyak pair
+# State sekarang untuk menangani banyak pair
 watched_pairs = [] # Daftar pair yang dipantau
 candle_data_cache = {} # Dictionary untuk menyimpan data candle per pair
 
@@ -72,7 +72,7 @@ def load_settings():
     default_settings = {
         "take_profit_pct": 1.5, "stop_loss_pct": 0.8, "fee_pct": 0.1, 
         "analysis_interval_sec": 30, 
-        "watched_pairs": {}, # DIUBAH: Menyimpan pair beserta timeframenya
+        "watched_pairs": {},
     }
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
@@ -94,6 +94,32 @@ def load_trades():
 def save_trades():
     with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
 
+def display_history():
+    if not autopilot_trades:
+        print_colored("Belum ada riwayat trade.", Fore.YELLOW)
+        return
+    for trade in reversed(autopilot_trades):
+        entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
+        status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
+        trade_type = trade.get('type', 'LONG')
+        type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
+        print_colored(f"--- Trade ID: {trade['id']} ---", Fore.CYAN)
+        print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {trade['status']}", status_color)
+        print_colored(f"  Entry: {entry_time} @ {trade['entryPrice']:.4f}", Fore.WHITE)
+        print_colored(f"  Alasan Entry: {trade.get('entryReason', 'N/A')}", Fore.WHITE)
+        if trade['status'] == 'CLOSED':
+            exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
+            pl_percent = trade.get('pl_percent', 0.0)
+            is_profit = pl_percent > current_settings.get('fee_pct', 0.1)
+            pl_color = Fore.GREEN if is_profit else Fore.RED
+            print_colored(f"  Exit: {exit_time} @ {trade['exitPrice']:.4f}", Fore.WHITE)
+            print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
+            run_up = trade.get('run_up_percent', pl_percent)
+            print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
+            if 'entry_snapshot' in trade:
+                print_colored(f"  Pelajaran (Snapshot): Bias={trade['entry_snapshot']['bias']}, RSI={trade['entry_snapshot']['rsi']:.0f}", Fore.MAGENTA)
+        print()
+
 # --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
@@ -113,7 +139,7 @@ def fetch_bybit_candle_data(instId, timeframe):
     except (KeyError, IndexError):
         print_colored(f"Format data dari Bybit tidak sesuai untuk '{instId}'.", Fore.RED); return []
 
-# --- OTAK LOCAL AI (TIDAK BERUBAH) ---
+# --- OTAK LOCAL AI ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair):
         self.settings = settings
@@ -203,7 +229,6 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     send_termux_notification(notif_title, notif_content)
     is_ai_thinking = False
 
-# DIUBAH: Fungsi sekarang menerima pair dan datanya sebagai parameter
 async def run_autopilot_analysis(instrument_id, candle_data):
     global is_ai_thinking, is_autopilot_in_cooldown
     if is_ai_thinking or not candle_data or is_autopilot_in_cooldown: return
@@ -271,13 +296,32 @@ def data_refresh_worker():
                 candle_data_cache[pair] = data
                 latest_price = data[-1]['close']
                 asyncio.run(check_realtime_tp_sl_and_runup(pair, latest_price))
-            time.sleep(1) # Jeda kecil antar fetch data
+            time.sleep(1)
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
+
+def handle_settings_command(parts):
+    setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
+    if len(parts) == 1 and parts[0] == '!settings':
+        print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
+        for key, (full_key, unit) in setting_map.items():
+            display_key = key.capitalize().ljust(10)
+            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
+        print(); return
+    if len(parts) == 3 and parts[0] == '!set':
+        key_short = parts[1].lower()
+        if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
+        try:
+            value = float(parts[2])
+            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
+        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
+        key_full, unit = setting_map[key_short]
+        current_settings[key_full] = value; save_settings()
+        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
+    print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
 
 def main():
     global watched_pairs
     load_settings(); load_trades(); display_welcome_message()
-    # Muat data awal untuk semua pair di watchlist
     initial_pairs = list(watched_pairs)
     if initial_pairs:
         print_colored(f"Memuat data awal untuk {len(initial_pairs)} pair di watchlist...", Fore.CYAN)
@@ -322,14 +366,14 @@ def main():
                             type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
                             print_colored(f"    Posisi Terbuka : ", Fore.WHITE, end=""); print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
                             print_colored(f"Entry @ {open_pos['entryPrice']:.4f}, P/L: {pnl:.2f}%", pnl_color)
+                            run_up = open_pos.get('run_up_percent', 0.0)
+                            print_colored(f"    Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
                         else: print_colored("    Posisi Terbuka : Tidak ada", Fore.WHITE)
                     print()
-            elif cmd == '!history': display_history()
-            elif cmd == '!list':
-                if not watched_pairs: print_colored("Watchlist kosong.", Fore.YELLOW)
-                else:
-                    print_colored("\n--- Watchlist ---", Fore.CYAN, Style.BRIGHT)
-                    for pair, tf in current_settings["watched_pairs"].items(): print_colored(f"- {pair} (TF: {tf})", Fore.WHITE)
+            elif cmd == '!history':
+                display_history()
+            elif cmd in ['!settings', '!set']:
+                handle_settings_command(command_parts)
             elif cmd == '!add':
                 if len(command_parts) >= 2:
                     pair_to_add = command_parts[1].upper()
@@ -338,7 +382,6 @@ def main():
                     watched_pairs = list(current_settings["watched_pairs"].keys())
                     save_settings()
                     print_colored(f"Pair {pair_to_add} dengan TF {tf} ditambahkan ke watchlist.", Fore.GREEN)
-                    # Langsung fetch data awal
                     data = fetch_bybit_candle_data(pair_to_add, tf)
                     if data: candle_data_cache[pair_to_add] = data; print_colored("Data awal berhasil dimuat.", Fore.GREEN)
                 else: print_colored("Format salah. Gunakan: !add <PAIR> [TIMEFRAME]", Fore.RED)
@@ -353,9 +396,6 @@ def main():
                         print_colored(f"Pair {pair_to_remove} dihapus dari watchlist.", Fore.GREEN)
                     else: print_colored(f"Error: Pair {pair_to_remove} tidak ada di watchlist.", Fore.RED)
                 else: print_colored("Format salah. Gunakan: !remove <PAIR>", Fore.RED)
-            elif cmd in ['!settings', '!set']:
-                # ...
-                pass
             elif user_input.strip():
                 print_colored("Fungsi chat tidak tersedia di versi Local AI.", Fore.YELLOW)
         except KeyboardInterrupt: break
