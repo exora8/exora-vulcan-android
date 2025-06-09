@@ -23,6 +23,10 @@ is_autopilot_running = False
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
 
+# Variabel ini didefinisikan di sini, di lingkup global, untuk mengatasi error.
+is_ai_thinking = False
+is_autopilot_in_cooldown = False
+
 # --- INISIALISASI ---
 init(autoreset=True)
 
@@ -40,9 +44,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("    Strategic AI Analyst (Final Complete Edition)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("    Strategic AI Analyst (Final Corrected)    ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("Semua fitur aktif. Gunakan '!add <PAIR>' untuk memulai.", Fore.YELLOW)
+    print_colored("Semua fitur aktif dan telah diperbaiki. Siap digunakan.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
@@ -83,7 +87,8 @@ def load_trades():
         with open(TRADES_FILE, 'r') as f: autopilot_trades = json.load(f)
 
 def save_trades():
-    with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
+    with data_lock:
+        with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
 
 # --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
@@ -163,10 +168,8 @@ def calculate_pnl(entry_price, current_price, trade_type):
     return 0
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
-    global is_ai_thinking
     with data_lock:
         if trade.get('status') == 'CLOSED': return # Mencegah penutupan ganda
-        is_ai_thinking = True
         print_colored(f"\nMenutup trade {trade['id']} untuk {trade['instrumentId']}...", Fore.CYAN)
         pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
         fee = current_settings.get('fee_pct', 0.1); is_profit = pnl > fee
@@ -183,7 +186,6 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
         notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
         notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
         send_termux_notification(notif_title, notif_content)
-        is_ai_thinking = False
 
 async def run_autopilot_analysis(pair_id):
     global is_ai_thinking, is_autopilot_in_cooldown
@@ -194,8 +196,7 @@ async def run_autopilot_analysis(pair_id):
         with data_lock:
             pair_data = monitored_pairs.get(pair_id)
             if not pair_data or not pair_data.get('candle_data'):
-                print_colored(f"Data untuk {pair_id} belum siap.", Fore.YELLOW)
-                return
+                print_colored(f"Data untuk {pair_id} belum siap.", Fore.YELLOW); return
             candle_data = pair_data['candle_data']
             open_position = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Local AI sedang menganalisis {pair_id}...", Fore.MAGENTA)
@@ -228,8 +229,7 @@ async def run_autopilot_analysis(pair_id):
 def autopilot_worker():
     while not stop_event.is_set():
         if is_autopilot_running:
-            with data_lock:
-                pairs_to_analyze = list(monitored_pairs.keys())
+            with data_lock: pairs_to_analyze = list(monitored_pairs.keys())
             for pair_id in pairs_to_analyze:
                 asyncio.run(run_autopilot_analysis(pair_id))
                 time.sleep(1)
@@ -253,17 +253,13 @@ async def check_realtime_tp_sl_and_runup(pair_id, latest_price):
 
 def data_refresh_worker():
     while not stop_event.is_set():
-        with data_lock:
-            pairs_to_refresh = list(monitored_pairs.keys())
-        if not pairs_to_refresh:
-            time.sleep(REFRESH_INTERVAL_SECONDS)
-            continue
+        with data_lock: pairs_to_refresh = list(monitored_pairs.keys())
+        if not pairs_to_refresh: time.sleep(REFRESH_INTERVAL_SECONDS); continue
         for pair_id in pairs_to_refresh:
             tf = monitored_pairs[pair_id]['timeframe']
             data = fetch_bybit_candle_data(pair_id, tf)
             if data: 
-                with data_lock:
-                    monitored_pairs[pair_id]['candle_data'] = data
+                with data_lock: monitored_pairs[pair_id]['candle_data'] = data
                 latest_price = data[-1]['close']
                 asyncio.run(check_realtime_tp_sl_and_runup(pair_id, latest_price))
             time.sleep(0.5)
@@ -299,8 +295,7 @@ def handle_history_command(parts):
             title = f"--- Riwayat Trade untuk {target_pair} ---"
         
         if not trades_to_show:
-            print_colored("Tidak ada riwayat trade yang cocok.", Fore.YELLOW)
-            return
+            print_colored("Tidak ada riwayat trade yang cocok.", Fore.YELLOW); return
         
         print_colored(f"\n{title}", Fore.CYAN, Style.BRIGHT)
         for trade in reversed(trades_to_show):
@@ -319,7 +314,7 @@ def handle_history_command(parts):
                 pl_color = Fore.GREEN if is_profit else Fore.RED
                 print_colored(f"  Exit: {exit_time} @ {trade['exitPrice']:.4f}", Fore.WHITE)
                 print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
-                run_up = trade.get('run_up_percent', pnl)
+                run_up = trade.get('run_up_percent', pnl_percent)
                 print_colored(f"  Run-up: {run_up:.2f}%", Fore.YELLOW)
                 if 'entry_snapshot' in trade:
                     snap = trade['entry_snapshot']
