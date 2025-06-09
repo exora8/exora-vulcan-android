@@ -42,9 +42,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("   Strategic AI Analyst (Real-time TP/SL)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (EMA Crossover Logic)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored(f"Monitoring TP/SL & PnL setiap {REFRESH_INTERVAL_SECONDS} detik.", Fore.YELLOW)
+    print_colored("AI ini menggunakan Crossover EMA 9 & Tren EMA 50/100.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
@@ -103,7 +103,7 @@ def fetch_okx_candle_data(instId, timeframe):
     except requests.exceptions.RequestException as e:
         print_colored(f"Network Error saat fetch data OKX: {e}", Fore.RED); return []
 
-# --- OTAK LOCAL AI (DENGAN LOGIKA EMA) ---
+# --- OTAK LOCAL AI (LOGIKA EMA BARU) ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair):
         self.settings = settings
@@ -131,20 +131,28 @@ class LocalAI:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
+    # DIUBAH: Logika penentuan tren sekarang berdasarkan EMA 50/100
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100: return None
+        
         ema9 = self.calculate_ema(candle_data, 9)
         ema50 = self.calculate_ema(candle_data, 50)
         ema100 = self.calculate_ema(candle_data, 100)
         rsi = self.calculate_rsi(candle_data, 14)
+        
         bias = "RANGING"
-        if ema9 > ema50 and ema50 > ema100: bias = "BULLISH_STRONG"
-        elif ema9 < ema50 and ema50 < ema100: bias = "BEARISH_STRONG"
+        # Menambahkan sedikit buffer untuk menghindari sinyal palsu saat EMA sangat dekat
+        if ema50 > ema100 * 1.002: 
+            bias = "BULLISH"
+        elif ema50 < ema100 * 0.998: 
+            bias = "BEARISH"
+
         return {"ema9": ema9, "ema50": ema50, "ema100": ema100, "rsi": rsi, "bias": bias}
 
     def check_for_repeated_mistake(self, current_analysis):
         losing_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         if not losing_trades: return False
+        
         for loss in losing_trades[-3:]:
             past_snapshot = loss.get("entry_snapshot")
             if not past_snapshot: continue
@@ -155,26 +163,54 @@ class LocalAI:
                 return True
         return False
 
+    # DIUBAH: Logika keputusan inti sekarang berdasarkan aturan crossover baru
     def get_decision(self, candle_data, open_position):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup untuk analisis."}
+        
         current_price = candle_data[-1]['close']
+        
         if open_position:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
             trade_type = open_position.get('type')
-            if trade_type == 'LONG' and (analysis['rsi'] > 78 or current_price < analysis['ema9']):
-                return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di bawah EMA9)."}
-            if trade_type == 'SHORT' and (analysis['rsi'] < 22 or current_price > analysis['ema9']):
-                return {"action": "CLOSE", "reason": f"Sinyal exit terdeteksi (RSI: {analysis['rsi']:.0f} / Harga di atas EMA9)."}
+            
+            # Logika exit tetap sama, keluar jika harga cross balik atau RSI ekstrim
+            if trade_type == 'LONG' and (current_price < analysis['ema9']):
+                return {"action": "CLOSE", "reason": f"Harga cross ke bawah EMA9, sinyal exit."}
+            if trade_type == 'SHORT' and (current_price > analysis['ema9']):
+                return {"action": "CLOSE", "reason": f"Harga cross ke atas EMA9, sinyal exit."}
             return {"action": "HOLD", "reason": f"Holding {trade_type}, P/L: {pnl:.2f}%"}
+
         if self.check_for_repeated_mistake(analysis):
             return {"action": "HOLD", "reason": "Menghindari pengulangan kesalahan masa lalu."}
-        bias = analysis['bias']; rsi = analysis['rsi']
-        if bias == "BULLISH_STRONG" and rsi < 55 and current_price > analysis['ema50']:
-             return {"action": "BUY", "reason": f"Tren Bullish Kuat (EMA selaras) & RSI pullback ({rsi:.0f}).", "snapshot": analysis}
-        if bias == "BEARISH_STRONG" and rsi > 45 and current_price < analysis['ema50']:
-            return {"action": "SELL", "reason": f"Tren Bearish Kuat (EMA selaras) & RSI rally ({rsi:.0f}).", "snapshot": analysis}
-        return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {bias}, RSI: {rsi:.0f}."}
+
+        # --- LOGIKA ENTRY BARU: EMA CROSSOVER ---
+        if len(candle_data) < 2:
+            return {"action": "HOLD", "reason": "Menunggu candle kedua untuk deteksi crossover."}
+        
+        previous_candle = candle_data[-2]
+        ema9 = analysis['ema9']
+        rsi = analysis['rsi']
+        bias = analysis['bias']
+
+        # KONDISI LONG: Tren Bullish + Harga Cross ke ATAS EMA9
+        is_bullish_trend = bias == 'BULLISH'
+        crossed_up = previous_candle['close'] < ema9 and current_price > ema9
+        is_not_overbought = rsi < 75 # Filter agar tidak masuk di puncak
+
+        if is_bullish_trend and crossed_up and is_not_overbought:
+             return {"action": "BUY", "reason": f"Tren Bullish & Harga cross ke atas EMA9. RSI: {rsi:.0f}", "snapshot": analysis}
+        
+        # KONDISI SHORT: Tren Bearish + Harga Cross ke BAWAH EMA9
+        is_bearish_trend = bias == 'BEARISH'
+        crossed_down = previous_candle['close'] > ema9 and current_price < ema9
+        is_not_oversold = rsi > 25 # Filter agar tidak masuk di lembah
+
+        if is_bearish_trend and crossed_down and is_not_oversold:
+            return {"action": "SELL", "reason": f"Tren Bearish & Harga cross ke bawah EMA9. RSI: {rsi:.0f}", "snapshot": analysis}
+            
+        return {"action": "HOLD", "reason": f"Menunggu sinyal crossover. Tren: {bias}, Harga vs EMA9: {'Diatas' if current_price > ema9 else 'Dibawah'}."}
+
 
 # --- LOGIKA TRADING UTAMA ---
 def calculate_pnl(entry_price, current_price, trade_type):
@@ -184,7 +220,6 @@ def calculate_pnl(entry_price, current_price, trade_type):
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
     global is_ai_thinking
-    # Mengunci proses untuk mencegah penutupan ganda
     is_ai_thinking = True
     print_colored(f"\nMenutup trade {trade['id']}...", Fore.CYAN)
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
@@ -209,9 +244,6 @@ async def run_autopilot_analysis():
     is_ai_thinking = True
     try:
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
-        # Pemeriksaan TP/SL sekarang dipindahkan ke worker data, bagian ini bisa dilewati untuk efisiensi
-        # Namun, kita tetap membutuhkan `open_position` untuk logika di bawahnya.
-        
         print_colored(f"\n[{datetime.now().strftime('%H:%M:%S')}] Local AI sedang menganalisis {current_instrument_id}...", Fore.MAGENTA)
         local_brain = LocalAI(current_settings, [t for t in autopilot_trades if t['instrumentId'] == current_instrument_id])
         decision = local_brain.get_decision(current_candle_data, open_position)
@@ -248,26 +280,19 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 30))
         else: time.sleep(1)
 
-# BARU: Fungsi ringan untuk memeriksa TP/SL secara cepat
 async def check_realtime_tp_sl(latest_price):
     global is_ai_thinking
-    if is_ai_thinking or not is_autopilot_running: return # Jangan ganggu jika AI sedang berpikir/tidak aktif
-
+    if is_ai_thinking or not is_autopilot_running: return
     open_position = next((t for t in autopilot_trades if t['instrumentId'] == current_instrument_id and t['status'] == 'OPEN'), None)
     if not open_position: return
-
     pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
-    tp_pct = current_settings.get('take_profit_pct')
-    sl_pct = current_settings.get('stop_loss_pct')
+    tp_pct = current_settings.get('take_profit_pct'); sl_pct = current_settings.get('stop_loss_pct')
     close_reason = None
-    
     if tp_pct and pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
     elif sl_pct and pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
-    
     if close_reason:
         await analyze_and_close_trade(open_position, latest_price, close_reason, open_position.get("entry_snapshot"))
 
-# DIUBAH: Worker data sekarang juga memicu pemeriksaan TP/SL
 def data_refresh_worker():
     global current_candle_data
     while not stop_event.is_set():
@@ -275,10 +300,8 @@ def data_refresh_worker():
             data = fetch_okx_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
             if data: 
                 current_candle_data = data
-                # Setelah data baru diterima, langsung cek TP/SL
                 latest_price = data[-1]['close']
                 asyncio.run(check_realtime_tp_sl(latest_price))
-
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
 def handle_settings_command(parts):
