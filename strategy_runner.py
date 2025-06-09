@@ -11,7 +11,6 @@ import math
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
-# DIUBAH: URL API sekarang menunjuk ke Bybit
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 3
 
@@ -43,9 +42,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("     Strategic AI Analyst (Bybit Data Edition)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (EMA, RSI, Pivot Logic)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("Data harga real-time disediakan oleh Bybit.", Fore.YELLOW)
+    print_colored("AI ini fokus pada Tren (EMA), Momentum (RSI) & Struktur (Pivot).", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
@@ -55,7 +54,7 @@ def display_help():
     print_colored("!start                - Mengaktifkan Autopilot AI", Fore.GREEN)
     print_colored("!stop                 - Menonaktifkan Autopilot AI", Fore.GREEN)
     print_colored("!pair <PAIR> [TF]   - Ganti pair dan timeframe", Fore.GREEN)
-    print_colored("!status               - Tampilkan status dan analisis teknikal singkat", Fore.GREEN)
+    print_colored("!status               - Tampilkan status saat ini", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan saat ini", Fore.GREEN)
     print_colored("!set <key> <value>    - Ubah pengaturan (contoh: !set tp 1.5)", Fore.GREEN)
@@ -87,30 +86,21 @@ def load_trades():
 def save_trades():
     with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
 
-# --- FUNGSI API (SEKARANG BYBIT) ---
+# --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
-    # Kamus untuk menerjemahkan timeframe kita ke format Bybit
-    timeframe_map = {
-        '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30',
-        '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'
-    }
-    bybit_interval = timeframe_map.get(timeframe, '60') # Default ke 1 jam jika tidak ditemukan
-
-    # Mengubah format simbol dari BTC-USDT ke BTCUSDT
+    timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
+    bybit_interval = timeframe_map.get(timeframe, '60')
     bybit_symbol = instId.replace('-', '')
 
     try:
         url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit=300"
         response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        response.raise_for_status(); data = response.json()
         
-        # Bybit mengembalikan hasil di dalam result -> list
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
-            # Format Bybit: [timestamp, open, high, low, close, volume, turnover]
-            # Kita hanya butuh sampai volume
-            return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
+            # Data volume tidak lagi kita perlukan, tapi tidak masalah jika ada
+            return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4])} for d in candle_list][::-1]
         else:
             print_colored(f"Bybit API Error: {data.get('retMsg', 'Data tidak valid')}", Fore.RED); return []
     except requests.exceptions.RequestException as e:
@@ -118,13 +108,13 @@ def fetch_bybit_candle_data(instId, timeframe):
     except (KeyError, IndexError):
         print_colored(f"Format data dari Bybit tidak sesuai. Mungkin pair '{instId}' tidak ada di spot.", Fore.RED); return []
 
-
-# --- OTAK LOCAL AI (TIDAK PERLU DIUBAH) ---
+# --- OTAK LOCAL AI (VERSI FOKUS PADA EMA, RSI, PIVOT) ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair):
         self.settings = settings
         self.past_trades = past_trades_for_pair
 
+    # --- Kalkulator Indikator ---
     def calculate_ema(self, data, period):
         if len(data) < period: return None
         closes = [d['close'] for d in data]
@@ -148,16 +138,6 @@ class LocalAI:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    def calculate_bollinger_bands(self, data, period=20, std_dev=2):
-        if len(data) < period: return None
-        closes = [d['close'] for d in data[-period:]]
-        sma = sum(closes) / period
-        variance = sum([(price - sma) ** 2 for price in closes]) / period
-        stdev = math.sqrt(variance)
-        upper = sma + std_dev * stdev
-        lower = sma - std_dev * stdev
-        return {"middle": sma, "upper": upper, "lower": lower, "width": (upper - lower) / sma}
-
     def calculate_lookback_pivots(self, data, period=100):
         if len(data) < period: return None
         relevant_data = data[-period:]
@@ -169,62 +149,80 @@ class LocalAI:
         r1 = (2 * pivot) - low
         return {"p": pivot, "s1": s1, "r1": r1}
 
+    # --- Analisis Pasar Komprehensif ---
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100: return None
-        analysis = {"ema9": self.calculate_ema(candle_data, 9), "ema50": self.calculate_ema(candle_data, 50), "ema100": self.calculate_ema(candle_data, 100), "rsi": self.calculate_rsi(candle_data, 14), "bb": self.calculate_bollinger_bands(candle_data, 20), "pivots": self.calculate_lookback_pivots(candle_data, 100), "avg_volume": sum(d.get('volume', 0) for d in candle_data[-20:]) / 20}
-        bias = "RANGING";
+        
+        analysis = {
+            "ema9": self.calculate_ema(candle_data, 9),
+            "ema50": self.calculate_ema(candle_data, 50),
+            "ema100": self.calculate_ema(candle_data, 100),
+            "rsi": self.calculate_rsi(candle_data, 14),
+            "pivots": self.calculate_lookback_pivots(candle_data, 100)
+        }
+        
+        bias = "RANGING"
         if analysis["ema50"] > analysis["ema100"]: bias = "BULLISH"
         elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
         analysis["bias"] = bias
-        volatility = "NORMAL";
-        if analysis["bb"]["width"] < 0.03: volatility = "SQUEEZE"
-        analysis["volatility"] = volatility
+        
         return analysis
 
+    # --- Sistem Belajar ---
     def check_for_repeated_mistake(self, current_analysis, trade_type):
         losing_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         if not losing_trades: return False
+        
         for loss in losing_trades[-3:]:
             past_snapshot = loss.get("entry_snapshot")
             if not past_snapshot or loss.get("type") != trade_type: continue
+            
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
-            volatility_same = current_analysis['volatility'] == past_snapshot.get('volatility')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
-            if bias_same and volatility_same and rsi_similar:
+            
+            if bias_same and rsi_similar:
                 if loss.get('pl_percent', 0) < -2.0:
                     print_colored(f"[LEARNING] Menolak keras! Mirip dengan loss fatal #{loss['id']}", Fore.RED, Style.BRIGHT); return True
                 print_colored(f"[LEARNING] Menghindari posisi karena mirip dengan loss trade #{loss['id']}", Fore.MAGENTA); return True
         return False
 
+    # --- Logika Keputusan Inti ---
     def get_decision(self, candle_data, open_position):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup untuk analisis."}
+        
         current_price = candle_data[-1]['close']
+        
         if open_position:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
             trade_type = open_position.get('type')
-            if trade_type == 'LONG' and (current_price < analysis['ema9'] or current_price > analysis['bb']['upper']):
-                return {"action": "CLOSE", "reason": "Sinyal exit (cross EMA9 / sentuh Upper BB)."}
-            if trade_type == 'SHORT' and (current_price > analysis['ema9'] or current_price < analysis['bb']['lower']):
-                return {"action": "CLOSE", "reason": "Sinyal exit (cross EMA9 / sentuh Lower BB)."}
+            if trade_type == 'LONG' and current_price < analysis['ema9']:
+                return {"action": "CLOSE", "reason": "Harga cross ke bawah EMA9, sinyal exit."}
+            if trade_type == 'SHORT' and current_price > analysis['ema9']:
+                return {"action": "CLOSE", "reason": "Harga cross ke atas EMA9, sinyal exit."}
             return {"action": "HOLD", "reason": f"Holding {trade_type}, P/L: {pnl:.2f}%"}
-        if analysis['volatility'] == 'SQUEEZE':
-            return {"action": "HOLD", "reason": "Bollinger Bands Squeeze, menunggu breakout."}
+
+        # --- Logika Entry yang Disederhanakan ---
+        
+        # 1. Periksa Kondisi Entry LONG
         if analysis['bias'] == 'BULLISH':
-            is_near_support = current_price < analysis['bb']['middle'] or current_price < analysis['pivots']['p']
-            is_volume_confirmed = candle_data[-1]['volume'] > analysis['avg_volume'] * 1.2
+            is_near_support = current_price < analysis['ema50'] or current_price < analysis['pivots']['p']
             is_not_overbought = analysis['rsi'] < 70
-            if is_near_support and is_volume_confirmed and is_not_overbought:
+            
+            if is_near_support and is_not_overbought:
                 if not self.check_for_repeated_mistake(analysis, "LONG"):
-                    return {"action": "BUY", "reason": f"Bullish, pullback ke support dinamis dengan konfirmasi volume.", "snapshot": analysis}
+                    return {"action": "BUY", "reason": f"Bullish, pullback ke area support dinamis (EMA/Pivot).", "snapshot": analysis}
+        
+        # 2. Periksa Kondisi Entry SHORT
         if analysis['bias'] == 'BEARISH':
-            is_near_resistance = current_price > analysis['bb']['middle'] or current_price > analysis['pivots']['p']
-            is_volume_confirmed = candle_data[-1]['volume'] > analysis['avg_volume'] * 1.2
+            is_near_resistance = current_price > analysis['ema50'] or current_price > analysis['pivots']['p']
             is_not_oversold = analysis['rsi'] > 30
-            if is_near_resistance and is_volume_confirmed and is_not_oversold:
+
+            if is_near_resistance and is_not_oversold:
                 if not self.check_for_repeated_mistake(analysis, "SHORT"):
-                    return {"action": "SELL", "reason": f"Bearish, rally ke resistance dinamis dengan konfirmasi volume.", "snapshot": analysis}
-        return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}, Vol: {analysis['volatility']}."}
+                    return {"action": "SELL", "reason": f"Bearish, rally ke area resistance dinamis (EMA/Pivot).", "snapshot": analysis}
+            
+        return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}."}
 
 
 # --- LOGIKA TRADING UTAMA ---
@@ -313,7 +311,6 @@ def data_refresh_worker():
     global current_candle_data
     while not stop_event.is_set():
         if current_instrument_id:
-            # DIUBAH: Memanggil fungsi data Bybit
             data = fetch_bybit_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
             if data: 
                 current_candle_data = data
@@ -321,12 +318,31 @@ def data_refresh_worker():
                 asyncio.run(check_realtime_tp_sl_and_runup(latest_price))
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
+def handle_settings_command(parts):
+    setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
+    if len(parts) == 1 and parts[0] == '!settings':
+        print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
+        for key, (full_key, unit) in setting_map.items():
+            display_key = key.capitalize().ljust(10)
+            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
+        print(); return
+    if len(parts) == 3 and parts[0] == '!set':
+        key_short = parts[1].lower()
+        if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
+        try:
+            value = float(parts[2])
+            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
+        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
+        key_full, unit = setting_map[key_short]
+        current_settings[key_full] = value; save_settings()
+        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
+    print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
+
 def main():
     global current_instrument_id, current_candle_data, is_autopilot_running
     load_settings(); load_trades(); display_welcome_message()
     if current_instrument_id:
         print_colored(f"Memuat pair terakhir: {current_instrument_id} ({current_settings.get('last_timeframe', '1H')})...", Fore.CYAN)
-        # DIUBAH: Memanggil fungsi data Bybit saat startup
         current_candle_data = fetch_bybit_candle_data(current_instrument_id, current_settings.get('last_timeframe', '1H'))
         if current_candle_data: print_colored("Data berhasil dimuat.", Fore.GREEN)
         else: print_colored("Gagal memuat data terakhir.", Fore.RED)
@@ -370,18 +386,15 @@ def main():
                     else: print_colored("Posisi Terbuka    : Tidak ada", Fore.WHITE)
                     print()
             elif cmd == '!history':
-                #...
-                pass
+                display_history()
             elif cmd in ['!settings', '!set']:
-                #...
-                pass
+                handle_settings_command(parts)
             elif cmd == '!pair':
                 if len(command_parts) >= 2:
                     current_instrument_id = command_parts[1].upper()
                     tf = command_parts[2] if len(command_parts) > 2 else '1H'
                     current_settings['last_timeframe'] = tf
                     print_colored(f"Mengganti pair ke {current_instrument_id} TF {tf}. Memuat data...", Fore.CYAN)
-                    # DIUBAH: Memanggil fungsi data Bybit
                     current_candle_data = fetch_bybit_candle_data(current_instrument_id, tf)
                     if current_candle_data: print_colored("Data berhasil dimuat.", Fore.GREEN)
                     else: print_colored("Gagal memuat data.", Fore.RED)
