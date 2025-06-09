@@ -29,7 +29,6 @@ init(autoreset=True)
 
 # --- FUNGSI UTILITAS & TAMPILAN ---
 def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL, end='\n'):
-    # Menambahkan Style.RESET_ALL untuk memastikan warna tidak "bocor" ke print berikutnya
     print(bright + color + text + Style.RESET_ALL, end=end)
 
 def send_termux_notification(title, content):
@@ -42,9 +41,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("    Strategic AI Analyst (Smooth Dashboard)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (Dynamic Take Profit)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("Dashboard sekarang memiliki transisi yang mulus tanpa kedip.", Fore.YELLOW)
+    print_colored("Stop Loss kaku, Take Profit cerdas berdasarkan sinyal reversal.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -58,17 +57,21 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan global", Fore.GREEN)
+    print_colored("!set <key> <value>    - Ubah pengaturan global (key: sl, fee, delay)", Fore.GREEN)
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
-    default_settings = {"take_profit_pct": 1.5, "stop_loss_pct": 0.8, "fee_pct": 0.1, "analysis_interval_sec": 10, "watched_pairs": {}}
+    # DIUBAH: take_profit_pct dihapus dari default
+    default_settings = {"stop_loss_pct": 0.8, "fee_pct": 0.1, "analysis_interval_sec": 10, "watched_pairs": {}}
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             current_settings = json.load(f)
+            # Menghapus key take_profit_pct jika masih ada dari versi lama
+            if 'take_profit_pct' in current_settings:
+                del current_settings['take_profit_pct']
             for key, value in default_settings.items():
                 if key not in current_settings: current_settings[key] = value
     else:
@@ -162,36 +165,46 @@ class LocalAI:
             if not past_snapshot or loss.get("type") != trade_type: continue
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
-            if bias_same and rsi_similar:
-                # Tidak print di sini agar tidak mengganggu dashboard
-                return True
+            if bias_same and rsi_similar: return True
         return False
+    # DIUBAH: Logika Take Profit sekarang dinamis dan dikontrol AI
     def get_decision(self, candle_data, open_position, instrument_id):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup untuk analisis."}
         current_price = candle_data[-1]['close']
+        
+        # Logika jika ada posisi terbuka
         if open_position:
             pnl = calculate_pnl(open_position['entryPrice'], current_price, open_position.get('type'))
             trade_type = open_position.get('type')
-            if trade_type == 'LONG' and current_price < analysis['ema9']: return {"action": "CLOSE", "reason": "Harga cross ke bawah EMA9."}
-            if trade_type == 'SHORT' and current_price > analysis['ema9']: return {"action": "CLOSE", "reason": "Harga cross ke atas EMA9."}
+            
+            # 1. Periksa dulu apakah sudah profit di atas fee
+            if pnl > self.settings.get('fee_pct', 0.1):
+                # 2. Jika sudah profit, cari sinyal reversal untuk take profit
+                if trade_type == 'LONG' and current_price < analysis['ema9']: 
+                    return {"action": "CLOSE", "reason": f"Take Profit (Harga cross ke bawah EMA9). PnL: {pnl:.2f}%"}
+                if trade_type == 'SHORT' and current_price > analysis['ema9']:
+                    return {"action": "CLOSE", "reason": f"Take Profit (Harga cross ke atas EMA9). PnL: {pnl:.2f}%"}
+            
+            # Jika belum profit atau belum ada sinyal exit, tetap HOLD
             return {"action": "HOLD", "reason": f"Holding {trade_type}, P/L: {pnl:.2f}%"}
+
+        # Logika untuk membuka posisi baru
+        if self.check_for_repeated_mistake(analysis, "LONG", instrument_id):
+            return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Long di {instrument_id}."}
+        if self.check_for_repeated_mistake(analysis, "SHORT", instrument_id):
+             return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Short di {instrument_id}."}
+
         if analysis['bias'] == 'BULLISH':
             if current_price < analysis['pivots']['p'] and analysis['rsi'] < 70:
-                if not self.check_for_repeated_mistake(analysis, "LONG", instrument_id):
-                    return {"action": "BUY", "reason": f"Tren Bullish & pullback ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
+                return {"action": "BUY", "reason": f"Tren Bullish & pullback ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
         if analysis['bias'] == 'BEARISH':
             if current_price > analysis['pivots']['p'] and analysis['rsi'] > 30:
-                if not self.check_for_repeated_mistake(analysis, "SHORT", instrument_id):
-                    return {"action": "SELL", "reason": f"Tren Bearish & rally ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
+                return {"action": "SELL", "reason": f"Tren Bearish & rally ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
+        
         return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}, RSI: {analysis['rsi']:.0f}."}
 
 # --- LOGIKA TRADING UTAMA ---
-def calculate_pnl(entry_price, current_price, trade_type):
-    if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
-    elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
-    return 0
-
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
@@ -244,18 +257,27 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
 
-async def check_realtime_tp_sl_and_runup(instrument_id, latest_price):
+# DIUBAH: Fungsi ini sekarang hanya memeriksa SL
+async def check_realtime_sl_and_runup(instrument_id, latest_price):
     open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
     if not open_position: return
     current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
     if current_pnl > open_position.get('run_up_percent', 0.0):
         open_position['run_up_percent'] = current_pnl
-    tp_pct = current_settings.get('take_profit_pct'); sl_pct = current_settings.get('stop_loss_pct')
+    
+    sl_pct = current_settings.get('stop_loss_pct')
     close_reason = None
-    if tp_pct and current_pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
-    elif sl_pct and current_pnl <= -sl_pct: close_reason = f"Stop Loss @ {sl_pct}% tercapai."
+    # Hanya memeriksa stop loss
+    if sl_pct and current_pnl <= -sl_pct: 
+        close_reason = f"Stop Loss @ {sl_pct}% tercapai."
+    
     if close_reason:
-        await analyze_and_close_trade(open_position, latest_price, close_reason, open_position.get("entry_snapshot"))
+        # Gunakan lock sederhana untuk mencegah race condition
+        global is_ai_thinking
+        if not is_ai_thinking:
+            is_ai_thinking = True
+            await analyze_and_close_trade(open_position, latest_price, close_reason, open_position.get("entry_snapshot"))
+            is_ai_thinking = False
 
 def data_refresh_worker():
     global market_state
@@ -269,61 +291,34 @@ def data_refresh_worker():
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     if is_autopilot_running:
                         latest_price = data[-1]['close']
-                        asyncio.run(check_realtime_tp_sl_and_runup(pair_id, latest_price))
+                        # Memanggil fungsi yang sudah diubah namanya
+                        asyncio.run(check_realtime_sl_and_runup(pair_id, latest_price))
                 time.sleep(0.5)
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
-# --- FUNGSI LIVE DASHBOARD ---
-def run_dashboard_mode():
-    try:
-        while True:
-            # Menggunakan ANSI escape codes untuk menggambar ulang tanpa flicker
-            print("\033[H\033[J", end="")
+# DIUBAH: Menghapus 'tp' dari command settings
+def handle_settings_command(parts):
+    setting_map = {'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
+    if len(parts) == 1 and parts[0] == '!settings':
+        print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
+        print_colored("Take Profit (tp)  : Dinamis oleh AI (di atas fee)", Fore.YELLOW)
+        for key, (full_key, unit) in setting_map.items():
+            display_key = key.capitalize().ljust(10)
+            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
+        print(); return
+    if len(parts) == 3 and parts[0] == '!set':
+        key_short = parts[1].lower()
+        if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal. Gunakan: sl, fee, delay.", Fore.RED); return
+        try:
+            value = float(parts[2])
+            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
+        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
+        key_full, unit = setting_map[key_short]
+        current_settings[key_full] = value; save_settings()
+        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
+    print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
 
-            print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
-            print_colored(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s", Fore.WHITE)
-            print_colored("="*50, Fore.CYAN)
-            
-            watched_pairs = current_settings.get("watched_pairs", {})
-            if not watched_pairs:
-                print_colored("\nWatchlist kosong. Tekan Ctrl+C untuk kembali dan gunakan '!watch <PAIR>'.", Fore.YELLOW)
-            
-            for pair_id, timeframe in watched_pairs.items():
-                print_colored(f"\n⦿ {pair_id} ({timeframe})", Fore.WHITE, Style.BRIGHT)
-                open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                pair_state = market_state.get(pair_id)
-
-                if open_pos:
-                    price = pair_state['candle_data'][-1]['close'] if pair_state and pair_state.get('candle_data') else open_pos['entryPrice']
-                    pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
-                    pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
-                    type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
-                    
-                    print_colored("  Status    : ", end=''); print_colored("POSITION OPEN", Fore.YELLOW, Style.BRIGHT)
-                    print_colored("  Tipe      : ", end=''); print_colored(f"{open_pos.get('type')}", type_color, Style.BRIGHT)
-                    print_colored("  Entry     : ", end=''); print_colored(f"{open_pos['entryPrice']:.4f}", Fore.WHITE)
-                    print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
-                    run_up = open_pos.get('run_up_percent', 0.0)
-                    print_colored("  Run-up    : ", end=''); print_colored(f"{run_up:.2f}%", Fore.YELLOW)
-
-                else:
-                    print_colored("  Status    : ", end=''); print_colored("Searching for setup...", Fore.BLUE)
-                    if pair_state and pair_state.get("analysis"):
-                        analysis = pair_state["analysis"]
-                        bias_color = Fore.GREEN if analysis['bias'] == 'BULLISH' else Fore.RED if analysis['bias'] == 'BEARISH' else Fore.YELLOW
-                        print_colored("  Trend     : ", end=''); print_colored(analysis['bias'], bias_color)
-                        print_colored("  RSI       : ", end=''); print_colored(f"{analysis['rsi']:.2f}", Fore.WHITE)
-                    else:
-                        print_colored("  Trend     : Menunggu data...", Fore.WHITE)
-
-            print_colored("\n"+"="*50, Fore.CYAN)
-            print_colored("Tekan Ctrl+C untuk keluar dari dashboard dan kembali ke command prompt.", Fore.YELLOW)
-            
-            time.sleep(1)
-    except KeyboardInterrupt:
-        return
-
-# --- MAIN LOOP ---
+# --- MAIN LOOP (Tidak Diringkas) ---
 def main():
     global is_autopilot_running
     load_settings(); load_trades(); display_welcome_message()
@@ -377,11 +372,30 @@ def main():
                         print_colored(f"Pair {pair_id} dihapus dari watchlist.", Fore.YELLOW)
                     else: print_colored(f"Error: Pair {pair_id} tidak ada di watchlist.", Fore.RED)
                 else: print_colored("Format salah. Gunakan: !unwatch <PAIR>", Fore.RED)
+            elif cmd == '!status':
+                watched = current_settings.get("watched_pairs", {})
+                if not watched: print_colored("Watchlist kosong. Tidak ada status untuk ditampilkan.", Fore.YELLOW)
+                for pair_id in watched:
+                    print_colored(f"\n--- Status untuk {pair_id} ---", Fore.CYAN, Style.BRIGHT)
+                    pair_state = market_state.get(pair_id)
+                    price = pair_state['candle_data'][-1]['close'] if pair_state and pair_state.get('candle_data') else 'N/A'
+                    print_colored(f"Harga Terkini     : {price}", Fore.WHITE)
+                    open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                    if open_pos and isinstance(price, float):
+                        pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
+                        pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
+                        type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
+                        print_colored(f"Posisi Terbuka    : ", Fore.WHITE, end=""); print_colored(f"{open_pos.get('type')} ", type_color, Style.BRIGHT, end="")
+                        print_colored(f"Entry @ {open_pos['entryPrice']:.4f}, P/L: {pnl:.2f}%", pnl_color)
+                        run_up = open_pos.get('run_up_percent', 0.0)
+                        print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
+                    else: print_colored("Posisi Terbuka    : Tidak ada", Fore.WHITE)
+                    print()
             elif cmd == '!history':
                 display_history()
             elif cmd in ['!settings', '!set']:
-                handle_settings_command(command_parts)
-            elif user_input.strip():
+                handle_settings_command(parts)
+            else:
                 print_colored(f"Perintah '{user_input}' tidak dikenal. Ketik '!help'.", Fore.RED)
         except KeyboardInterrupt: break
         except Exception as e: print_colored(f"\nTerjadi error tak terduga di main loop: {e}", Fore.RED)
@@ -391,25 +405,45 @@ def main():
     autopilot_thread.join(); data_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
 
-def handle_settings_command(parts):
-    setting_map = {'tp': ('take_profit_pct', '%'),'sl': ('stop_loss_pct', '%'),'fee': ('fee_pct', '%'),'delay': ('analysis_interval_sec', ' detik')}
-    if len(parts) == 1 and parts[0] == '!settings':
-        print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
-        for key, (full_key, unit) in setting_map.items():
-            display_key = key.capitalize().ljust(10)
-            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
-        print(); return
-    if len(parts) == 3 and parts[0] == '!set':
-        key_short = parts[1].lower()
-        if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
-        try:
-            value = float(parts[2])
-            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
-        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
-        key_full, unit = setting_map[key_short]
-        current_settings[key_full] = value; save_settings()
-        print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
-    print_colored("Format salah. Gunakan '!settings' atau '!set <key> <value>'.", Fore.RED)
+def run_dashboard_mode():
+    try:
+        while True:
+            print("\033[H\033[J", end="")
+            print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
+            print_colored(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s", Fore.WHITE)
+            print_colored("="*50, Fore.CYAN)
+            watched_pairs = current_settings.get("watched_pairs", {})
+            if not watched_pairs:
+                print_colored("\nWatchlist kosong. Tekan Ctrl+C untuk kembali dan gunakan '!watch <PAIR>'.", Fore.YELLOW)
+            for pair_id, timeframe in watched_pairs.items():
+                print_colored(f"\n⦿ {pair_id} ({timeframe})", Fore.WHITE, Style.BRIGHT)
+                open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                pair_state = market_state.get(pair_id)
+                if open_pos:
+                    price = pair_state['candle_data'][-1]['close'] if pair_state and pair_state.get('candle_data') else open_pos['entryPrice']
+                    pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
+                    pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
+                    type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
+                    print_colored("  Status    : ", end=''); print_colored("POSITION OPEN", Fore.YELLOW, Style.BRIGHT)
+                    print_colored("  Tipe      : ", end=''); print_colored(f"{open_pos.get('type')}", type_color, Style.BRIGHT)
+                    print_colored("  Entry     : ", end=''); print_colored(f"{open_pos['entryPrice']:.4f}", Fore.WHITE)
+                    print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
+                    run_up = open_pos.get('run_up_percent', 0.0)
+                    print_colored("  Run-up    : ", end=''); print_colored(f"{run_up:.2f}%", Fore.YELLOW)
+                else:
+                    print_colored("  Status    : ", end=''); print_colored("Searching for setup...", Fore.BLUE)
+                    if pair_state and pair_state.get("analysis"):
+                        analysis = pair_state["analysis"]
+                        bias_color = Fore.GREEN if analysis['bias'] == 'BULLISH' else Fore.RED if analysis['bias'] == 'BEARISH' else Fore.YELLOW
+                        print_colored("  Trend     : ", end=''); print_colored(analysis['bias'], bias_color)
+                        print_colored("  RSI       : ", end=''); print_colored(f"{analysis['rsi']:.2f}", Fore.WHITE)
+                    else:
+                        print_colored("  Trend     : Menunggu data...", Fore.WHITE)
+            print_colored("\n"+"="*50, Fore.CYAN)
+            print_colored("Tekan Ctrl+C untuk keluar dari dashboard dan kembali ke command prompt.", Fore.YELLOW)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        return
 
 if __name__ == "__main__":
     main()
