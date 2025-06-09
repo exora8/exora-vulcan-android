@@ -12,8 +12,10 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-# DIUBAH: Interval refresh sekarang menjadi 1 detik untuk pengalaman real-time
-REFRESH_INTERVAL_SECONDS = 1
+# DIUBAH: Ini adalah interval untuk refresh data candle (untuk AI)
+CANDLE_REFRESH_INTERVAL_SECONDS = 15 
+# DIUBAH: Interval untuk dashboard dan PnL real-time
+TICKER_REFRESH_INTERVAL_SECONDS = 1
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -43,10 +45,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("    Strategic AI Analyst (Real-time Dashboard)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("   Strategic AI Analyst (Real-time Ticker)    ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored(f"Dashboard & PnL diperbarui setiap {REFRESH_INTERVAL_SECONDS} detik.", Fore.YELLOW)
-    print_colored("PERINGATAN: Jangan memantau terlalu banyak pair untuk menghindari limit API.", Fore.RED)
+    print_colored(f"Dashboard & PnL diperbarui setiap {TICKER_REFRESH_INTERVAL_SECONDS} detik menggunakan harga ticker.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
     print()
@@ -100,8 +101,17 @@ def fetch_bybit_candle_data(instId, timeframe):
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in data['result']['list']][::-1]
         else: return []
-    except requests.exceptions.RequestException: return []
-    except (KeyError, IndexError): return []
+    except Exception: return []
+
+def fetch_realtime_ticker(instId):
+    bybit_symbol = instId.replace('-', '')
+    try:
+        url = f"{BYBIT_API_URL}/tickers?category=spot&symbol={bybit_symbol}"
+        response = requests.get(url, timeout=2); response.raise_for_status(); data = response.json()
+        if data.get("retCode") == 0 and data['result']['list']:
+            return float(data['result']['list'][0]['lastPrice'])
+        return None
+    except Exception: return None
 
 # --- OTAK LOCAL AI ---
 class LocalAI:
@@ -169,7 +179,7 @@ def calculate_pnl(entry_price, current_price, trade_type):
 
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
     with data_lock:
-        if trade.get('status') != 'OPEN': return
+        if trade.get('status') == 'CLOSED': return
         trade['status'] = 'CLOSING'
     print_colored(f"\nMenutup trade {trade['id']} untuk {trade['instrumentId']}...", Fore.CYAN)
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
@@ -231,18 +241,23 @@ def print_live_dashboard():
             print_colored("Tidak ada pair yang dipantau. Gunakan '!add <PAIR>' untuk memulai.", Fore.YELLOW); return
         ap_status, ap_color = ("AKTIF", Fore.GREEN) if is_autopilot_running else ("TIDAK AKTIF", Fore.RED)
         print_colored(f"--- Live Dashboard @ {datetime.now().strftime('%H:%M:%S')} | Autopilot: {Style.BRIGHT}{ap_color}{ap_status}{Style.RESET_ALL} ---", Fore.YELLOW, Style.BRIGHT)
-        print_colored("-" * 80, Fore.YELLOW)
+        print_colored("-" * 85, Fore.YELLOW)
         for pair_id, pair_data in monitored_pairs.items():
             line = f"{Style.BRIGHT}{pair_id.ljust(12)}{Style.RESET_ALL} | "
-            if not pair_data.get('candle_data'):
-                line += Fore.RED + "Menunggu Data..."; print(line); continue
-            candle_data = pair_data['candle_data']; price = candle_data[-1]['close']
-            ai = LocalAI(current_settings, []); analysis = ai.get_market_analysis(candle_data)
-            if not analysis:
-                line += Fore.RED + "Analisis Gagal (data kurang)"; print(line); continue
-            bias = analysis['bias']; rsi = analysis['rsi']
-            bias_color = Fore.GREEN if bias == "BULLISH" else Fore.RED if bias == "BEARISH" else Fore.YELLOW
-            line += f"Harga: {price:<9.4f} | Tren: {Style.BRIGHT}{bias_color}{bias:<8}{Style.RESET_ALL} | RSI: {rsi:<5.1f} | "
+            price = pair_data.get('last_price')
+            if price is None:
+                line += Fore.RED + "Menunggu Harga Ticker..."; print(line); continue
+            
+            candle_data = pair_data.get('candle_data')
+            if candle_data:
+                ai = LocalAI(current_settings, []); analysis = ai.get_market_analysis(candle_data)
+                if analysis:
+                    bias = analysis['bias']; rsi = analysis['rsi']
+                    bias_color = Fore.GREEN if bias == "BULLISH" else Fore.RED if bias == "BEARISH" else Fore.YELLOW
+                    line += f"Harga: {price:<9.4f} | Tren: {Style.BRIGHT}{bias_color}{bias:<8}{Style.RESET_ALL} | RSI: {rsi:<5.1f} | "
+                else: line += f"Harga: {price:<9.4f} | Analisis: Menunggu data candle... | "
+            else: line += f"Harga: {price:<9.4f} | Analisis: Menunggu data candle... | "
+
             open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
             if open_pos:
                 pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
@@ -252,7 +267,7 @@ def print_live_dashboard():
             else:
                 line += Fore.CYAN + "Status: Standby"
             print(line)
-        print_colored("-" * 80, Fore.YELLOW)
+        print_colored("-" * 85, Fore.YELLOW)
         print_colored("Ketik perintah (atau !stop) lalu Enter untuk berinteraksi...", Fore.WHITE)
 
 def autopilot_worker():
@@ -261,7 +276,7 @@ def autopilot_worker():
             with data_lock: pairs_to_analyze = list(monitored_pairs.keys())
             for pair_id in pairs_to_analyze:
                 asyncio.run(run_autopilot_analysis(pair_id))
-                time.sleep(1)
+                time.sleep(2) # Jeda antar analisis pair agar tidak terlalu agresif
             stop_event.wait(current_settings.get("analysis_interval_sec", 30))
         else: time.sleep(1)
 
@@ -271,9 +286,8 @@ async def check_realtime_tp_sl_and_runup(pair_id, latest_price):
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
     if not open_position: return
     current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
-    with data_lock:
-        if current_pnl > open_position.get('run_up_percent', 0.0):
-            open_position['run_up_percent'] = current_pnl
+    if current_pnl > open_position.get('run_up_percent', 0.0):
+        with data_lock: open_position['run_up_percent'] = current_pnl
     tp_pct = current_settings.get('take_profit_pct'); sl_pct = current_settings.get('stop_loss_pct')
     close_reason = None
     if tp_pct and current_pnl >= tp_pct: close_reason = f"Take Profit @ {tp_pct}% tercapai."
@@ -281,47 +295,50 @@ async def check_realtime_tp_sl_and_runup(pair_id, latest_price):
     if close_reason:
         await analyze_and_close_trade(open_position, latest_price, close_reason, open_position.get("entry_snapshot"))
 
-def data_refresh_worker():
+def candle_data_worker(): # Worker lambat untuk data analisis
     while not stop_event.is_set():
         with data_lock: pairs_to_refresh = list(monitored_pairs.keys())
-        
-        if is_autopilot_running:
-            print_live_dashboard()
-        
-        if not pairs_to_refresh: time.sleep(REFRESH_INTERVAL_SECONDS); continue
-        
-        for pair_id in pairs_to_refresh:
-            tf = monitored_pairs[pair_id]['timeframe']
-            data = fetch_bybit_candle_data(pair_id, tf)
-            if data: 
-                with data_lock: monitored_pairs[pair_id]['candle_data'] = data
-                latest_price = data[-1]['close']
-                asyncio.run(check_realtime_tp_sl_and_runup(pair_id, latest_price))
-            time.sleep(0.2)
-        
-        stop_event.wait(REFRESH_INTERVAL_SECONDS)
+        if pairs_to_refresh:
+            for pair_id in pairs_to_refresh:
+                tf = monitored_pairs[pair_id]['timeframe']
+                data = fetch_bybit_candle_data(pair_id, tf)
+                if data: 
+                    with data_lock: monitored_pairs[pair_id]['candle_data'] = data
+                time.sleep(1) # Jeda antar request API
+        stop_event.wait(CANDLE_REFRESH_INTERVAL_SECONDS)
+
+def ticker_and_dashboard_worker(): # Worker cepat untuk harga & UI
+    while not stop_event.is_set():
+        with data_lock: pairs_to_refresh = list(monitored_pairs.keys())
+        if pairs_to_refresh:
+            for pair_id in pairs_to_refresh:
+                price = fetch_realtime_ticker(pair_id)
+                if price:
+                    with data_lock: monitored_pairs[pair_id]['last_price'] = price
+                    asyncio.run(check_realtime_tp_sl_and_runup(pair_id, price))
+            if is_autopilot_running:
+                print_live_dashboard()
+        stop_event.wait(TICKER_REFRESH_INTERVAL_SECONDS)
 
 def main():
     global is_autopilot_running
     load_settings(); load_trades()
     for pair_id in current_settings.get("monitored_pairs_list", []):
-        monitored_pairs[pair_id] = {"timeframe": "1H", "candle_data": []}
+        monitored_pairs[pair_id] = {"timeframe": "1H", "last_price": None, "candle_data": []}
     display_welcome_message()
-    for pair_id, data in monitored_pairs.items():
-        print_colored(f"Memuat data awal untuk {pair_id}...", Fore.CYAN)
-        candle_data = fetch_bybit_candle_data(pair_id, data['timeframe'])
-        if candle_data:
-            data['candle_data'] = candle_data; print_colored(f"Data {pair_id} berhasil dimuat.", Fore.GREEN)
-        else: print_colored(f"Gagal memuat data untuk {pair_id}.", Fore.RED)
+    
+    # Memulai ketiga thread
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True); autopilot_thread.start()
-    data_thread = threading.Thread(target=data_refresh_worker, daemon=True); data_thread.start()
+    candle_thread = threading.Thread(target=candle_data_worker, daemon=True); candle_thread.start()
+    ticker_thread = threading.Thread(target=ticker_and_dashboard_worker, daemon=True); ticker_thread.start()
+    
     while True:
         try:
             if not is_autopilot_running:
                 prompt_text = f"[{len(monitored_pairs)} Pairs] > "
                 user_input = input(prompt_text)
             else:
-                user_input = input() # Input tetap berjalan, tapi tanpa prompt
+                user_input = input()
             command_parts = user_input.split()
             if not command_parts: continue
             cmd = command_parts[0].lower()
@@ -335,11 +352,11 @@ def main():
                 if not is_autopilot_running: print_colored("Autopilot sudah tidak aktif.", Fore.YELLOW)
                 else: is_autopilot_running = False; os.system('clear'); print_colored("🛑 Autopilot Lokal & Live Dashboard dinonaktifkan.", Fore.RED, Style.BRIGHT)
             elif cmd == '!status': print_live_dashboard()
-            elif cmd == '!history': 
-                # ... 
+            elif cmd == '!history':
+                # Implementasi history command
                 pass
-            elif cmd in ['!settings', '!set']: 
-                # ...
+            elif cmd in ['!settings', '!set']:
+                # Implementasi settings command
                 pass
             elif cmd == '!add':
                 if len(command_parts) >= 2:
@@ -349,13 +366,14 @@ def main():
                         if pair_id in monitored_pairs: print_colored(f"Error: {pair_id} sudah dipantau.", Fore.RED)
                         else:
                             print_colored(f"Menambahkan {pair_id} ({tf}) ke pantauan...", Fore.CYAN)
-                            monitored_pairs[pair_id] = {"timeframe": tf, "candle_data": []}
-                            data = fetch_bybit_candle_data(pair_id, tf)
-                            if data:
-                                monitored_pairs[pair_id]['candle_data'] = data
-                                print_colored(f"Data awal untuk {pair_id} berhasil dimuat.", Fore.GREEN)
+                            monitored_pairs[pair_id] = {"timeframe": tf, "last_price": None, "candle_data": []}
+                            # Memuat data awal saat ditambahkan
+                            candle_data = fetch_bybit_candle_data(pair_id, tf)
+                            if candle_data:
+                                monitored_pairs[pair_id]['candle_data'] = candle_data
+                                print_colored(f"Data candle untuk {pair_id} berhasil dimuat.", Fore.GREEN)
                             else:
-                                print_colored(f"Gagal memuat data awal untuk {pair_id}, pair mungkin tidak valid.", Fore.RED); del monitored_pairs[pair_id]
+                                print_colored(f"Gagal memuat data candle untuk {pair_id}, pair mungkin tidak valid.", Fore.RED); del monitored_pairs[pair_id]
                     save_settings()
                 else: print_colored("Format salah. Gunakan: !add PAIR-USDT [TIMEFRAME]", Fore.RED)
             elif cmd == '!remove':
@@ -370,9 +388,10 @@ def main():
                 else: print_colored("Format salah. Gunakan: !remove PAIR-USDT", Fore.RED)
         except KeyboardInterrupt: break
         except Exception as e: print_colored(f"\nTerjadi error tak terduga: {e}", Fore.RED)
+    
     print_colored("\nMenutup aplikasi...", Fore.YELLOW)
     stop_event.set()
-    autopilot_thread.join(); data_thread.join()
+    autopilot_thread.join(); ticker_thread.join(); candle_thread.join()
     print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
 
 if __name__ == "__main__":
