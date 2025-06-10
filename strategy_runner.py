@@ -12,7 +12,7 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-REFRESH_INTERVAL_SECONDS = 1
+REFRESH_INTERVAL_SECONDS = 3
 
 # --- STATE APLIKASI ---
 current_settings = {}
