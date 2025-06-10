@@ -41,9 +41,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("      Strategic AI Analyst (Risk-Aware Edition)     ", Fore.CYAN, Style.BRIGHT)
+    print_colored("     Strategic AI Analyst (Prophetic Edition)     ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI sekarang melacak & belajar dari Drawdown untuk manajemen risiko.", Fore.YELLOW)
+    print_colored("AI sekarang belajar dari SEMUA loss & memprediksi durasi trade.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -93,9 +93,7 @@ def display_history():
         trade_type = trade.get('type', 'LONG'); type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
         print_colored(f"--- Trade ID: {trade['id']} ---", Fore.CYAN)
         print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {trade['status']}", status_color)
-        print_colored(f"  Tipe Trade: {trade_type}", type_color, Style.BRIGHT)
         print_colored(f"  Entry: {entry_time} @ {trade['entryPrice']:.4f}", Fore.WHITE)
-        print_colored(f"  Alasan Entry: {trade.get('entryReason', 'N/A')}", Fore.WHITE)
         if trade['status'] == 'CLOSED':
             exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
             pl_percent = trade.get('pl_percent', 0.0); is_profit = pl_percent > current_settings.get('fee_pct', 0.1)
@@ -106,10 +104,15 @@ def display_history():
             print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
             drawdown = trade.get('max_drawdown_percent', 0.0)
             print_colored(f"  Kerugian Terdalam (Drawdown): {drawdown:.2f}%", Fore.RED)
-            if 'entry_snapshot' in trade:
+            pred_dur = trade.get('predicted_tp_duration_minutes')
+            act_dur = trade.get('actual_duration_minutes')
+            if pred_dur and act_dur:
+                print_colored(f"  Durasi (Prediksi/Aktual): {pred_dur:.1f}m / {act_dur:.1f}m", Fore.BLUE)
+            if 'entry_snapshot' in trade and not is_profit:
                 snapshot = trade['entry_snapshot']
                 print_colored(f"  Pelajaran (Snapshot): Bias={snapshot.get('bias', 'N/A')}, RSI={snapshot.get('rsi', 0):.0f}", Fore.MAGENTA)
         print()
+
 
 # --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
@@ -124,7 +127,6 @@ def fetch_bybit_candle_data(instId, timeframe):
         else: return None
     except Exception: return None
 
-# DIPINDAHKAN KE ATAS: Fungsi ini sekarang didefinisikan sebelum digunakan oleh LocalAI
 def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
     elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
@@ -135,8 +137,7 @@ class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
     def calculate_ema(self, data, period):
         if len(data) < period: return None
-        closes = [d['close'] for d in data]; multiplier = 2 / (period + 1)
-        ema = sum(closes[:period]) / period
+        closes = [d['close'] for d in data]; multiplier = 2 / (period + 1); ema = sum(closes[:period]) / period
         for price in closes[period:]: ema = (price - ema) * multiplier + ema
         return ema
     def calculate_rsi(self, data, period=14):
@@ -163,18 +164,28 @@ class LocalAI:
         elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
         analysis["bias"] = bias; return analysis
     
+    # DIUBAH: AI sekarang belajar dari SEMUA loss, bukan 3 terakhir
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
-        sl_threshold = -self.settings.get('stop_loss_pct', 0.8)
-        undesirable_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1) or t.get('max_drawdown_percent', 0) <= sl_threshold]
+        undesirable_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         if not undesirable_trades: return False
         
-        for bad_trade in undesirable_trades[-3:]:
-            past_snapshot = bad_trade.get("entry_snapshot")
-            if not past_snapshot or bad_trade.get("type") != trade_type: continue
+        for loss in undesirable_trades: # Tidak ada lagi batasan [-3:]
+            past_snapshot = loss.get("entry_snapshot")
+            if not past_snapshot or loss.get("type") != trade_type: continue
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
             if bias_same and rsi_similar: return True
         return False
+    
+    # BARU: Fungsi untuk memprediksi durasi trade
+    def predict_duration(self, instrument_id):
+        profitable_trades = [t for t in self.past_trades if t.get('pl_percent', 0) > self.settings.get('fee_pct', 0.1)]
+        if not profitable_trades: return 60.0 # Default 60 menit jika belum ada histori profit
+
+        durations = [t['actual_duration_minutes'] for t in profitable_trades if 'actual_duration_minutes' in t]
+        if not durations: return 60.0
+        
+        return sum(durations) / len(durations)
 
     def get_decision(self, candle_data, open_position, instrument_id):
         analysis = self.get_market_analysis(candle_data)
@@ -193,12 +204,15 @@ class LocalAI:
             return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Long di {instrument_id}."}
         if self.check_for_repeated_mistake(analysis, "SHORT", instrument_id):
              return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Short di {instrument_id}."}
+        
+        predicted_duration = self.predict_duration(instrument_id)
+        
         if analysis['bias'] == 'BULLISH':
             if current_price < analysis['pivots']['p'] and analysis['rsi'] < 70:
-                return {"action": "BUY", "reason": f"Tren Bullish & pullback ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
+                return {"action": "BUY", "reason": f"Tren Bullish & pullback ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis, "predicted_duration": predicted_duration}
         if analysis['bias'] == 'BEARISH':
             if current_price > analysis['pivots']['p'] and analysis['rsi'] > 30:
-                return {"action": "SELL", "reason": f"Tren Bearish & rally ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
+                return {"action": "SELL", "reason": f"Tren Bearish & rally ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis, "predicted_duration": predicted_duration}
         return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}, RSI: {analysis['rsi']:.0f}."}
 
 # --- LOGIKA TRADING UTAMA ---
@@ -206,7 +220,13 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     is_profit = pnl > fee
-    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 'pl_percent': pnl})
+    
+    # Hitung durasi aktual
+    entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', ''))
+    exit_time = datetime.utcnow()
+    actual_duration_minutes = (exit_time - entry_time).total_seconds() / 60
+    
+    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_time.isoformat() + "Z", 'pl_percent': pnl, 'actual_duration_minutes': actual_duration_minutes})
     if not is_profit and entry_snapshot:
         trade['entry_snapshot'] = entry_snapshot
     save_trades()
@@ -230,7 +250,7 @@ async def run_autopilot_analysis(instrument_id):
         current_price = candle_data[-1]['close']
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
-            new_trade = {"id": int(time.time()), "instrumentId": instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot"), "run_up_percent": 0.0, "max_drawdown_percent": 0.0}
+            new_trade = {"id": int(time.time()), "instrumentId": instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot"), "run_up_percent": 0.0, "max_drawdown_percent": 0.0, "predicted_tp_duration_minutes": decision.get("predicted_duration")}
             autopilot_trades.append(new_trade)
             save_trades()
             notif_title = f"{'🟢' if action == 'BUY' else '🔴'} Posisi {trade_type} Dibuka"
@@ -257,20 +277,15 @@ def autopilot_worker():
 async def update_realtime_metrics_and_check_sl(instrument_id, latest_price):
     open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
     if not open_position: return
-    
     current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
-    
     if current_pnl > open_position.get('run_up_percent', 0.0):
         open_position['run_up_percent'] = current_pnl
-    
     if current_pnl < open_position.get('max_drawdown_percent', 0.0):
         open_position['max_drawdown_percent'] = current_pnl
-
     sl_pct = current_settings.get('stop_loss_pct')
     close_reason = None
     if sl_pct and current_pnl <= -sl_pct: 
         close_reason = f"Stop Loss @ {sl_pct}% tercapai."
-    
     if close_reason:
         global is_ai_thinking
         if not is_ai_thinking:
@@ -321,7 +336,7 @@ def run_dashboard_mode():
             print("\033[H\033[J", end="")
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
             print_colored(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s", Fore.WHITE)
-            print_colored("="*50, Fore.CYAN)
+            print_colored("="*60, Fore.CYAN)
             watched_pairs = current_settings.get("watched_pairs", {})
             if not watched_pairs:
                 print_colored("\nWatchlist kosong. Tekan Ctrl+C untuk kembali dan gunakan '!watch <PAIR>'.", Fore.YELLOW)
@@ -334,14 +349,19 @@ def run_dashboard_mode():
                     pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
                     pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
                     type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
+                    
+                    entry_time = datetime.fromisoformat(open_pos['entryTimestamp'].replace('Z', ''))
+                    elapsed_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
+                    predicted_dur = open_pos.get('predicted_tp_duration_minutes', 0)
+
                     print_colored("  Status    : ", end=''); print_colored("POSITION OPEN", Fore.YELLOW, Style.BRIGHT)
                     print_colored("  Tipe      : ", end=''); print_colored(f"{open_pos.get('type')}", type_color, Style.BRIGHT)
                     print_colored("  Entry     : ", end=''); print_colored(f"{open_pos['entryPrice']:.4f}", Fore.WHITE)
                     print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
+                    print_colored("  Waktu     : ", end=''); print_colored(f"{elapsed_minutes:.1f}m / Prediksi {predicted_dur:.1f}m", Fore.BLUE)
                     run_up = open_pos.get('run_up_percent', 0.0)
-                    print_colored("  Run-up    : ", end=''); print_colored(f"{run_up:.2f}%", Fore.YELLOW)
                     drawdown = open_pos.get('max_drawdown_percent', 0.0)
-                    print_colored("  Drawdown  : ", end=''); print_colored(f"{drawdown:.2f}%", Fore.RED)
+                    print_colored(f"  Run-up/DD : ", end=''); print_colored(f"{run_up:.2f}%", Fore.GREEN, end=''); print_colored(" / ", end=''); print_colored(f"{drawdown:.2f}%", Fore.RED)
                 else:
                     print_colored("  Status    : ", end=''); print_colored("Searching for setup...", Fore.BLUE)
                     if pair_state and pair_state.get("analysis"):
@@ -351,7 +371,7 @@ def run_dashboard_mode():
                         print_colored("  RSI       : ", end=''); print_colored(f"{analysis['rsi']:.2f}", Fore.WHITE)
                     else:
                         print_colored("  Trend     : Menunggu data...", Fore.WHITE)
-            print_colored("\n"+"="*50, Fore.CYAN)
+            print_colored("\n"+"="*60, Fore.CYAN)
             print_colored("Tekan Ctrl+C untuk keluar dari dashboard dan kembali ke command prompt.", Fore.YELLOW)
             time.sleep(1)
     except KeyboardInterrupt:
