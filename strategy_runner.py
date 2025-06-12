@@ -115,11 +115,16 @@ def display_history():
             print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
             if 'entry_snapshot' in trade and not is_profit:
                 snapshot = trade['entry_snapshot']
-                # Updated snapshot info for learning from losing trades (now EMA-based)
-                print_colored(f"  Pelajaran (Snapshot): Bias={snapshot.get('bias', 'N/A')}", Fore.MAGENTA)
-                print_colored(f"                      Prev Close {snapshot.get('prev_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_prev'):.4f}", Fore.MAGENTA)
-                print_colored(f"                      Current Close {snapshot.get('current_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_current'):.4f}", Fore.MAGENTA)
-
+                print_colored(f"  Pelajaran (Snapshot):", Fore.MAGENTA)
+                print_colored(f"    Bias: {snapshot.get('bias', 'N/A')}", Fore.MAGENTA)
+                print_colored(f"    Prev Candle: Close {snapshot.get('prev_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_prev'):.4f}", Fore.MAGENTA)
+                print_colored(f"    Current Candle: Close {snapshot.get('current_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_current'):.4f}", Fore.MAGENTA)
+                
+                # New: Display 3 previous candles snapshot
+                if 'pre_entry_candle_solidity' in snapshot and 'pre_entry_candle_direction' in snapshot:
+                    solidity_str = [f"{s:.2f}" for s in snapshot['pre_entry_candle_solidity']]
+                    print_colored(f"    3 Prev Candles Solidity: {solidity_str}", Fore.MAGENTA)
+                    print_colored(f"    3 Prev Candles Direction: {snapshot['pre_entry_candle_direction']}", Fore.MAGENTA)
         print()
 
 # --- FUNGSI API (BYBIT) ---
@@ -131,10 +136,13 @@ def fetch_bybit_candle_data(instId, timeframe):
         response = requests.get(url, timeout=10); response.raise_for_status(); data = response.json()
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
-            # We need enough data for EMA100 plus at least 2 candles for trigger
-            # EMA calculations will handle less data by returning shorter lists,
-            # but get_market_analysis relies on at least 100 for EMA100 and 2 for trigger.
-            if len(candle_list) < 100 + 2: # 100 for EMA100, plus current and previous candle for EMA9 cross
+            # We need enough data for EMA100 and at least 4 candles for trigger + 3 pre-entry snapshot
+            # 100 for EMA100, 2 for current/previous candle for EMA9 cross, 3 for pre-entry snapshot
+            # So, at least 100 + 3 = 103 for the latest relevant candle to be included in the analysis,
+            # and previous ones to be available for the snapshot.
+            # The indexing will be candle_data[-1] (current), candle_data[-2] (prev), candle_data[-3], candle_data[-4].
+            # So minimum list length is 4. Combined with EMA100, minimum is 100.
+            if len(candle_list) < 100: # get_market_analysis will handle specific minimums for its calculations
                 return None # Not enough data
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
         else: return None
@@ -145,7 +153,7 @@ def calculate_pnl(entry_price, current_price, trade_type):
     elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
     return 0
 
-# --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry) ---
+# --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot) ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
     
@@ -168,23 +176,26 @@ class LocalAI:
             
         return ema_values
     
-    # Removed calculate_rsi and calculate_lookback_pivots as they are no longer used for entry logic
-    # Removed analyze_candle_solidity as it's no longer used for entry logic
+    # NEW: analyze_candle_solidity function (re-added)
+    def analyze_candle_solidity(self, candle):
+        body = abs(candle['close'] - candle['open'])
+        full_range = candle['high'] - candle['low']
+        if full_range == 0: return 1.0 # Avoid division by zero, full solidity if no range
+        return body / full_range
 
     def get_market_analysis(self, candle_data):
-        # Need enough data for EMA 100, and at least 2 candles for EMA9 trigger logic (prev and current)
-        if len(candle_data) < 100 + 1: # 100 candles for EMA100 initial calculation, +1 for current candle
-            return None # Not enough data for EMA100 and indexing current candle
+        # Need enough data for EMA 100, and at least 4 candles for EMA9 trigger logic (prev and current)
+        # AND 3 PRE-ENTRY CANDLES for snapshot (candle_data[-4], candle_data[-3], candle_data[-2])
+        if len(candle_data) < 100 or len(candle_data) < 4: # Minimum 100 for EMA100, and minimum 4 for 3-candle snapshot + current
+            return None # Not enough data for full analysis
 
         ema9_series = self.calculate_ema(candle_data, 9)
         ema50_series = self.calculate_ema(candle_data, 50)
         ema100_series = self.calculate_ema(candle_data, 100)
 
-        # Ensure EMA series are long enough. For EMA9 cross, we need at least 2 EMA9 values.
-        # This implies len(candle_data) >= 9+1 = 10 for EMA9.
-        # For EMA50/100 we just need the last value.
+        # Ensure EMA series are long enough for the required indices
         if len(ema9_series) < 2 or len(ema50_series) < 1 or len(ema100_series) < 1:
-            return None # Not enough EMA data calculated, perhaps due to insufficient initial candle data
+            return None # Not enough EMA data calculated, perhaps due to insufficient initial candle data for periods
 
         analysis = {
             "ema9_current": ema9_series[-1],
@@ -199,19 +210,27 @@ class LocalAI:
         if analysis["ema50"] > analysis["ema100"]: bias = "BULLISH"
         elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
         analysis["bias"] = bias; 
+
+        # Add 3 pre-entry candle snapshot for forensic analysis
+        pre_entry_candles = candle_data[-4:-1] # Candles before the current (trigger) candle
+        pre_entry_solidity = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
+        pre_entry_direction = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
         
+        analysis["pre_entry_candle_solidity"] = pre_entry_solidity
+        analysis["pre_entry_candle_direction"] = pre_entry_direction
+
         return analysis
     
-    # This function's criteria were based on old analysis metrics.
-    # Disabling for now, as the user didn't specify new learning criteria for the EMA strategy.
+    # This function's criteria were based on old analysis metrics (RSI, avg_solidity).
+    # Keeping it disabled for now as the user didn't specify new learning criteria for the EMA strategy.
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
-        return False # Temporarily disable, as its criteria are no longer relevant to the new entry snapshot.
+        return False 
         
-    # MODIFIED: get_decision for Exora Vulcan Sniper Entry Logic
+    # MODIFIED: get_decision for Exora Vulcan Sniper Entry Logic (no changes to logic itself)
     def get_decision(self, candle_data, open_position, instrument_id):
         analysis = self.get_market_analysis(candle_data)
         
-        # Ensure we have enough data and valid EMA values for the logic
+        # Ensure we have enough data and valid analysis values
         if not analysis: 
             return {"action": "HOLD", "reason": "Data tidak cukup atau EMA tidak valid untuk analisis."}
         
@@ -225,7 +244,7 @@ class LocalAI:
         if self.check_for_repeated_mistake(analysis, "SHORT", instrument_id):
              return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Short."}
 
-        # Exora Vulcan Sniper Entry Logic
+        # Exora Vulcan Sniper Entry Logic (unchanged from previous version)
         current_candle_close = analysis['current_candle_close']
         prev_candle_close = analysis['prev_candle_close']
         ema9_current = analysis['ema9_current']
@@ -266,6 +285,7 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     
     # Simpan snapshot entry hanya jika trade rugi untuk dipelajari
     # entry_snapshot will contain the new analysis structure (ema9_current, ema9_prev, etc.)
+    # and also 'pre_entry_candle_solidity' and 'pre_entry_candle_direction'
     if is_profit and 'entry_snapshot' in trade:
         del trade['entry_snapshot'] # Remove if profitable, only keep for learning losing trades
     save_trades()
@@ -279,7 +299,8 @@ async def run_autopilot_analysis(instrument_id):
     pair_state = market_state.get(instrument_id)
     
     # Check if there are enough candles for full analysis based on get_market_analysis requirements
-    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 2:
+    # Minimum 100 for EMA100 and at least 4 candles for the snapshot + current/prev candle for trigger
+    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100:
         # print_colored(f"Warning: Not enough candle data for {instrument_id} to perform full analysis ({len(pair_state['candle_data']) if pair_state and pair_state.get('candle_data') else 0} candles).", Fore.YELLOW)
         return # Skip analysis if data insufficient
 
@@ -307,7 +328,7 @@ async def run_autopilot_analysis(instrument_id):
                 "entryPrice": current_price,
                 "entryReason": reason,
                 "status": 'OPEN',
-                "entry_snapshot": decision.get("snapshot"), # Snapshot contains EMA values
+                "entry_snapshot": decision.get("snapshot"), # Snapshot contains EMA values + 3 candle info
                 "run_up_percent": 0.0,
                 "max_drawdown_percent": 0.0,
                 "trailing_stop_price": None, # This will now be derived from current_tp_checkpoint_level
@@ -421,7 +442,7 @@ def data_refresh_worker():
                 if data: 
                     # Only calculate analysis if we have enough data after fetching
                     # get_market_analysis itself also checks data length, but this is a pre-check
-                    if len(data) >= 100 + 2: # Minimum for EMA100 and two trigger candles (prev and current)
+                    if len(data) >= 100: # Minimum for EMA100 and 3 pre-entry candles + current
                         analysis = LocalAI(current_settings, []).get_market_analysis(data)
                     else:
                         analysis = None # Not enough data for full analysis
@@ -504,6 +525,11 @@ def run_dashboard_mode():
                         if analysis.get('ema9_current') is not None and analysis.get('ema9_prev') is not None:
                             print_colored(f"  EMA9 Data : Prev Close {analysis['prev_candle_close']:.4f} vs EMA9 {analysis['ema9_prev']:.4f}", Fore.CYAN)
                             print_colored(f"              Current Close {analysis['current_candle_close']:.4f} vs EMA9 {analysis['ema9_current']:.4f}", Fore.CYAN)
+                        # Display 3 previous candles data in dashboard for current analysis
+                        if 'pre_entry_candle_solidity' in analysis and 'pre_entry_candle_direction' in analysis:
+                            solidity_str = [f"{s:.2f}" for s in analysis['pre_entry_candle_solidity']]
+                            print_colored(f"  Pre-Entry Solidity: {solidity_str}", Fore.BLUE)
+                            print_colored(f"  Pre-Entry Direction: {analysis['pre_entry_candle_direction']}", Fore.BLUE)
                     else:
                         print_colored("  Trend     : Menunggu data atau data tidak cukup...", Fore.WHITE)
             print_colored("\n"+"="*60, Fore.CYAN)
