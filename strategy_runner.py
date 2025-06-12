@@ -12,7 +12,7 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-REFRESH_INTERVAL_SECONDS = 1
+REFRESH_INTERVAL_SECONDS = 3
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -41,9 +41,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("    Strategic AI Analyst (Trailing TP Edition)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI fokus pada entry, Take Profit dikunci oleh Trailing Stop.", Fore.YELLOW)
+    print_colored("Setiap trade sekarang direkam dengan data forensik yang lengkap.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -64,14 +64,7 @@ def display_help():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
-    default_settings = {
-        "stop_loss_pct": 1.0, 
-        "fee_pct": 0.1, 
-        "analysis_interval_sec": 10, 
-        "trailing_tp_activation_pct": 0.3,
-        "trailing_tp_gap_pct": 0.1,
-        "watched_pairs": {}
-    }
+    default_settings = {"stop_loss_pct": 1.0, "fee_pct": 0.1, "analysis_interval_sec": 10, "trailing_tp_activation_pct": 0.3, "trailing_tp_gap_pct": 0.1, "watched_pairs": {}}
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             current_settings = json.load(f)
@@ -108,9 +101,6 @@ def display_history():
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             run_up = trade.get('run_up_percent', pl_percent)
             print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
-            if 'entry_snapshot' in trade and not is_profit:
-                snapshot = trade['entry_snapshot']
-                print_colored(f"  Pelajaran (Snapshot): Bias={snapshot.get('bias', 'N/A')}, RSI={snapshot.get('rsi', 0):.0f}", Fore.MAGENTA)
         print()
 
 # --- FUNGSI API (BYBIT) ---
@@ -155,39 +145,58 @@ class LocalAI:
         low = min(d['low'] for d in relevant_data); close = relevant_data[-1]['close']
         pivot = (high + low + close) / 3; s1 = (2 * pivot) - high; r1 = (2 * pivot) - low
         return {"p": pivot, "s1": s1, "r1": r1}
+    
+    # DIUBAH: Fungsi ini sekarang membuat snapshot yang super detail
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100: return None
-        analysis = {"ema9": self.calculate_ema(candle_data, 9), "ema50": self.calculate_ema(candle_data, 50), "ema100": self.calculate_ema(candle_data, 100), "rsi": self.calculate_rsi(candle_data, 14), "pivots": self.calculate_lookback_pivots(candle_data, 100)}
+        
+        analysis = {
+            "ema9": self.calculate_ema(candle_data, 9),
+            "ema50": self.calculate_ema(candle_data, 50),
+            "ema100": self.calculate_ema(candle_data, 100),
+            "rsi": self.calculate_rsi(candle_data, 14),
+            "pivots": self.calculate_lookback_pivots(candle_data, 100),
+            "last_5_closes": [d['close'] for d in candle_data[-6:-1]], # 5 candle SEBELUM candle saat ini
+            "entry_candle_close": candle_data[-1]['close']
+        }
+        
         bias = "RANGING";
         if analysis["ema50"] > analysis["ema100"]: bias = "BULLISH"
         elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
-        analysis["bias"] = bias; return analysis
+        analysis["bias"] = bias
+        
+        return analysis
+
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
         losing_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         if not losing_trades: return False
-        for loss in losing_trades:
+        for loss in losing_trades: # Belajar dari semua loss
             past_snapshot = loss.get("entry_snapshot")
             if not past_snapshot or loss.get("type") != trade_type: continue
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
             if bias_same and rsi_similar: return True
         return False
+        
     def get_decision(self, candle_data, open_position, instrument_id):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup untuk analisis."}
+        
         if open_position:
             return {"action": "HOLD", "reason": "Memantau posisi terbuka..."}
+
         if self.check_for_repeated_mistake(analysis, "LONG", instrument_id):
             return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Long di {instrument_id}."}
         if self.check_for_repeated_mistake(analysis, "SHORT", instrument_id):
              return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Short di {instrument_id}."}
-        current_price = candle_data[-1]['close']
+        
         if analysis['bias'] == 'BULLISH':
-            if current_price < analysis['pivots']['p'] and analysis['rsi'] < 70:
+            if analysis['entry_candle_close'] < analysis['pivots']['p'] and analysis['rsi'] < 70:
                 return {"action": "BUY", "reason": f"Tren Bullish & pullback ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
         if analysis['bias'] == 'BEARISH':
-            if current_price > analysis['pivots']['p'] and analysis['rsi'] > 30:
+            if analysis['entry_candle_close'] > analysis['pivots']['p'] and analysis['rsi'] > 30:
                 return {"action": "SELL", "reason": f"Tren Bearish & rally ke area Pivot. RSI: {analysis['rsi']:.0f}", "snapshot": analysis}
+        
         return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}, RSI: {analysis['rsi']:.0f}."}
 
 # --- LOGIKA TRADING UTAMA ---
@@ -195,9 +204,22 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     is_profit = pnl > fee
-    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 'pl_percent': pnl})
+    
+    # Membuat exit snapshot yang detail
+    exit_snapshot = LocalAI(current_settings, []).get_market_analysis(market_state[trade['instrumentId']]['candle_data'])
+    
+    trade.update({
+        'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 
+        'pl_percent': pnl, 'exit_snapshot': exit_snapshot
+    })
+    
     if not is_profit and entry_snapshot:
         trade['entry_snapshot'] = entry_snapshot
+    else:
+        # Hapus snapshot jika profit untuk menghemat ruang, karena kita hanya belajar dari loss
+        if 'entry_snapshot' in trade:
+            del trade['entry_snapshot']
+
     save_trades()
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
