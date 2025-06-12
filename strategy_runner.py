@@ -12,7 +12,7 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-REFRESH_INTERVAL_SECONDS = 0.5
+REFRESH_INTERVAL_SECONDS = 3
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -41,9 +41,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("    Strategic AI Analyst (Trailing TP Edition)    ", Fore.CYAN, Style.BRIGHT)
+    print_colored("    Strategic AI Analyst (Local Time Edition)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI fokus pada entry, Take Profit dikunci oleh Trailing Stop.", Fore.YELLOW)
+    print_colored("Semua timestamp sekarang akurat sesuai waktu lokal Anda.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -94,6 +94,7 @@ def save_trades():
 def display_history():
     if not autopilot_trades: print_colored("Belum ada riwayat trade.", Fore.YELLOW); return
     for trade in reversed(autopilot_trades):
+        # Logika parsing tetap sama, fromisoformat akan membaca string sebagai waktu lokal jika tidak ada 'Z'
         entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
         status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
         trade_type = trade.get('type', 'LONG'); type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
@@ -108,13 +109,11 @@ def display_history():
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             run_up = trade.get('run_up_percent', pl_percent)
             drawdown = trade.get('max_drawdown_percent', 0.0)
-            print_colored(f"  Run-up: {run_up:.2f}%", Fore.YELLOW, end='')
-            print_colored(f" / Drawdown: {drawdown:.2f}%", Fore.RED)
+            print_colored(f"  Run-up: {run_up:.2f}%", Fore.YELLOW, end=''); print_colored(f" / Drawdown: {drawdown:.2f}%", Fore.RED)
             if 'entry_snapshot' in trade and not is_profit:
                 snapshot = trade['entry_snapshot']
                 print_colored(f"  Pelajaran (Snapshot): Bias={snapshot.get('bias', 'N/A')}, RSI={snapshot.get('rsi', 0):.0f}", Fore.MAGENTA)
         print()
-
 
 # --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
@@ -129,7 +128,6 @@ def fetch_bybit_candle_data(instId, timeframe):
         else: return None
     except Exception: return None
 
-# DIPINDAHKAN KE ATAS: Fungsi ini sekarang didefinisikan sebelum digunakan oleh kelas LocalAI
 def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
     elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
@@ -199,7 +197,8 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     is_profit = pnl > fee
-    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.utcnow().isoformat() + "Z", 'pl_percent': pnl})
+    # DIUBAH: Menggunakan datetime.now() untuk waktu lokal
+    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.now().isoformat(), 'pl_percent': pnl})
     if not is_profit and entry_snapshot:
         trade['entry_snapshot'] = entry_snapshot
     save_trades()
@@ -223,7 +222,8 @@ async def run_autopilot_analysis(instrument_id):
         current_price = candle_data[-1]['close']
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
-            new_trade = {"id": int(time.time()), "instrumentId": instrument_id, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + "Z", "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot"), "run_up_percent": 0.0, "max_drawdown_percent": 0.0, "trailing_stop_price": None}
+            # DIUBAH: Menggunakan datetime.now() untuk waktu lokal
+            new_trade = {"id": int(time.time()), "instrumentId": instrument_id, "type": trade_type, "entryTimestamp": datetime.now().isoformat(), "entryPrice": current_price, "entryReason": reason, "status": 'OPEN', "entry_snapshot": decision.get("snapshot"), "run_up_percent": 0.0, "max_drawdown_percent": 0.0, "trailing_stop_price": None}
             autopilot_trades.append(new_trade)
             save_trades()
             notif_title = f"{'🟢' if action == 'BUY' else '🔴'} Posisi {trade_type} Dibuka"
@@ -357,7 +357,9 @@ def run_dashboard_mode():
                     print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
                     if open_pos.get("trailing_stop_price") is not None:
                         tsp_price = open_pos.get("trailing_stop_price")
-                        print_colored("  Trailing TP: ", end=''); print_colored(f"Aktif @ {tsp_price:.4f}", Fore.MAGENTA)
+                        # Perbaikan error NoneType.__format__
+                        if isinstance(tsp_price, float):
+                            print_colored("  Trailing TP: ", end=''); print_colored(f"Aktif @ {tsp_price:.4f}", Fore.MAGENTA)
                     else:
                         print_colored("  Trailing TP: ", end=''); print_colored(f"Menunggu {current_settings.get('trailing_tp_activation_pct')}%", Fore.WHITE)
                 else:
