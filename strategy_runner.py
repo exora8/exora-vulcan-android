@@ -12,7 +12,7 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-REFRESH_INTERVAL_SECONDS = 0.5
+REFRESH_INTERVAL_SECONDS = 3
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -41,9 +41,9 @@ def send_termux_notification(title, content):
 
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("   Strategic AI Analyst (Price Action Master)   ", Fore.CYAN, Style.BRIGHT)
+    print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("AI sekarang membaca soliditas candle sebelum bertindak.", Fore.YELLOW)
+    print_colored("Setiap trade sekarang direkam dengan data forensik yang lengkap.", Fore.YELLOW)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -57,7 +57,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan", Fore.GREEN)
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap)", Fore.GREEN)
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -83,6 +83,28 @@ def load_trades():
 
 def save_trades():
     with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
+
+def display_history():
+    if not autopilot_trades: print_colored("Belum ada riwayat trade.", Fore.YELLOW); return
+    for trade in reversed(autopilot_trades):
+        entry_time = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
+        status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
+        trade_type = trade.get('type', 'LONG'); type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
+        print_colored(f"--- Trade ID: {trade['id']} ---", Fore.CYAN)
+        print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {trade['status']}", status_color)
+        print_colored(f"  Entry: {entry_time} @ {trade['entryPrice']:.4f}", Fore.WHITE)
+        if trade['status'] == 'CLOSED':
+            exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
+            pl_percent = trade.get('pl_percent', 0.0); is_profit = pl_percent > current_settings.get('fee_pct', 0.1)
+            pl_color = Fore.GREEN if is_profit else Fore.RED
+            print_colored(f"  Exit: {exit_time} @ {trade['exitPrice']:.4f}", Fore.WHITE)
+            print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
+            run_up = trade.get('run_up_percent', pl_percent)
+            print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
+            if 'entry_snapshot' in trade and not is_profit:
+                snapshot = trade['entry_snapshot']
+                print_colored(f"  Pelajaran (Snapshot): Bias={snapshot.get('bias', 'N/A')}, RSI={snapshot.get('rsi', 0):.0f}", Fore.MAGENTA)
+        print()
 
 # --- FUNGSI API (BYBIT) ---
 def fetch_bybit_candle_data(instId, timeframe):
@@ -126,84 +148,65 @@ class LocalAI:
         low = min(d['low'] for d in relevant_data); close = relevant_data[-1]['close']
         pivot = (high + low + close) / 3; s1 = (2 * pivot) - high; r1 = (2 * pivot) - low
         return {"p": pivot, "s1": s1, "r1": r1}
-    
-    # BARU: Fungsi untuk menganalisis soliditas candle
     def analyze_candle_solidity(self, candle):
         body = abs(candle['close'] - candle['open'])
         full_range = candle['high'] - candle['low']
-        if full_range == 0: return 1.0 # Candle Doji dianggap solid
+        if full_range == 0: return 1.0
         return body / full_range
-    
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100: return None
-        
-        # Ambil 5 candle sebelum candle saat ini untuk analisis price action
         recent_candles = candle_data[-6:-1]
-        
         analysis = {
-            "ema9": self.calculate_ema(candle_data, 9),
-            "ema50": self.calculate_ema(candle_data, 50),
-            "ema100": self.calculate_ema(candle_data, 100),
-            "rsi": self.calculate_rsi(candle_data, 14),
+            "ema9": self.calculate_ema(candle_data, 9), "ema50": self.calculate_ema(candle_data, 50),
+            "ema100": self.calculate_ema(candle_data, 100), "rsi": self.calculate_rsi(candle_data, 14),
             "pivots": self.calculate_lookback_pivots(candle_data, 100),
             "recent_candle_solidity": [self.analyze_candle_solidity(c) for c in recent_candles],
             "recent_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in recent_candles]
         }
-        
         bias = "RANGING";
         if analysis["ema50"] > analysis["ema100"]: bias = "BULLISH"
         elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
         analysis["bias"] = bias; return analysis
-    
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
         losing_trades = [t for t in self.past_trades if t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         if not losing_trades: return False
         for loss in losing_trades:
             past_snapshot = loss.get("entry_snapshot")
             if not past_snapshot or loss.get("type") != trade_type: continue
-            
-            # Perbandingan yang lebih canggih
             bias_same = current_analysis['bias'] == past_snapshot.get('bias')
             rsi_similar = abs(current_analysis['rsi'] - past_snapshot.get('rsi', 50)) < 15
-            # Bandingkan pola arah 3 candle terakhir
             direction_pattern_same = current_analysis['recent_candle_direction'][-3:] == past_snapshot.get('recent_candle_direction', [])[-3:]
-            
             if bias_same and rsi_similar and direction_pattern_same: return True
         return False
-        
     def get_decision(self, candle_data, open_position, instrument_id):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup untuk analisis."}
-        
         if open_position:
             return {"action": "HOLD", "reason": "Memantau posisi terbuka..."}
-
         if self.check_for_repeated_mistake(analysis, "LONG", instrument_id):
             return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Long."}
         if self.check_for_repeated_mistake(analysis, "SHORT", instrument_id):
              return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan Short."}
-        
-        # Logika baru dengan soliditas candle
         avg_solidity = sum(analysis['recent_candle_solidity']) / len(analysis['recent_candle_solidity'])
         current_price = candle_data[-1]['close']
-        
         if analysis['bias'] == 'BULLISH':
             if current_price < analysis['pivots']['p'] and analysis['rsi'] < 70 and avg_solidity > 0.4:
                 return {"action": "BUY", "reason": f"Bullish, pullback ke Pivot, RSI sehat & candle solid.", "snapshot": analysis}
         if analysis['bias'] == 'BEARISH':
             if current_price > analysis['pivots']['p'] and analysis['rsi'] > 30 and avg_solidity > 0.4:
                 return {"action": "SELL", "reason": f"Bearish, rally ke Pivot, RSI sehat & candle solid.", "snapshot": analysis}
-        
         return {"action": "HOLD", "reason": f"Menunggu setup presisi. Bias: {analysis['bias']}, Solidity: {avg_solidity:.2f}."}
 
 # --- LOGIKA TRADING UTAMA ---
-async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, entry_snapshot=None):
+async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     is_profit = pnl > fee
-    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.now().isoformat(), 'pl_percent': pnl})
-    if not is_profit and entry_snapshot:
-        trade['entry_snapshot'] = entry_snapshot
+    exit_snapshot = LocalAI(current_settings, []).get_market_analysis(market_state[trade['instrumentId']]['candle_data'])
+    trade.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': datetime.now().isoformat(), 'pl_percent': pnl, 'exit_snapshot': exit_snapshot})
+    # Simpan snapshot entry hanya jika trade rugi untuk dipelajari
+    if is_profit and 'entry_snapshot' in trade:
+        del trade['entry_snapshot']
     save_trades()
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f}"
@@ -250,25 +253,20 @@ def autopilot_worker():
 async def check_realtime_position_management(instrument_id, latest_price):
     open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
     if not open_position: return
-    
     current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
     if current_pnl > open_position.get('run_up_percent', 0.0):
         open_position['run_up_percent'] = current_pnl
     if current_pnl < open_position.get('max_drawdown_percent', 0.0):
         open_position['max_drawdown_percent'] = current_pnl
-
     sl_pct = current_settings.get('stop_loss_pct')
     if sl_pct and current_pnl <= -sl_pct: 
         global is_ai_thinking
         if not is_ai_thinking:
             is_ai_thinking = True
-            await analyze_and_close_trade(open_position, latest_price, f"Stop Loss @ {sl_pct}% tercapai.", open_position.get("entry_snapshot"))
+            await analyze_and_close_trade(open_position, latest_price, f"Stop Loss @ {sl_pct}% tercapai.")
             is_ai_thinking = False
         return
-
-    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.3)
-    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.1)
-    
+    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.3); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.1)
     if open_position.get("trailing_stop_price") is None and current_pnl >= activation_pct:
         if open_position['type'] == 'LONG':
             lock_in_profit_pct = current_pnl - gap_pct
@@ -276,7 +274,6 @@ async def check_realtime_position_management(instrument_id, latest_price):
         else:
             lock_in_profit_pct = current_pnl - gap_pct
             open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 - lock_in_profit_pct / 100)
-    
     if open_position.get("trailing_stop_price") is not None:
         if open_position['type'] == 'LONG':
             new_trailing_stop = latest_price * (1 - gap_pct / 100)
@@ -286,16 +283,15 @@ async def check_realtime_position_management(instrument_id, latest_price):
             new_trailing_stop = latest_price * (1 + gap_pct / 100)
             if new_trailing_stop < open_position["trailing_stop_price"]:
                 open_position["trailing_stop_price"] = new_trailing_stop
-        
         if open_position['type'] == 'LONG' and latest_price <= open_position["trailing_stop_price"]:
             if not is_ai_thinking:
                 is_ai_thinking = True
-                await analyze_and_close_trade(open_position, open_position["trailing_stop_price"], "Trailing Take Profit tercapai.", open_position.get("entry_snapshot"))
+                await analyze_and_close_trade(open_position, open_position["trailing_stop_price"], "Trailing Take Profit tercapai.")
                 is_ai_thinking = False
         elif open_position['type'] == 'SHORT' and latest_price >= open_position["trailing_stop_price"]:
              if not is_ai_thinking:
                 is_ai_thinking = True
-                await analyze_and_close_trade(open_position, open_position["trailing_stop_price"], "Trailing Take Profit tercapai.", open_position.get("entry_snapshot"))
+                await analyze_and_close_trade(open_position, open_position["trailing_stop_price"], "Trailing Take Profit tercapai.")
                 is_ai_thinking = False
 
 def data_refresh_worker():
