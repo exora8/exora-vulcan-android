@@ -23,21 +23,42 @@ def load_settings():
                 settings = json.load(f)
                 return settings.get("fee_pct", default_fee_pct)
         except json.JSONDecodeError:
-            print_colored(f"Error membaca {SETTINGS_FILE}. Menggunakan fee default.", Fore.YELLOW)
+            print_colored(f"Warning: Error membaca '{SETTINGS_FILE}'. Menggunakan fee default.", Fore.YELLOW)
+            return default_fee_pct
+        except Exception as e:
+            print_colored(f"Warning: Kesalahan tidak terduga saat membaca '{SETTINGS_FILE}': {e}. Menggunakan fee default.", Fore.YELLOW)
             return default_fee_pct
     return default_fee_pct
 
 def load_trades():
     """Memuat data trade dari trades.json."""
     if not os.path.exists(TRADES_FILE):
-        print_colored(f"\nError: File '{TRADES_FILE}' tidak ditemukan.", Fore.RED, Style.BRIGHT)
+        print_colored(f"\nError: File '{TRADES_FILE}' tidak ditemukan di lokasi yang sama.", Fore.RED, Style.BRIGHT)
         return []
+
     try:
-        with open(TRADES_FILE, 'r') as f:
-            trades = json.load(f)
+        with open(TRADES_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().strip() # Baca semua konten dan hapus whitespace di awal/akhir
+            
+            if not content:
+                print_colored(f"Warning: File '{TRADES_FILE}' kosong atau hanya berisi whitespace. Tidak ada trade yang ditemukan.", Fore.YELLOW, Style.BRIGHT)
+                return []
+            
+            # Coba parse konten sebagai JSON
+            trades = json.loads(content)
+            
+            # Pastikan hasil parsing adalah list (array JSON)
+            if not isinstance(trades, list):
+                print_colored(f"Error: Konten di '{TRADES_FILE}' bukan array JSON yang valid. Konten awal: '{content[:100]}...'", Fore.RED, Style.BRIGHT)
+                return []
+                
             return trades
-    except json.JSONDecodeError:
-        print_colored(f"Error: Format JSON di '{TRADES_FILE}' tidak valid.", Fore.RED, Style.BRIGHT)
+    except json.JSONDecodeError as e:
+        print_colored(f"Error: Format JSON di '{TRADES_FILE}' tidak valid. Detail: {e}", Fore.RED, Style.BRIGHT)
+        print_colored("Pastikan file tidak kosong, tidak terpotong, dan memiliki struktur JSON yang benar (misal: dimulai dengan '[' dan diakhiri dengan ']').", Fore.YELLOW)
+        return []
+    except Exception as e:
+        print_colored(f"Error: Terjadi kesalahan tidak terduga saat membaca '{TRADES_FILE}': {e}", Fore.RED, Style.BRIGHT)
         return []
 
 def calculate_pnl(entry_price, current_price, trade_type):
@@ -53,9 +74,8 @@ def display_trades_detail():
     fee_pct = load_settings()
     trades = load_trades()
 
-    if not trades:
-        print_colored("Tidak ada riwayat trade yang ditemukan.", Fore.YELLOW, Style.BRIGHT)
-        return
+    if not trades: # Cek lagi setelah load_trades, jika tetap kosong
+        return # Pesan sudah ditangani di load_trades
 
     print_colored("\n--- Riwayat Trade Detail ---", Fore.CYAN, Style.BRIGHT)
     print_colored(f"(Fee per trade untuk perhitungan P/L: {fee_pct:.2f}%)", Fore.YELLOW)
@@ -104,7 +124,7 @@ def display_trades_detail():
             else:
                 exit_time_fmt = 'N/A'
 
-            pl_color = Fore.GREEN if pl_percent > fee_pct else Fore.RED if pl_percent < -fee_pct else Fore.YELLOW
+            pl_color = Fore.GREEN if pl_percent > fee_pct else Fore.RED if pl_percent < -abs(fee_pct) else Fore.YELLOW # Adjusted for negative fee (SL logic)
             
             print_colored(f"  Exit Time  : {exit_time_fmt}", Fore.WHITE)
             print_colored(f"  Exit Price : {exit_price:.4f}", Fore.WHITE)
@@ -123,12 +143,20 @@ def display_trades_detail():
 
             # Detail Snapshot Pembelajaran (jika ada dan trade rugi)
             entry_snapshot = trade.get('entry_snapshot')
-            # Untuk trade profit, entry_snapshot dihapus. Jadi hanya muncul jika trade rugi.
-            if entry_snapshot:
+            if entry_snapshot: # Hanya tampilkan jika ada entry_snapshot
                 print_colored("  --- Belajar dari Snapshot (Entry) ---", Fore.CYAN)
                 print_colored(f"    Bias Trend        : {entry_snapshot.get('bias', 'N/A')}", Fore.CYAN)
-                print_colored(f"    Prev Close vs EMA9: {entry_snapshot.get('prev_candle_close', 'N/A'):.4f} vs {entry_snapshot.get('ema9_prev', 'N/A'):.4f}", Fore.CYAN)
-                print_colored(f"    Curr Close vs EMA9: {entry_snapshot.get('current_candle_close', 'N/A'):.4f} vs {entry_snapshot.get('ema9_current', 'N/A'):.4f}", Fore.CYAN)
+                # Tambahkan pengecekan None untuk float formatting
+                prev_close = entry_snapshot.get('prev_candle_close')
+                ema9_prev = entry_snapshot.get('ema9_prev')
+                curr_close = entry_snapshot.get('current_candle_close')
+                ema9_curr = entry_snapshot.get('ema9_current')
+
+                print_colored(f"    Prev Close vs EMA9: {prev_close:.4f}" if prev_close is not None else "N/A", end=' vs ')
+                print_colored(f"{ema9_prev:.4f}" if ema9_prev is not None else "N/A", Fore.CYAN)
+                
+                print_colored(f"    Curr Close vs EMA9: {curr_close:.4f}" if curr_close is not None else "N/A", end=' vs ')
+                print_colored(f"{ema9_curr:.4f}" if ema9_curr is not None else "N/A", Fore.CYAN)
                 
                 # Menampilkan soliditas dan arah 3 candle sebelumnya
                 pre_solidity = [f"{s:.2f}" for s in entry_snapshot.get('pre_entry_candle_solidity', [])]
