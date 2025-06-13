@@ -1,12 +1,18 @@
 import json
 import os
+import sys
 from datetime import datetime
 from colorama import init, Fore, Style
-import subprocess # Tambahkan ini untuk menjalankan perintah eksternal
+import math
+import termios # Untuk kontrol terminal di Unix-like (Linux, Termux, macOS)
+import tty     # Untuk kontrol terminal di Unix-like
 
 # --- KONFIGURASI FILE ---
 SETTINGS_FILE = 'settings.json' # Untuk ambil fee_pct
 TRADES_FILE = 'trades.json'
+
+# --- KONFIGURASI PAGINASI ---
+TRADES_PER_PAGE = 3 # Jumlah trade per halaman, sesuai contohmu
 
 # --- INISIALISASI COLORAMA ---
 init(autoreset=True)
@@ -15,6 +21,29 @@ init(autoreset=True)
 def print_colored_direct(text, color=Fore.WHITE, bright=Style.NORMAL, end='\n'):
     """Prints colored text directly to stdout, bypassing the display buffer."""
     print(bright + color + text + Style.RESET_ALL, end=end)
+
+def clear_screen():
+    """Membersihkan layar terminal."""
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def get_single_char_input():
+    """Mendapatkan satu karakter input dari keyboard tanpa perlu Enter (Unix-like)."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        ch = sys.stdin.read(1)
+        # Deteksi tombol panah (escape sequences)
+        if ch == '\x1b': # ESC
+            ch += sys.stdin.read(2) # Baca 2 karakter lagi untuk sequence
+            # Tombol Panah:
+            # \x1b[A = Up
+            # \x1b[B = Down
+            # \x1b[C = Right
+            # \x1b[D = Left
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
 
 def load_settings():
     """Memuat pengaturan, hanya untuk mendapatkan fee_pct untuk perhitungan P/L."""
@@ -68,150 +97,174 @@ def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG':
         return ((current_price - entry_price) / entry_price) * 100
     elif trade_type == 'SHORT':
-        return ((entry_price - entry_price) / entry_price) * 100 # Ini kayaknya salah, harusnya (entry-current)
+        return ((entry_price - current_price) / entry_price) * 100 # FIX: Corrected PnL calculation for SHORT
     return 0
 
-def display_trades_detail():
-    """Menampilkan semua data trade secara detail menggunakan pager (less/more)."""
+def display_trade_block(trade, fee_pct):
+    """Memformat satu blok trade untuk ditampilkan."""
+    lines = []
+    def add_to_block(text, color=Fore.WHITE, bright=Style.NORMAL, end='\n'):
+        formatted_text = bright + color + text + Style.RESET_ALL
+        if not lines or end == '\n':
+            lines.append(formatted_text)
+        else:
+            lines[-1] += formatted_text
+
+    add_to_block(f"--- Trade ID: {trade.get('id', 'N/A')} ---", Fore.MAGENTA, Style.BRIGHT)
+    
+    instrument_id = trade.get('instrumentId', 'N/A')
+    trade_type = trade.get('type', 'N/A')
+    status = trade.get('status', 'N/A')
+    
+    type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED if trade_type == 'SHORT' else Fore.WHITE
+    status_color = Fore.YELLOW if status == 'OPEN' else Fore.WHITE
+
+    add_to_block(f"  Pair       : {instrument_id}", Fore.WHITE)
+    add_to_block(f"  Tipe       : {trade_type}", type_color)
+    add_to_block(f"  Status     : {status}", status_color)
+
+    entry_time = trade.get('entryTimestamp', 'N/A')
+    entry_price = trade.get('entryPrice', 0.0)
+    entry_reason = trade.get('entryReason', 'Tidak ada alasan.')
+    
+    if entry_time != 'N/A':
+        entry_time_fmt = datetime.fromisoformat(entry_time.replace('Z', '')).strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        entry_time_fmt = 'N/A'
+
+    add_to_block(f"  Entry Time : {entry_time_fmt}", Fore.WHITE)
+    add_to_block(f"  Entry Price: {entry_price:.4f}", Fore.WHITE)
+    add_to_block(f"  Entry Reason: {entry_reason}", Fore.CYAN)
+
+    if status == 'CLOSED':
+        exit_time = trade.get('exitTimestamp', 'N/A')
+        exit_price = trade.get('exitPrice', 0.0)
+        pl_percent = trade.get('pl_percent', 0.0)
+        run_up_percent = trade.get('run_up_percent', 0.0)
+        max_drawdown_percent = trade.get('max_drawdown_percent', 0.0)
+        
+        if exit_time != 'N/A':
+            exit_time_fmt = datetime.fromisoformat(exit_time.replace('Z', '')).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            exit_time_fmt = 'N/A'
+
+        pl_color = Fore.GREEN if pl_percent > fee_pct else Fore.RED if pl_percent < -abs(fee_pct) else Fore.YELLOW
+        
+        add_to_block(f"  Exit Time  : {exit_time_fmt}", Fore.WHITE)
+        add_to_block(f"  Exit Price : {exit_price:.4f}", Fore.WHITE)
+        add_to_block(f"  P/L (%)    : {pl_percent:.2f}%", pl_color, Style.BRIGHT)
+        add_to_block(f"  Max Profit : {run_up_percent:.2f}%", Fore.YELLOW)
+        add_to_block(f"  Max Drawdown: {max_drawdown_percent:.2f}%", Fore.YELLOW)
+
+        current_tp_checkpoint_level = trade.get('current_tp_checkpoint_level', 0.0)
+        trailing_stop_price = trade.get('trailing_stop_price')
+        if current_tp_checkpoint_level > 0.0 and trailing_stop_price is not None:
+            add_to_block(f"  TP Checkpoint: Aktif @ {current_tp_checkpoint_level:.2f}% PnL ({trailing_stop_price:.4f})", Fore.MAGENTA)
+        elif current_tp_checkpoint_level == 0.0 and trailing_stop_price is not None: 
+            add_to_block(f"  TP Checkpoint: {current_tp_checkpoint_level:.2f}% (Price: {trailing_stop_price:.4f})", Fore.MAGENTA)
+
+        entry_snapshot = trade.get('entry_snapshot')
+        if entry_snapshot: 
+            add_to_block("  --- Belajar dari Snapshot (Entry) ---", Fore.CYAN)
+            add_to_block(f"    Bias Trend        : {entry_snapshot.get('bias', 'N/A')}", Fore.CYAN)
+            
+            prev_close = entry_snapshot.get('prev_candle_close')
+            ema9_prev = entry_snapshot.get('ema9_prev')
+            curr_close = entry_snapshot.get('current_candle_close')
+            ema9_curr = entry_snapshot.get('ema9_current')
+
+            add_to_block(f"    Prev Close vs EMA9: {prev_close:.4f}" if prev_close is not None else "N/A", end=' vs ')
+            add_to_block(f"{ema9_prev:.4f}" if ema9_prev is not None else "N/A", Fore.CYAN)
+            
+            add_to_block(f"    Curr Close vs EMA9: {curr_close:.4f}" if curr_close is not None else "N/A", end=' vs ')
+            add_to_block(f"{ema9_curr:.4f}" if ema9_curr is not None else "N/A", Fore.CYAN)
+            
+            pre_solidity = [f"{s:.2f}" for s in entry_snapshot.get('pre_entry_candle_solidity', [])]
+            pre_direction = entry_snapshot.get('pre_entry_candle_direction', [])
+            add_to_block(f"    3 Prev Solidity   : {pre_solidity}", Fore.CYAN)
+            add_to_block(f"    3 Prev Direction  : {pre_direction}", Fore.CYAN)
+    
+    add_to_block("="*60, Fore.CYAN)
+    return "\n".join(lines)
+
+
+def run_interactive_viewer():
+    """Menjalankan viewer interaktif."""
     fee_pct = load_settings()
     trades = load_trades()
 
     if not trades: 
-        # Pesan error/warning sudah ditangani di load_trades, jadi langsung return
         return 
 
-    # Collect all lines to be displayed in the pager
-    display_lines = []
+    # Karena user mau "dari lama ke terbaru" untuk panah bawah,
+    # dan kita tampilkan yang terbaru di atas, maka kita akan reverse trades
+    # dan paginasi dari trade paling baru.
+    trades_display_order = list(reversed(trades))
+    total_trades = len(trades_display_order)
+    total_pages = math.ceil(total_trades / TRADES_PER_PAGE)
+    current_page = 0 # Mulai dari halaman pertama (trade paling baru)
 
-    def add_line(text, color=Fore.WHITE, bright=Style.NORMAL, end='\n'):
-        # This function will add formatted strings to our list
-        formatted_text = bright + color + text + Style.RESET_ALL
-        if not display_lines or end == '\n':
-            display_lines.append(formatted_text)
+    while True:
+        clear_screen()
+        print_colored_direct("\n--- Riwayat Trade Detail Interaktif ---", Fore.CYAN, Style.BRIGHT)
+        print_colored_direct(f"(Halaman {current_page + 1}/{total_pages} | Trade per halaman: {TRADES_PER_PAGE})", Fore.YELLOW)
+        print_colored_direct(f"(Fee per trade untuk perhitungan P/L: {fee_pct:.2f}%)", Fore.YELLOW)
+        print_colored_direct("="*60, Fore.CYAN)
+
+        start_idx = current_page * TRADES_PER_PAGE
+        end_idx = min(start_idx + TRADES_PER_PAGE, total_trades)
+        
+        # Ambil trade untuk halaman ini
+        trades_on_page = trades_display_order[start_idx:end_idx]
+
+        if not trades_on_page:
+            print_colored_direct("Tidak ada trade untuk ditampilkan di halaman ini.", Fore.YELLOW)
         else:
-            display_lines[-1] += formatted_text
-
-    add_line("\n--- Riwayat Trade Detail ---", Fore.CYAN, Style.BRIGHT)
-    add_line(f"(Fee per trade untuk perhitungan P/L: {fee_pct:.2f}%)", Fore.YELLOW)
-    add_line("="*60, Fore.CYAN)
-
-    # Membalik urutan agar yang terbaru tampil di atas
-    for trade in reversed(trades):
-        add_line(f"\n--- Trade ID: {trade.get('id', 'N/A')} ---", Fore.MAGENTA, Style.BRIGHT)
+            for trade in trades_on_page:
+                print_colored_direct(display_trade_block(trade, fee_pct))
         
-        # Informasi Dasar
-        instrument_id = trade.get('instrumentId', 'N/A')
-        trade_type = trade.get('type', 'N/A')
-        status = trade.get('status', 'N/A')
+        print_colored_direct("\n" + "="*60, Fore.CYAN)
+        print_colored_direct("Navigasi: [↑] Terbaru | [↓] Lama | [Q] Keluar", Fore.GREEN, Style.BRIGHT)
         
-        type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED if trade_type == 'SHORT' else Fore.WHITE
-        status_color = Fore.YELLOW if status == 'OPEN' else Fore.WHITE
+        user_input = get_single_char_input().lower()
 
-        add_line(f"  Pair       : {instrument_id}", Fore.WHITE)
-        add_line(f"  Tipe       : {trade_type}", type_color)
-        add_line(f"  Status     : {status}", status_color)
-
-        # Informasi Entry
-        entry_time = trade.get('entryTimestamp', 'N/A')
-        entry_price = trade.get('entryPrice', 0.0)
-        entry_reason = trade.get('entryReason', 'Tidak ada alasan.')
-        
-        if entry_time != 'N/A':
-            entry_time_fmt = datetime.fromisoformat(entry_time.replace('Z', '')).strftime('%Y-%m-%d %H:%M:%S')
-        else:
-            entry_time_fmt = 'N/A'
-
-        add_line(f"  Entry Time : {entry_time_fmt}", Fore.WHITE)
-        add_line(f"  Entry Price: {entry_price:.4f}", Fore.WHITE)
-        add_line(f"  Entry Reason: {entry_reason}", Fore.CYAN)
-
-        # Informasi Exit (jika CLOSED)
-        if status == 'CLOSED':
-            exit_time = trade.get('exitTimestamp', 'N/A')
-            exit_price = trade.get('exitPrice', 0.0)
-            pl_percent = trade.get('pl_percent', 0.0)
-            run_up_percent = trade.get('run_up_percent', 0.0)
-            max_drawdown_percent = trade.get('max_drawdown_percent', 0.0)
-            
-            if exit_time != 'N/A':
-                exit_time_fmt = datetime.fromisoformat(exit_time.replace('Z', '')).strftime('%Y-%m-%d %H:%M:%S')
+        if user_input == 'q':
+            break
+        elif user_input == '\x1b[A': # Tombol panah atas (sebelumnya)
+            if current_page > 0:
+                current_page -= 1
             else:
-                exit_time_fmt = 'N/A'
+                print_colored_direct("Sudah di halaman trade paling terbaru.", Fore.YELLOW)
+                time.sleep(1) # Tunda sebentar agar pesan terbaca
+        elif user_input == '\x1b[B': # Tombol panah bawah (selanjutnya)
+            if current_page < total_pages - 1:
+                current_page += 1
+            else:
+                print_colored_direct("Sudah di halaman trade paling lama.", Fore.YELLOW)
+                time.sleep(1) # Tunda sebentar
+        else:
+            print_colored_direct("Input tidak valid. Gunakan tombol panah atas/bawah atau 'Q'.", Fore.RED)
+            time.sleep(1)
 
-            pl_color = Fore.GREEN if pl_percent > fee_pct else Fore.RED if pl_percent < -abs(fee_pct) else Fore.YELLOW
-            
-            add_line(f"  Exit Time  : {exit_time_fmt}", Fore.WHITE)
-            add_line(f"  Exit Price : {exit_price:.4f}", Fore.WHITE)
-            add_line(f"  P/L (%)    : {pl_percent:.2f}%", pl_color, Style.BRIGHT)
-            add_line(f"  Max Profit : {run_up_percent:.2f}%", Fore.YELLOW)
-            add_line(f"  Max Drawdown: {max_drawdown_percent:.2f}%", Fore.YELLOW)
-
-            # Informasi Trailing TP (jika aktif)
-            current_tp_checkpoint_level = trade.get('current_tp_checkpoint_level', 0.0)
-            trailing_stop_price = trade.get('trailing_stop_price')
-            if current_tp_checkpoint_level > 0.0 and trailing_stop_price is not None:
-                add_line(f"  TP Checkpoint: Aktif @ {current_tp_checkpoint_level:.2f}% PnL ({trailing_stop_price:.4f})", Fore.MAGENTA)
-            elif current_tp_checkpoint_level == 0.0 and trailing_stop_price is not None: # Ini bisa terjadi jika sudah diaktivasi tapi belum melewati checkpoint pertama
-                add_line(f"  TP Checkpoint: {current_tp_checkpoint_level:.2f}% (Price: {trailing_stop_price:.4f})", Fore.MAGENTA)
-
-
-            # Detail Snapshot Pembelajaran (jika ada dan trade rugi)
-            entry_snapshot = trade.get('entry_snapshot')
-            if entry_snapshot: # Hanya tampilkan jika ada entry_snapshot
-                add_line("  --- Belajar dari Snapshot (Entry) ---", Fore.CYAN)
-                add_line(f"    Bias Trend        : {entry_snapshot.get('bias', 'N/A')}", Fore.CYAN)
-                
-                # Menambahkan pengecekan None untuk menghindari error formatting
-                prev_close = entry_snapshot.get('prev_candle_close')
-                ema9_prev = entry_snapshot.get('ema9_prev')
-                curr_close = entry_snapshot.get('current_candle_close')
-                ema9_curr = entry_snapshot.get('ema9_current')
-
-                add_line(f"    Prev Close vs EMA9: {prev_close:.4f}" if prev_close is not None else "N/A", end=' vs ')
-                add_line(f"{ema9_prev:.4f}" if ema9_prev is not None else "N/A", Fore.CYAN)
-                
-                add_line(f"    Curr Close vs EMA9: {curr_close:.4f}" if curr_close is not None else "N/A", end=' vs ')
-                add_line(f"{ema9_curr:.4f}" if ema9_curr is not None else "N/A", Fore.CYAN)
-                
-                # Menampilkan soliditas dan arah 3 candle sebelumnya
-                pre_solidity = [f"{s:.2f}" for s in entry_snapshot.get('pre_entry_candle_solidity', [])]
-                pre_direction = entry_snapshot.get('pre_entry_candle_direction', [])
-                add_line(f"    3 Prev Solidity   : {pre_solidity}", Fore.CYAN)
-                add_line(f"    3 Prev Direction  : {pre_direction}", Fore.CYAN)
-        
-        add_line("="*60, Fore.CYAN)
-
-    # Convert all collected lines into a single string
-    full_output_string = "\n".join(display_lines)
-
-    # Try to pipe the output to a pager (less or more)
-    pager_command = None
-    try:
-        # Check if 'less' is available and executable
-        subprocess.run(['which', 'less'], check=True, capture_output=True) 
-        pager_command = ['less', '-R', '-F', '-S'] 
-        # -R: Raw control characters (for colors)
-        # -F: Quit if entire file fits on first screen
-        # -S: Chop long lines (don't wrap)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        try:
-            # Fallback to 'more' if 'less' is not found
-            subprocess.run(['which', 'more'], check=True, capture_output=True)
-            pager_command = ['more']
-            print_colored_direct("\n'less' command not found, using 'more' (less features but scrollable).", Fore.YELLOW)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            print_colored_direct("\nNeither 'less' nor 'more' commands found. Displaying all output directly (may not be scrollable).", Fore.YELLOW)
-            print_colored_direct(full_output_string)
-            return
-
-    # If a pager command is found, run it and pipe the output
-    try:
-        pager_process = subprocess.Popen(pager_command, stdin=subprocess.PIPE, text=True, encoding='utf-8')
-        pager_process.communicate(full_output_string)
-    except Exception as e:
-        print_colored_direct(f"\nError using pager '{' '.join(pager_command)}': {e}. Displaying all output directly.", Fore.RED)
-        print_colored_direct(full_output_string)
+    clear_screen() # Bersihkan layar saat keluar
+    print_colored_direct("Viewer ditutup.", Fore.CYAN, Style.BRIGHT)
 
 # --- EKSEKUSI SCRIPT ---
 if __name__ == "__main__":
-    display_trades_detail()
+    # Cek apakah modul termios dan tty tersedia (hanya di Unix-like)
+    if os.name != 'posix':
+        print_colored_direct("Peringatan: Fungsi navigasi interaktif mungkin tidak bekerja optimal di sistem operasi ini (bukan Unix-like).", Fore.YELLOW, Style.BRIGHT)
+        print_colored_direct("Dibutuhkan modul 'termios' dan 'tty' yang hanya tersedia di lingkungan Unix-like (Linux, macOS, Termux).", Fore.YELLOW)
+        print_colored_direct("Akan dicoba untuk menampilkan, tapi mungkin tanpa navigasi panah. Tekan 'Q' untuk keluar.", Fore.YELLOW)
+        # Fallback to simple print if not posix-like, or if termios/tty fails to load
+        # For simplicity, we'll just exit if not posix, as get_single_char_input will fail
+        sys.exit(1) # Exit if not posix for now, or implement a basic input fallback
+
+    try:
+        run_interactive_viewer()
+    except Exception as e:
+        clear_screen()
+        print_colored_direct(f"Terjadi error tak terduga: {e}", Fore.RED, Style.BRIGHT)
+        print_colored_direct("Pastikan terminal mendukung operasi mentah (raw mode) dan modul 'termios'/'tty' berfungsi.", Fore.RED)
+        print_colored_direct("Mungkin ada masalah dengan keyboard input. Coba jalankan di lingkungan Termux.", Fore.YELLOW)
+        sys.exit(1)
