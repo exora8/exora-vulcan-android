@@ -1,0 +1,143 @@
+import json
+import os
+from datetime import datetime
+from colorama import init, Fore, Style
+
+# --- KONFIGURASI FILE ---
+SETTINGS_FILE = 'settings.json' # Untuk ambil fee_pct
+TRADES_FILE = 'trades.json'
+
+# --- INISIALISASI COLORAMA ---
+init(autoreset=True)
+
+# --- FUNGSI UTILITAS & TAMPILAN ---
+def print_colored(text, color=Fore.WHITE, bright=Style.NORMAL, end='\n'):
+    print(bright + color + text + Style.RESET_ALL, end=end)
+
+def load_settings():
+    """Memuat pengaturan, hanya untuk mendapatkan fee_pct untuk perhitungan P/L."""
+    default_fee_pct = 0.1 # Default jika settings.json tidak ada atau fee_pct tidak ditemukan
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                return settings.get("fee_pct", default_fee_pct)
+        except json.JSONDecodeError:
+            print_colored(f"Error membaca {SETTINGS_FILE}. Menggunakan fee default.", Fore.YELLOW)
+            return default_fee_pct
+    return default_fee_pct
+
+def load_trades():
+    """Memuat data trade dari trades.json."""
+    if not os.path.exists(TRADES_FILE):
+        print_colored(f"\nError: File '{TRADES_FILE}' tidak ditemukan.", Fore.RED, Style.BRIGHT)
+        return []
+    try:
+        with open(TRADES_FILE, 'r') as f:
+            trades = json.load(f)
+            return trades
+    except json.JSONDecodeError:
+        print_colored(f"Error: Format JSON di '{TRADES_FILE}' tidak valid.", Fore.RED, Style.BRIGHT)
+        return []
+
+def calculate_pnl(entry_price, current_price, trade_type):
+    """Menghitung P/L dalam persentase."""
+    if trade_type == 'LONG':
+        return ((current_price - entry_price) / entry_price) * 100
+    elif trade_type == 'SHORT':
+        return ((entry_price - current_price) / entry_price) * 100
+    return 0
+
+def display_trades_detail():
+    """Menampilkan semua data trade secara detail."""
+    fee_pct = load_settings()
+    trades = load_trades()
+
+    if not trades:
+        print_colored("Tidak ada riwayat trade yang ditemukan.", Fore.YELLOW, Style.BRIGHT)
+        return
+
+    print_colored("\n--- Riwayat Trade Detail ---", Fore.CYAN, Style.BRIGHT)
+    print_colored(f"(Fee per trade untuk perhitungan P/L: {fee_pct:.2f}%)", Fore.YELLOW)
+    print_colored("="*60, Fore.CYAN)
+
+    # Membalik urutan agar yang terbaru tampil di atas
+    for trade in reversed(trades):
+        print_colored(f"\n--- Trade ID: {trade.get('id', 'N/A')} ---", Fore.MAGENTA, Style.BRIGHT)
+        
+        # Informasi Dasar
+        instrument_id = trade.get('instrumentId', 'N/A')
+        trade_type = trade.get('type', 'N/A')
+        status = trade.get('status', 'N/A')
+        
+        type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED if trade_type == 'SHORT' else Fore.WHITE
+        status_color = Fore.YELLOW if status == 'OPEN' else Fore.WHITE
+
+        print_colored(f"  Pair       : {instrument_id}", Fore.WHITE)
+        print_colored(f"  Tipe       : {trade_type}", type_color)
+        print_colored(f"  Status     : {status}", status_color)
+
+        # Informasi Entry
+        entry_time = trade.get('entryTimestamp', 'N/A')
+        entry_price = trade.get('entryPrice', 0.0)
+        entry_reason = trade.get('entryReason', 'Tidak ada alasan.')
+        
+        if entry_time != 'N/A':
+            entry_time_fmt = datetime.fromisoformat(entry_time.replace('Z', '')).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            entry_time_fmt = 'N/A'
+
+        print_colored(f"  Entry Time : {entry_time_fmt}", Fore.WHITE)
+        print_colored(f"  Entry Price: {entry_price:.4f}", Fore.WHITE)
+        print_colored(f"  Entry Reason: {entry_reason}", Fore.CYAN)
+
+        # Informasi Exit (jika CLOSED)
+        if status == 'CLOSED':
+            exit_time = trade.get('exitTimestamp', 'N/A')
+            exit_price = trade.get('exitPrice', 0.0)
+            pl_percent = trade.get('pl_percent', 0.0)
+            run_up_percent = trade.get('run_up_percent', 0.0)
+            max_drawdown_percent = trade.get('max_drawdown_percent', 0.0)
+            
+            if exit_time != 'N/A':
+                exit_time_fmt = datetime.fromisoformat(exit_time.replace('Z', '')).strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                exit_time_fmt = 'N/A'
+
+            pl_color = Fore.GREEN if pl_percent > fee_pct else Fore.RED if pl_percent < -fee_pct else Fore.YELLOW
+            
+            print_colored(f"  Exit Time  : {exit_time_fmt}", Fore.WHITE)
+            print_colored(f"  Exit Price : {exit_price:.4f}", Fore.WHITE)
+            print_colored(f"  P/L (%)    : {pl_percent:.2f}%", pl_color, Style.BRIGHT)
+            print_colored(f"  Max Profit : {run_up_percent:.2f}%", Fore.YELLOW)
+            print_colored(f"  Max Drawdown: {max_drawdown_percent:.2f}%", Fore.YELLOW)
+
+            # Informasi Trailing TP (jika aktif)
+            current_tp_checkpoint_level = trade.get('current_tp_checkpoint_level', 0.0)
+            trailing_stop_price = trade.get('trailing_stop_price')
+            if current_tp_checkpoint_level > 0.0 and trailing_stop_price is not None:
+                print_colored(f"  TP Checkpoint: Aktif @ {current_tp_checkpoint_level:.2f}% PnL ({trailing_stop_price:.4f})", Fore.MAGENTA)
+            elif current_tp_checkpoint_level == 0.0 and trailing_stop_price is not None: # Ini bisa terjadi jika sudah diaktivasi tapi belum melewati checkpoint pertama
+                print_colored(f"  TP Checkpoint: {current_tp_checkpoint_level:.2f}% (Price: {trailing_stop_price:.4f})", Fore.MAGENTA)
+
+
+            # Detail Snapshot Pembelajaran (jika ada dan trade rugi)
+            entry_snapshot = trade.get('entry_snapshot')
+            # Untuk trade profit, entry_snapshot dihapus. Jadi hanya muncul jika trade rugi.
+            if entry_snapshot:
+                print_colored("  --- Belajar dari Snapshot (Entry) ---", Fore.CYAN)
+                print_colored(f"    Bias Trend        : {entry_snapshot.get('bias', 'N/A')}", Fore.CYAN)
+                print_colored(f"    Prev Close vs EMA9: {entry_snapshot.get('prev_candle_close', 'N/A'):.4f} vs {entry_snapshot.get('ema9_prev', 'N/A'):.4f}", Fore.CYAN)
+                print_colored(f"    Curr Close vs EMA9: {entry_snapshot.get('current_candle_close', 'N/A'):.4f} vs {entry_snapshot.get('ema9_current', 'N/A'):.4f}", Fore.CYAN)
+                
+                # Menampilkan soliditas dan arah 3 candle sebelumnya
+                pre_solidity = [f"{s:.2f}" for s in entry_snapshot.get('pre_entry_candle_solidity', [])]
+                pre_direction = entry_snapshot.get('pre_entry_candle_direction', [])
+                print_colored(f"    3 Prev Solidity   : {pre_solidity}", Fore.CYAN)
+                print_colored(f"    3 Prev Direction  : {pre_direction}", Fore.CYAN)
+        
+        print_colored("="*60, Fore.CYAN)
+
+# --- EKSEKUSI SCRIPT ---
+if __name__ == "__main__":
+    display_trades_detail()
