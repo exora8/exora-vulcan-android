@@ -6,7 +6,7 @@ from colorama import init, Fore, Style
 import math
 import termios # Untuk kontrol terminal di Unix-like (Linux, Termux, macOS)
 import tty     # Untuk kontrol terminal di Unix-like
-import time    # <-- TAMBAHKAN INI
+import time    # Pastikan ini sudah diimpor!
 
 # --- KONFIGURASI FILE ---
 SETTINGS_FILE = 'settings.json' # Untuk ambil fee_pct
@@ -28,27 +28,50 @@ def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def get_single_char_input():
-    """Mendapatkan satu karakter input dari keyboard tanpa perlu Enter (Unix-like)."""
+    """Mendapatkan satu karakter input dari keyboard tanpa perlu Enter (Unix-like).
+    Lebih robust dalam mendeteksi tombol panah.
+    """
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
-        tty.setraw(sys.stdin.fileno())
+        tty.setraw(fd) # Set raw mode
+
+        # Baca karakter pertama
         ch = sys.stdin.read(1)
-        # Deteksi tombol panah (escape sequences)
-        if ch == '\x1b': # ESC
-            # Beberapa terminal mengirim ESC sebagai tombol terpisah.
-            # Kita perlu memastikan ini memang awal dari escape sequence panah.
-            # Timeout singkat untuk membedakan ESC murni dari ESC awalan sequence.
-            # setraw() mode doesn't allow select, so a simple read is fine.
-            # Read 2 more characters for the full arrow key sequence.
+
+        # Jika karakter pertama adalah ESC (\x1b)
+        if ch == '\x1b':
+            # Coba baca karakter kedua (biasanya '[' atau 'O' untuk tombol panah)
             try:
-                ch += sys.stdin.read(2) 
+                second_char = sys.stdin.read(1)
+                if second_char == '[':
+                    # Ini mungkin escape sequence ANSI, coba baca karakter ketiga
+                    third_char = sys.stdin.read(1)
+                    # Cek apakah itu karakter untuk tombol panah
+                    if third_char == 'A': return '\x1b[A' # Panah Atas
+                    if third_char == 'B': return '\x1b[B' # Panah Bawah
+                    if third_char == 'C': return '\x1b[C' # Panah Kanan
+                    if third_char == 'D': return '\x1b[D' # Panah Kiri
+                    # Jika bukan tombol panah, kembalikan urutan lengkap yang didapat
+                    return '\x1b[' + third_char
+                elif second_char == 'O': # Beberapa terminal lama mengirim 'O'
+                    third_char = sys.stdin.read(1)
+                    if third_char == 'A': return '\x1bOA' # Panah Atas
+                    if third_char == 'B': return '\x1bOB' # Panah Bawah
+                    # Dst... (jika diperlukan untuk panah kanan/kiri)
+                    return '\x1bO' + third_char
+                else:
+                    # Ini adalah ESC diikuti karakter lain yang bukan '[' atau 'O'
+                    return ch + second_char # Kembalikan urutan yang didapat
             except IOError:
-                pass # If no more chars are read within a short time, it's just ESC.
-            
+                # Tidak ada karakter kedua yang segera tersedia, mungkin hanya tombol ESC
+                return ch # Kembalikan hanya ESC
+        else:
+            # Bukan ESC, jadi karakter biasa
+            return ch
+
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings) # Kembalikan pengaturan terminal
 
 def load_settings():
     """Memuat pengaturan, hanya untuk mendapatkan fee_pct untuk perhitungan P/L."""
@@ -235,20 +258,20 @@ def run_interactive_viewer():
 
         if user_input == 'q':
             break
-        elif user_input == '\x1b[A': # Tombol panah atas (sebelumnya)
+        elif user_input == '\x1b[a': # Tombol panah atas (sebelumnya)
             if current_page > 0:
                 current_page -= 1
             else:
                 print_colored_direct("Sudah di halaman trade paling terbaru.", Fore.YELLOW)
                 time.sleep(1) # Tunda sebentar agar pesan terbaca
-        elif user_input == '\x1b[B': # Tombol panah bawah (selanjutnya)
+        elif user_input == '\x1b[b': # Tombol panah bawah (selanjutnya)
             if current_page < total_pages - 1:
                 current_page += 1
             else:
                 print_colored_direct("Sudah di halaman trade paling lama.", Fore.YELLOW)
                 time.sleep(1) # Tunda sebentar
         else:
-            print_colored_direct("Input tidak valid. Gunakan tombol panah atas/bawah atau 'Q'.", Fore.RED)
+            print_colored_direct(f"Input tidak valid '{repr(user_input)}'. Gunakan tombol panah atas/bawah atau 'Q'.", Fore.RED)
             time.sleep(1)
 
     clear_screen() # Bersihkan layar saat keluar
@@ -260,19 +283,12 @@ if __name__ == "__main__":
         print_colored_direct("Peringatan: Fungsi navigasi interaktif mungkin tidak bekerja optimal di sistem operasi ini (bukan Unix-like).", Fore.YELLOW, Style.BRIGHT)
         print_colored_direct("Dibutuhkan modul 'termios' dan 'tty' yang hanya tersedia di lingkungan Unix-like (Linux, macOS, Termux).", Fore.YELLOW)
         print_colored_direct("Tekan 'Q' untuk keluar jika tampilan tidak interaktif.", Fore.YELLOW)
-        # For non-posix, we can't use termios/tty, so this part of code will not work as intended.
-        # It's better to just print the whole thing or make a simplified non-interactive display.
-        # For now, will proceed and let it fail if modules are not there or input fails.
     
     try:
         run_interactive_viewer()
     except Exception as e:
         clear_screen()
-        # Perbaiki pesan error agar lebih akurat jika time belum diimpor
-        if "name 'time' is not defined" in str(e):
-             print_colored_direct(f"Terjadi error: Modul 'time' belum diimpor. Ini adalah bug internal.", Fore.RED, Style.BRIGHT)
-        else:
-            print_colored_direct(f"Terjadi error tak terduga: {e}", Fore.RED, Style.BRIGHT)
+        print_colored_direct(f"Terjadi error tak terduga: {e}", Fore.RED, Style.BRIGHT)
         print_colored_direct("Pastikan terminal mendukung operasi mentah (raw mode) dan modul 'termios'/'tty' berfungsi.", Fore.RED)
-        print_colored_direct("Jika Anda tidak menggunakan Termux/Linux/macOS, fitur ini mungkin tidak didukung.", Fore.YELLOW)
+        print_colored_direct("Jika Anda tidak menggunakan Termux/Linux/macOS, fitur ini mungkin tidak didukung. Coba gunakan Q untuk keluar.", Fore.YELLOW)
         sys.exit(1)
