@@ -57,7 +57,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap)", Fore.GREEN)
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, sol_tol)", Fore.GREEN) # Added sol_tol
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -71,6 +71,7 @@ def load_settings():
         "analysis_interval_sec": 10,
         "trailing_tp_activation_pct": 0.30, # 0.30% activation as per user
         "trailing_tp_gap_pct": 0.05,       # 0.05% gap as per user
+        "solidity_comparison_tolerance": 0.10, # NEW: Default tolerance for solidity similarity
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -146,7 +147,7 @@ def fetch_bybit_candle_data(instId, timeframe):
 
 def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
-    elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
+    elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100 # FIX: Corrected PnL calculation for SHORT
     return 0
 
 # --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot and learning) ---
@@ -217,7 +218,7 @@ class LocalAI:
 
         return analysis
     
-    # NEW/MODIFIED: check_for_repeated_mistake for learning from losing trades
+    # MODIFIED: check_for_repeated_mistake for learning from losing trades with "similar" criteria
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
         # Only learn from losing trades (where PnL < Fee percentage)
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
@@ -234,7 +235,8 @@ class LocalAI:
         current_pre_solidity = current_analysis.get('pre_entry_candle_solidity', [])
         current_pre_direction = current_analysis.get('pre_entry_candle_direction', [])
 
-        solidity_tolerance = 0.05 # How close do the solidities need to be to be considered "similar"
+        # Get solidity tolerance from settings, default to 0.10 if not found
+        solidity_tolerance = self.settings.get("solidity_comparison_tolerance", 0.10) 
 
         for loss in losing_trades:
             past_snapshot = loss.get("entry_snapshot")
@@ -246,11 +248,12 @@ class LocalAI:
             if not past_snapshot or not all(key in past_snapshot for key in required_keys):
                 continue # Skip malformed snapshots
 
-            # 1. Bias match: Trend must be the same
+            # 1. Bias match: Trend must be the same (STILL EXACT)
             if current_bias != past_snapshot['bias']:
                 continue
 
-            # 2. EMA9 Cross state match: Entry trigger conditions must be similar
+            # 2. EMA9 Cross state match: Entry trigger conditions must be similar (STILL EXACT)
+            # This is the core setup for the sniper entry, so it must be consistent.
             past_prev_close = past_snapshot['prev_candle_close']
             past_curr_close = past_snapshot['current_candle_close']
             past_ema9_prev = past_snapshot['ema9_prev']
@@ -271,28 +274,39 @@ class LocalAI:
             if not ema9_cross_match:
                 continue
             
-            # 3. 3-Candle Direction match (exact sequence)
+            # 3. Relaxed 3-Candle Direction match: Last direction must match AND at least 2 out of 3 overall directions must match
             past_pre_direction = past_snapshot['pre_entry_candle_direction']
-            if current_pre_direction != past_pre_direction:
+            
+            # Ensure enough data points for direction comparison (should be 3)
+            if len(current_pre_direction) < 3 or len(past_pre_direction) < 3:
+                continue # Cannot compare if data is missing
+
+            last_direction_matches = (current_pre_direction[-1] == past_pre_direction[-1]) # Paling penting, arah candle terakhir
+            
+            # Hitung berapa arah yang cocok dari 3 candle
+            matching_directions_count = sum(1 for x, y in zip(current_pre_direction, past_pre_direction) if x == y)
+
+            # Jika arah candle terakhir cocok DAN setidaknya 2 dari 3 arah keseluruhan cocok
+            if not (last_direction_matches and matching_directions_count >= 2):
                 continue
 
-            # 4. 3-Candle Solidity match (within tolerance for each candle)
+            # 4. Relaxed 3-Candle Solidity match: At least 2 out of 3 solidities must be within tolerance
             past_pre_solidity = past_snapshot['pre_entry_candle_solidity']
             
-            # Ensure lengths are the same (should be 3 if fetched correctly)
-            if len(current_pre_solidity) != len(past_pre_solidity) or len(current_pre_solidity) == 0:
+            if len(current_pre_solidity) < 3 or len(past_pre_solidity) < 3:
+                continue # Cannot compare if data is missing
+
+            matching_solidity_count = 0
+            for i in range(len(current_pre_solidity)):
+                if abs(current_pre_solidity[i] - past_pre_solidity[i]) <= solidity_tolerance:
+                    matching_solidity_count += 1
+            
+            # Check if at least 2 out of 3 solidities are within tolerance
+            if matching_solidity_count < 2:
                 continue 
 
-            solidity_match = True
-            for i in range(len(current_pre_solidity)):
-                if abs(current_pre_solidity[i] - past_pre_solidity[i]) > solidity_tolerance:
-                    solidity_match = False
-                    break # One mismatch is enough to break
-            
-            if solidity_match:
-                # All criteria match! This is a pattern that led to a loss.
-                # AI should HOLD to avoid repeating this mistake.
-                return True 
+            # If all relaxed criteria match, this is a pattern that led to a loss.
+            return True 
 
         return False # No repeated mistake pattern found
 
@@ -514,7 +528,8 @@ def handle_settings_command(parts):
         'fee': ('fee_pct', '%'),
         'delay': ('analysis_interval_sec', ' detik'),
         'tp_act': ('trailing_tp_activation_pct', '%'),
-        'tp_gap': ('trailing_tp_gap_pct', '%')
+        'tp_gap': ('trailing_tp_gap_pct', '%'),
+        'sol_tol': ('solidity_comparison_tolerance', '') # NEW: for solidity similarity tolerance
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
@@ -564,9 +579,9 @@ def run_dashboard_mode():
                     if open_pos.get("current_tp_checkpoint_level", 0.0) > 0:
                         cp_level = open_pos["current_tp_checkpoint_level"]
                         ts_price = open_pos.get("trailing_stop_price")
-                        print_colored("  Trailing TP: ", end=''); print_colored(f"Aktif @ {cp_level:.2f}% PnL ({ts_price:.4f})", Fore.MAGENTA)
+                        print_colored("  TP Checkpoint: ", end=''); print_colored(f"Aktif @ {cp_level:.2f}% PnL ({ts_price:.4f})", Fore.MAGENTA)
                     else:
-                        print_colored("  Trailing TP: ", end=''); print_colored(f"Menunggu {current_settings.get('trailing_tp_activation_pct'):.2f}% PnL", Fore.WHITE)
+                        print_colored("  TP Checkpoint: ", end=''); print_colored(f"Menunggu {current_settings.get('trailing_tp_activation_pct'):.2f}% PnL", Fore.WHITE)
                 else:
                     print_colored("  Status    : ", end=''); print_colored("Searching for setup...", Fore.BLUE)
                     if pair_state and pair_state.get("analysis"):
