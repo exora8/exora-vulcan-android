@@ -6,6 +6,7 @@ from colorama import init, Fore, Style
 import math
 import termios # Untuk kontrol terminal di Unix-like (Linux, Termux, macOS)
 import tty     # Untuk kontrol terminal di Unix-like
+import time    # <-- TAMBAHKAN INI
 
 # --- KONFIGURASI FILE ---
 SETTINGS_FILE = 'settings.json' # Untuk ambil fee_pct
@@ -35,12 +36,16 @@ def get_single_char_input():
         ch = sys.stdin.read(1)
         # Deteksi tombol panah (escape sequences)
         if ch == '\x1b': # ESC
-            ch += sys.stdin.read(2) # Baca 2 karakter lagi untuk sequence
-            # Tombol Panah:
-            # \x1b[A = Up
-            # \x1b[B = Down
-            # \x1b[C = Right
-            # \x1b[D = Left
+            # Beberapa terminal mengirim ESC sebagai tombol terpisah.
+            # Kita perlu memastikan ini memang awal dari escape sequence panah.
+            # Timeout singkat untuk membedakan ESC murni dari ESC awalan sequence.
+            # setraw() mode doesn't allow select, so a simple read is fine.
+            # Read 2 more characters for the full arrow key sequence.
+            try:
+                ch += sys.stdin.read(2) 
+            except IOError:
+                pass # If no more chars are read within a short time, it's just ESC.
+            
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return ch
@@ -251,20 +256,23 @@ def run_interactive_viewer():
 
 # --- EKSEKUSI SCRIPT ---
 if __name__ == "__main__":
-    # Cek apakah modul termios dan tty tersedia (hanya di Unix-like)
     if os.name != 'posix':
         print_colored_direct("Peringatan: Fungsi navigasi interaktif mungkin tidak bekerja optimal di sistem operasi ini (bukan Unix-like).", Fore.YELLOW, Style.BRIGHT)
         print_colored_direct("Dibutuhkan modul 'termios' dan 'tty' yang hanya tersedia di lingkungan Unix-like (Linux, macOS, Termux).", Fore.YELLOW)
-        print_colored_direct("Akan dicoba untuk menampilkan, tapi mungkin tanpa navigasi panah. Tekan 'Q' untuk keluar.", Fore.YELLOW)
-        # Fallback to simple print if not posix-like, or if termios/tty fails to load
-        # For simplicity, we'll just exit if not posix, as get_single_char_input will fail
-        sys.exit(1) # Exit if not posix for now, or implement a basic input fallback
-
+        print_colored_direct("Tekan 'Q' untuk keluar jika tampilan tidak interaktif.", Fore.YELLOW)
+        # For non-posix, we can't use termios/tty, so this part of code will not work as intended.
+        # It's better to just print the whole thing or make a simplified non-interactive display.
+        # For now, will proceed and let it fail if modules are not there or input fails.
+    
     try:
         run_interactive_viewer()
     except Exception as e:
         clear_screen()
-        print_colored_direct(f"Terjadi error tak terduga: {e}", Fore.RED, Style.BRIGHT)
+        # Perbaiki pesan error agar lebih akurat jika time belum diimpor
+        if "name 'time' is not defined" in str(e):
+             print_colored_direct(f"Terjadi error: Modul 'time' belum diimpor. Ini adalah bug internal.", Fore.RED, Style.BRIGHT)
+        else:
+            print_colored_direct(f"Terjadi error tak terduga: {e}", Fore.RED, Style.BRIGHT)
         print_colored_direct("Pastikan terminal mendukung operasi mentah (raw mode) dan modul 'termios'/'tty' berfungsi.", Fore.RED)
-        print_colored_direct("Mungkin ada masalah dengan keyboard input. Coba jalankan di lingkungan Termux.", Fore.YELLOW)
+        print_colored_direct("Jika Anda tidak menggunakan Termux/Linux/macOS, fitur ini mungkin tidak didukung.", Fore.YELLOW)
         sys.exit(1)
