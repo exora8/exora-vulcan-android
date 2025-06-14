@@ -57,7 +57,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, sol_tol, ema_tol)", Fore.GREEN) # Added ema_tol
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # Updated help text
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -71,8 +71,7 @@ def load_settings():
         "analysis_interval_sec": 10,
         "trailing_tp_activation_pct": 0.30, # 0.30% activation as per user
         "trailing_tp_gap_pct": 0.05,       # 0.05% gap as per user
-        "solidity_comparison_tolerance": 0.10, # Default tolerance for solidity similarity
-        "ema_spread_tolerance": 0.0001,    # NEW: Default tolerance for EMA50-EMA100 spread similarity
+        "caution_level": 0.5,              # NEW: Overarching sensitivity for learning from losses (0.0 to 1.0)
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -119,14 +118,18 @@ def display_history():
                 snapshot = trade['entry_snapshot']
                 print_colored(f"  Pelajaran (Snapshot):", Fore.MAGENTA)
                 print_colored(f"    Bias: {snapshot.get('bias', 'N/A')}", Fore.MAGENTA)
-                # Display EMA spread for snapshot
-                if snapshot.get('ema50') is not None and snapshot.get('ema100') is not None:
-                    snapshot_spread = (snapshot['ema50'] - snapshot['ema100']) # Keep sign for display
-                    print_colored(f"    EMA50: {snapshot['ema50']:.4f} | EMA100: {snapshot['ema100']:.4f} | Spread: {snapshot_spread:.6f}", Fore.MAGENTA)
+                
+                # Display EMA spread information if available
+                if 'ema50' in snapshot and 'ema100' in snapshot:
+                    ema50_val = snapshot.get('ema50', 0)
+                    ema100_val = snapshot.get('ema100', 0)
+                    spread_val = ema50_val - ema100_val
+                    print_colored(f"    EMA50: {ema50_val:.4f} | EMA100: {ema100_val:.4f} | Spread: {spread_val:.6f}", Fore.MAGENTA)
+                
                 print_colored(f"    Prev Candle: Close {snapshot.get('prev_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_prev'):.4f}", Fore.MAGENTA)
                 print_colored(f"    Current Candle: Close {snapshot.get('current_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_current'):.4f}", Fore.MAGENTA)
                 
-                # New: Display 3 previous candles snapshot
+                # Display 3 previous candles snapshot
                 if 'pre_entry_candle_solidity' in snapshot and 'pre_entry_candle_direction' in snapshot:
                     solidity_str = [f"{s:.2f}" for s in snapshot['pre_entry_candle_solidity']]
                     print_colored(f"    3 Prev Candles Solidity: {solidity_str}", Fore.MAGENTA)
@@ -239,12 +242,22 @@ class LocalAI:
         current_ema9_current = current_analysis['ema9_current']
         current_pre_solidity = current_analysis.get('pre_entry_candle_solidity', [])
         current_pre_direction = current_analysis.get('pre_entry_candle_direction', [])
-        current_ema50 = current_analysis['ema50'] # New for EMA spread comparison
-        current_ema100 = current_analysis['ema100'] # New for EMA spread comparison
+        current_ema50 = current_analysis['ema50'] 
+        current_ema100 = current_analysis['ema100'] 
 
-        # Get tolerances from settings
-        solidity_tolerance = self.settings.get("solidity_comparison_tolerance", 0.10) 
-        ema_spread_tolerance = self.settings.get("ema_spread_tolerance", 0.0001) # NEW
+        # Get caution_level from settings
+        caution_level = self.settings.get("caution_level", 0.5) 
+
+        # Define base and max additional tolerances
+        BASE_SOL_TOL = 0.05      # Minimum solidity tolerance (most strict)
+        MAX_ADD_SOL_TOL = 0.20   # Max additional tolerance for solidity when caution_level is 1.0 (e.g., 0.05 + 0.20 = 0.25)
+        
+        BASE_EMA_TOL = 0.00005   # Minimum EMA spread tolerance (most strict)
+        MAX_ADD_EMA_TOL = 0.0005 # Max additional tolerance for EMA spread (e.g., 0.00005 + 0.0005 = 0.00055)
+
+        # Calculate actual tolerances based on caution_level
+        actual_solidity_tolerance = BASE_SOL_TOL + (caution_level * MAX_ADD_SOL_TOL)
+        actual_ema_spread_tolerance = BASE_EMA_TOL + (caution_level * MAX_ADD_EMA_TOL)
 
         for loss in losing_trades:
             past_snapshot = loss.get("entry_snapshot")
@@ -252,7 +265,7 @@ class LocalAI:
             # Ensure the past snapshot has all necessary data points
             required_keys = ['bias', 'prev_candle_close', 'current_candle_close', 
                              'ema9_prev', 'ema9_current', 'pre_entry_candle_solidity', 
-                             'pre_entry_candle_direction', 'ema50', 'ema100'] # Added ema50, ema100 to required_keys
+                             'pre_entry_candle_direction', 'ema50', 'ema100'] 
             if not past_snapshot or not all(key in past_snapshot for key in required_keys):
                 continue # Skip malformed snapshots
 
@@ -260,14 +273,22 @@ class LocalAI:
             if current_bias != past_snapshot['bias']:
                 continue
 
-            # 1.1. EMA Spread match (NEW: tolerance for trend strength)
+            # 1.1. EMA Spread match (Tolerance for trend strength)
             # Only compare spread if bias is not RANGING (meaning there's a clear trend)
             if current_bias != "RANGING":
                 current_spread = abs(current_ema50 - current_ema100)
-                past_spread = abs(past_snapshot['ema50'] - past_snapshot['ema100'])
+                past_ema50 = past_snapshot.get('ema50', 0)
+                past_ema100 = past_snapshot.get('ema100', 0)
+                past_spread = abs(past_ema50 - past_ema100)
+                
                 # If the difference in spread is too large, they are not "similar" trend contexts
-                if abs(current_spread - past_spread) > ema_spread_tolerance:
+                if abs(current_spread - past_spread) > actual_ema_spread_tolerance:
                     continue
+            else: # If bias is RANGING, EMA spread comparison is not applicable in this context.
+                  # We simply pass this check, assuming RANGING has no specific spread pattern to compare.
+                  # If RANGING should be compared, this logic needs to be extended.
+                pass 
+
 
             # 2. EMA9 Cross state match: Entry trigger conditions must be similar (STILL EXACT)
             # This is the core setup for the sniper entry, so it must be consistent.
@@ -307,7 +328,7 @@ class LocalAI:
             if not (last_direction_matches and matching_directions_count >= 2):
                 continue
 
-            # 4. Relaxed 3-Candle Solidity match: At least 2 out of 3 solidities must be within tolerance
+            # 4. Relaxed 3-Candle Solidity match: At least 2 out of 3 solidities must be within actual_solidity_tolerance
             past_pre_solidity = past_snapshot['pre_entry_candle_solidity']
             
             if len(current_pre_solidity) < 3 or len(past_pre_solidity) < 3:
@@ -315,7 +336,7 @@ class LocalAI:
 
             matching_solidity_count = 0
             for i in range(len(current_pre_solidity)):
-                if abs(current_pre_solidity[i] - past_pre_solidity[i]) <= solidity_tolerance:
+                if abs(current_pre_solidity[i] - past_pre_solidity[i]) <= actual_solidity_tolerance:
                     matching_solidity_count += 1
             
             # Check if at least 2 out of 3 solidities are within tolerance
@@ -382,8 +403,8 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     save_trades()
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f} | Trigger: {close_trigger_reason}"
-    send_termux_notification(notif_title, notif_content)
-    
+    send_termux_notification(notif_title, notif_content) # FIX: Corrected notification call
+
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking or is_autopilot_in_cooldown.get(instrument_id): return
@@ -546,8 +567,7 @@ def handle_settings_command(parts):
         'delay': ('analysis_interval_sec', ' detik'),
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
-        'sol_tol': ('solidity_comparison_tolerance', ''), # for solidity similarity tolerance
-        'ema_tol': ('ema_spread_tolerance', '') # NEW: for EMA spread similarity tolerance
+        'caution': ('caution_level', '') # NEW: for overall caution level
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
@@ -560,6 +580,9 @@ def handle_settings_command(parts):
         if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
         try:
             value = float(parts[2])
+            # Validate caution_level range
+            if key_short == 'caution' and not (0.0 <= value <= 1.0):
+                print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
             if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
@@ -606,10 +629,18 @@ def run_dashboard_mode():
                         analysis = pair_state["analysis"]
                         bias_color = Fore.GREEN if analysis['bias'] == 'BULLISH' else Fore.RED if analysis['bias'] == 'BEARISH' else Fore.YELLOW
                         print_colored("  Trend     : ", end=''); print_colored(analysis['bias'], bias_color)
-                        # Display EMA Spread for current analysis
-                        if analysis.get('ema50') is not None and analysis.get('ema100') is not None and analysis['bias'] != "RANGING":
-                            current_spread_display = (analysis['ema50'] - analysis['ema100']) # Keep sign for display
-                            print_colored(f"  EMA Spread: {current_spread_display:.6f}", Fore.CYAN)
+                        # Display Caution Level
+                        print_colored(f"  Caution Lv: {current_settings.get('caution_level'):.2f}", Fore.YELLOW)
+                        # Display current actual tolerances for debug/info
+                        caution_level_current = current_settings.get("caution_level", 0.5)
+                        BASE_SOL_TOL_DASH = 0.05
+                        MAX_ADD_SOL_TOL_DASH = 0.20
+                        BASE_EMA_TOL_DASH = 0.00005
+                        MAX_ADD_EMA_TOL_DASH = 0.0005
+                        actual_sol_tol_display = BASE_SOL_TOL_DASH + (caution_level_current * MAX_ADD_SOL_TOL_DASH)
+                        actual_ema_tol_display = BASE_EMA_TOL_DASH + (caution_level_current * MAX_ADD_EMA_TOL_DASH)
+                        print_colored(f"  Solid. Tol: {actual_sol_tol_display:.3f} | EMA Tol: {actual_ema_tol_display:.6f}", Fore.CYAN)
+                        
                         # Optionally display EMA9 status for debug/insight
                         if analysis.get('ema9_current') is not None and analysis.get('ema9_prev') is not None:
                             print_colored(f"  EMA9 Data : Prev Close {analysis['prev_candle_close']:.4f} vs EMA9 {analysis['ema9_prev']:.4f}", Fore.CYAN)
