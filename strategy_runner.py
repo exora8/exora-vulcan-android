@@ -68,7 +68,7 @@ def load_settings():
     default_settings = {
         "stop_loss_pct": 0.20,
         "fee_pct": 0.1,
-        "analysis_interval_sec": 10,
+        "analysis_interval_sec": 0.5,
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
         "caution_level": 0.5,
