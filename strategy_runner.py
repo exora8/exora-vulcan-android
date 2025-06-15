@@ -13,7 +13,7 @@ SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data live
-STATIC_BACKTEST_CANDLE_LIMIT = 1000 # NEW: Static limit for backtest candles (e.g., 1000 candles back)
+STATIC_BACKTEST_CANDLE_LIMIT = 1000 # NEW: Static limit for backtest candles
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -58,7 +58,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # Removed bt_months
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # 'delay' already here
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -66,12 +66,12 @@ def display_help():
 def load_settings():
     global current_settings
     default_settings = {
-        "stop_loss_pct": 0.15,
+        "stop_loss_pct": 0.20,
         "fee_pct": 0.1,
-        "analysis_interval_sec": 10, # Keep default 10s for live, as discussed.
-        "trailing_tp_activation_pct": 0.25,
+        "analysis_interval_sec": 10, # Default value for analysis interval
+        "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
-        "caution_level": 1.0,
+        "caution_level": 0.5,
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -142,7 +142,6 @@ def display_history():
         print()
 
 # --- FUNGSI API (BYBIT) ---
-# Function to fetch recent candles for live data
 def fetch_recent_candles(instId, timeframe, limit=300):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
@@ -164,7 +163,6 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         print_colored(f"Unknown Error fetching live data for {instId}: {e}", Fore.RED)
         return None
 
-# NEW: Function to fetch historical candles for a specific limit (used by backtest)
 def fetch_historical_candles_by_limit(instId, timeframe, limit):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60')
@@ -173,17 +171,12 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
     print_colored(f"  [DEBUG] Fetching {limit} historical candles for {instId} ({timeframe})...", Fore.BLUE)
 
     all_candles = []
-    # Bybit limit is 1000 per request, so loop if limit > 1000
     requests_needed = math.ceil(limit / 1000)
+    current_limit_for_request = min(limit, 1000)
     
-    # Start fetching from current time backwards
     end_time_ms = int(datetime.now().timestamp() * 1000) 
 
     for req_num in range(requests_needed):
-        current_limit_for_request = min(limit - len(all_candles), 1000) # Adjust limit for current request
-        if current_limit_for_request <= 0: # Stop if already fetched enough
-            break
-
         url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={current_limit_for_request}&endTime={end_time_ms}"
         try:
             response = requests.get(url, timeout=15)
@@ -200,13 +193,14 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
                 formatted_batch = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candles_batch]
                 all_candles.extend(formatted_batch)
                 
-                # Update end_time for next request to fetch older candles
-                end_time_ms = int(candles_batch[-1][0]) - 1 # Oldest candle in batch - 1ms
+                end_time_ms = int(candles_batch[-1][0]) - 1 
                 
-                # Update progress bar for fetching
+                remaining_to_fetch = limit - len(all_candles)
+                current_limit_for_request = min(remaining_to_fetch, 1000)
+
                 print_progress_bar(len(all_candles), limit, prefix=f'  {instId} Fetching', suffix='Candles', length=50, fill='=')
 
-                time.sleep(0.15) # Delay to avoid rate limits
+                time.sleep(0.15) 
             else:
                 print_colored(f"  API Error fetching historical batch {req_num+1} for {instId}: retCode {data.get('retCode')}, retMsg {data.get('retMsg', 'Unknown error')}. Breaking fetching.", Fore.RED)
                 break
@@ -218,10 +212,8 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
             print_colored(f"  Unknown Error fetching historical batch {req_num+1} for {instId}: {e}. Breaking fetching.", Fore.RED)
             break
     
-    # Sort all collected candles by timestamp (oldest first)
     all_candles.sort(key=lambda x: x['time'])
     
-    # Ensure uniqueness after fetching multiple batches (optional but good practice)
     unique_candles = []
     seen_timestamps = set()
     for candle in all_candles:
@@ -229,7 +221,6 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
             unique_candles.append(candle)
             seen_timestamps.add(candle['time'])
             
-    # Take only the exact 'limit' number of candles (from the most recent ones if more than 'limit' are fetched)
     final_candles = unique_candles[-limit:] if len(unique_candles) > limit else unique_candles
 
     print_colored(f"  [DEBUG] Final fetched {len(final_candles)} candles for {instId}.", Fore.GREEN)
@@ -244,48 +235,42 @@ def calculate_pnl(entry_price, current_price, trade_type):
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
     
-    # calculate_ema to return series of EMAs
     def calculate_ema(self, data, period):
         if len(data) < period: return []
         closes = [d['close'] for d in data]
         ema_values = []
         
-        # Calculate initial SMA for the first 'period' closes
         initial_sma = sum(closes[:period]) / period
         ema_values.append(initial_sma)
         
         multiplier = 2 / (period + 1)
         
-        # Calculate subsequent EMAs
         for i in range(period, len(closes)):
             ema = (closes[i] - ema_values[-1]) * multiplier + ema_values[-1]
             ema_values.append(ema)
             
         return ema_values
     
-    # analyze_candle_solidity function
     def analyze_candle_solidity(self, candle):
         body = abs(candle['close'] - candle['open'])
         full_range = candle['high'] - candle['low']
-        if full_range == 0: return 1.0 # Avoid division by zero, full solidity if no range
+        if full_range == 0: return 1.0 
         return body / full_range
 
     def get_market_analysis(self, candle_data):
-        # Need enough data for EMA 100, and at least 4 candles for EMA9 trigger logic + 3 pre-entry snapshot
-        if len(candle_data) < 100 + 3: # 100 for EMA100, plus 3 additional candles for full snapshot (candle_data[-4] is needed)
-            return None # Not enough data for full analysis and snapshot
+        if len(candle_data) < 100 + 3: 
+            return None 
 
         ema9_series = self.calculate_ema(candle_data, 9)
         ema50_series = self.calculate_ema(candle_data, 50)
         ema100_series = self.calculate_ema(candle_data, 100)
 
-        # Ensure EMA series are long enough for the required indices
         if len(ema9_series) < 2 or len(ema50_series) < 1 or len(ema100_series) < 1:
-            return None # Not enough EMA data calculated, perhaps due to insufficient initial candle data for periods
+            return None 
 
         analysis = {
             "ema9_current": ema9_series[-1],
-            "ema9_prev": ema9_series[-2], # Get previous EMA9
+            "ema9_prev": ema9_series[-2], 
             "ema50": ema50_series[-1],
             "ema100": ema100_series[-1],
             "current_candle_close": candle_data[-1]['close'],
@@ -297,8 +282,7 @@ class LocalAI:
         elif analysis["ema50"] < analysis["ema100"]: bias = "BEARISH"
         analysis["bias"] = bias; 
 
-        # Add 3 pre-entry candle snapshot for forensic analysis and learning
-        pre_entry_candles = candle_data[-4:-1] # Candles before the current (trigger) candle
+        pre_entry_candles = candle_data[-4:-1] 
         pre_entry_solidity = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
         pre_entry_direction = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
         
@@ -307,15 +291,12 @@ class LocalAI:
 
         return analysis
     
-    # MODIFIED: check_for_repeated_mistake for learning from losing trades with "similar" criteria
     def check_for_repeated_mistake(self, current_analysis, trade_type, instrument_id):
-        # Only learn from losing trades (where PnL < Fee percentage)
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and t.get('pl_percent', 0) < self.settings.get('fee_pct', 0.1)]
         
         if not losing_trades:
-            return False # No losing trades to learn from
+            return False 
 
-        # Extract current analysis features for comparison
         current_bias = current_analysis['bias']
         current_prev_close = current_analysis['prev_candle_close']
         current_curr_close = current_analysis['current_candle_close']
@@ -326,35 +307,29 @@ class LocalAI:
         current_ema50 = current_analysis['ema50'] 
         current_ema100 = current_analysis['ema100'] 
 
-        # Get caution_level from settings
         caution_level = self.settings.get("caution_level", 0.5) 
 
-        # Define base and max additional tolerances
-        BASE_SOL_TOL = 0.05      # Minimum solidity tolerance (most strict)
-        MAX_ADD_SOL_TOL = 0.20   # Max additional tolerance for solidity when caution_level is 1.0 (e.g., 0.05 + 0.20 = 0.25)
+        BASE_SOL_TOL = 0.05      
+        MAX_ADD_SOL_TOL = 0.20   
         
-        BASE_EMA_TOL = 0.00005   # Minimum EMA spread tolerance (most strict)
-        MAX_ADD_EMA_TOL = 0.0005 # Max additional tolerance for EMA spread (e.g., 0.00005 + 0.0005 = 0.00055)
+        BASE_EMA_TOL = 0.00005   
+        MAX_ADD_EMA_TOL = 0.0005 
 
-        # Calculate actual tolerances based on caution_level
         actual_solidity_tolerance = BASE_SOL_TOL + (caution_level * MAX_ADD_SOL_TOL)
         actual_ema_spread_tolerance = BASE_EMA_TOL + (caution_level * MAX_ADD_EMA_TOL)
 
         for loss in losing_trades:
             past_snapshot = loss.get("entry_snapshot")
             
-            # Ensure the past snapshot has all necessary data points
             required_keys = ['bias', 'prev_candle_close', 'current_candle_close', 
                              'ema9_prev', 'ema9_current', 'pre_entry_candle_solidity', 
                              'pre_entry_candle_direction', 'ema50', 'ema100'] 
             if not past_snapshot or not all(key in past_snapshot for key in required_keys):
                 continue 
 
-            # 1. Bias match: Trend must be the same (STILL EXACT)
             if current_bias != past_snapshot['bias']:
                 continue
 
-            # 1.1. EMA Spread match (Tolerance for trend strength)
             if current_bias != "RANGING":
                 current_spread = abs(current_ema50 - current_ema100)
                 past_ema50 = past_snapshot.get('ema50', 0)
@@ -367,7 +342,6 @@ class LocalAI:
                 pass 
 
 
-            # 2. EMA9 Cross state match: Entry trigger conditions must be similar (STILL EXACT)
             past_prev_close = past_snapshot['prev_candle_close']
             past_curr_close = past_snapshot['current_candle_close']
             past_ema9_prev = past_snapshot['ema9_prev']
@@ -388,7 +362,6 @@ class LocalAI:
             if not ema9_cross_match:
                 continue
             
-            # 3. Relaxed 3-Candle Direction match: Last direction must match AND at least 2 out of 3 overall directions must match
             past_pre_direction = past_snapshot['pre_entry_candle_direction']
             
             if len(current_pre_direction) < 3 or len(past_pre_direction) < 3:
@@ -401,7 +374,6 @@ class LocalAI:
             if not (last_direction_matches and matching_directions_count >= 2):
                 continue
 
-            # 4. Relaxed 3-Candle Solidity match: At least 2 out of 3 solidities must be within actual_solidity_tolerance
             past_pre_solidity = past_snapshot['pre_entry_candle_solidity']
             
             if len(current_pre_solidity) < 3 or len(past_pre_solidity) < 3:
@@ -526,8 +498,8 @@ def autopilot_worker():
             if watched_pairs:
                 for pair_id in watched_pairs:
                     asyncio.run(run_autopilot_analysis(pair_id))
-                    time.sleep(0.1) 
-            stop_event.wait(current_settings.get("analysis_interval_sec", 10))
+                    time.sleep(current_settings.get("analysis_interval_sec", 10)) # Uses settable interval
+            stop_event.wait(current_settings.get("analysis_interval_sec", 10)) # Uses settable interval
         else: time.sleep(1)
 
 async def check_realtime_position_management(instrument_id, latest_price, is_backtest=False):
@@ -589,7 +561,7 @@ def data_refresh_worker():
         watched_pairs = current_settings.get("watched_pairs", {})
         if watched_pairs:
             for pair_id, timeframe in watched_pairs.items():
-                data = fetch_recent_candles(pair_id, timeframe) # Renamed to fetch_recent_candles
+                data = fetch_recent_candles(pair_id, timeframe) 
                 if data: 
                     if len(data) >= 100 + 3: 
                         analysis = LocalAI(current_settings, []).get_market_analysis(data)
@@ -613,7 +585,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
-def run_pair_backtest(pair_id, timeframe): 
+def run_pair_backtest(pair_id, timeframe): # Removed duration_months
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
@@ -723,6 +695,7 @@ def run_pair_backtest(pair_id, timeframe):
 
 def check_and_run_backtests():
     watched_pairs = current_settings.get("watched_pairs", {})
+    # Removed backtest_months, now uses STATIC_BACKTEST_CANDLE_LIMIT
     
     pairs_to_backtest = []
     
@@ -740,7 +713,7 @@ def check_and_run_backtests():
         
         print_colored("Memulai proses Backtest. Mohon tunggu...", Fore.BLUE)
         for pair_id, timeframe in pairs_to_backtest:
-            run_pair_backtest(pair_id, timeframe) 
+            run_pair_backtest(pair_id, timeframe) # Removed duration_months
         
         print_colored("\nBacktest Selesai untuk semua pair yang diperlukan.", Fore.GREEN, Style.BRIGHT)
         load_trades() 
@@ -752,10 +725,11 @@ def handle_settings_command(parts):
     setting_map = {
         'sl': ('stop_loss_pct', '%'),
         'fee': ('fee_pct', '%'),
-        'delay': ('analysis_interval_sec', ' detik'),
+        'delay': ('analysis_interval_sec', ' detik'), # 'delay' added here
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''), 
+        # 'bt_months': ('backtest_duration_months', ' bulan') # REMOVED from settings
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
@@ -772,6 +746,9 @@ def handle_settings_command(parts):
             value = float(parts[2])
             if key_short == 'caution' and not (0.0 <= value <= 1.0):
                 print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
+            # Validation for 'delay' to ensure it's positive
+            if key_short == 'delay' and value <= 0:
+                 print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
             if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
@@ -862,6 +839,8 @@ def main():
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan. Dashboard aktif.", Fore.YELLOW)
                 elif not current_settings.get("watched_pairs"): print_colored("Error: Watchlist kosong. Gunakan '!watch <PAIR>' dulu.", Fore.RED)
                 else: 
+                    # Re-check and run backtests only for truly new/unbacktested pairs since last !start
+                    # This is slightly redundant as it's also called on initial start, but ensures new pairs added while bot is running are caught.
                     check_and_run_backtests() 
 
                     is_autopilot_running = True
