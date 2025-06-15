@@ -72,7 +72,7 @@ def load_settings():
         "analysis_interval_sec": 10, 
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
-        "caution_level": 0.5, # Default value, now can be > 1.0
+        "caution_level": 0.5,
         "target_winrate_pct": 85.0, 
         "cryptocompare_api_key": "YOUR_CRYPTOCOMPARE_API_KEY", 
         "watched_pairs": {}
@@ -123,7 +123,7 @@ def display_history():
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             run_up = trade.get('run_up_percent', pl_percent)
             print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
-            print_colored(f"  Max Drawdown (MDD): {trade.get('max_drawdown_percent', 0.0):.2f}%", Fore.YELLOW) 
+            print_colored(f"  Max Drawdown (MDD): {trade.get('max_drawdown_percent', 0.0):.2f}%", Fore.YELLOW) # Display MDD
             if 'entry_snapshot' in trade and not is_profit:
                 snapshot = trade['entry_snapshot']
                 print_colored(f"  Pelajaran (Snapshot):", Fore.MAGENTA)
@@ -630,10 +630,11 @@ def run_pair_backtest(pair_id, timeframe):
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
     # 1. Clear existing trades for this pair from global autopilot_trades and save
+    # This ensures backtest for this pair starts with a clean slate in trades.json
     trades_before_backtest_for_pair = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
     autopilot_trades[:] = trades_before_backtest_for_pair
-    save_trades() 
-    load_trades() # Reload to ensure global autopilot_trades is updated from file
+    save_trades() # Save immediately so the file reflects the cleared state for this pair
+    # No need to load_trades() here, autopilot_trades is already directly modified.
 
 
     cumulative_historical_candles = [] 
@@ -665,6 +666,8 @@ def run_pair_backtest(pair_id, timeframe):
 
         current_to_ts_for_fetch = earliest_ts_in_chunk - 1 
 
+        # --- Re-analyze the entire `cumulative_historical_candles` for the current total history ---
+        
         temp_open_backtest_trades = []
         temp_backtested_trades_list_in_run = [] 
 
@@ -679,7 +682,11 @@ def run_pair_backtest(pair_id, timeframe):
                 print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
                 continue
 
-            load_trades() 
+            # Load trades from trades.json for LocalAI to learn from (updated after previous chunk)
+            # This is the crucial part for progressive learning
+            load_trades() # RELOAD FROM trades.json to get all prior recorded trades for *all* pairs
+            
+            # Filter relevant trades for LocalAI, including those just processed in this cumulative run
             learning_trades_for_local_ai = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'] + temp_backtested_trades_list_in_run
 
             market_state[pair_id] = {"candle_data": current_historical_data_slice, 
@@ -723,18 +730,23 @@ def run_pair_backtest(pair_id, timeframe):
 
             print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
 
+        # After processing all candles in the cumulative set for this iteration
+        # Close any remaining open trades at the end of this cumulative historical period
         for open_bt_trade in list(temp_open_backtest_trades): 
             asyncio.run(analyze_and_close_trade(open_bt_trade, cumulative_historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
             temp_backtested_trades_list_in_run.append(open_bt_trade)
 
+        # Update global autopilot_trades with trades from this re-analysis run
+        # Remove old trades of this pair, add new ones from this complete re-analysis
         current_autopilot_trades_without_this_pair = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
         current_autopilot_trades_without_this_pair.extend(temp_backtested_trades_list_in_run)
         current_autopilot_trades_without_this_pair.sort(key=lambda x: x['entryTimestamp'])
         autopilot_trades[:] = current_autopilot_trades_without_this_pair 
         
-        save_trades() 
-        load_trades() 
+        save_trades() # Save trades.json after each chunk analysis is fully processed
+        # No need to load_trades() again here because autopilot_trades has been directly updated
         
+        # Calculate winrate from the actual trades.json (global autopilot_trades) for this pair
         trades_for_winrate_calc = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED']
         current_cumulative_winrate = calculate_winrate(trades_for_winrate_calc, current_settings.get('fee_pct', 0.1))
         
@@ -748,14 +760,15 @@ def run_pair_backtest(pair_id, timeframe):
         if current_cumulative_winrate >= target_winrate and len(trades_for_winrate_calc) >= MIN_TRADES_FOR_WINRATE_STABILITY:
             print_colored(f"✅ Target Winrate ({target_winrate:.2f}%) tercapai untuk {pair_id} setelah {total_candles_in_cumulative} candle dan {len(trades_for_winrate_calc)} trade.", Fore.GREEN, Style.BRIGHT)
             break
-        elif total_candles_in_cumulative >= BACKTEST_FETCH_CHUNK_LIMIT * 100: 
+        elif total_candles_in_cumulative >= BACKTEST_FETCH_CHUNK_LIMIT * 100: # Fail-safe: stop after X chunks (e.g., 100 * 1000 = 100k candles)
              print_colored(f"⚠️ Backtest untuk {pair_id} dihentikan: Terlalu banyak candle diproses tanpa mencapai target winrate. Winrate tertinggi: {highest_achieved_winrate:.2f}% ({trades_at_highest_winrate} trade).", Fore.YELLOW, Style.BRIGHT)
              break
 
         time.sleep(0.5) 
 
-    autopilot_trades.sort(key=lambda x: x['entryTimestamp']) 
-    save_trades() 
+    # Final cleanup is ensured by the loop's logic.
+    # The global autopilot_trades is already updated by direct modification in loop.
+    # No need for final sort or save_trades() outside the loop because it's done in each iteration.
     
     print_colored(f"✅ Backtest untuk {pair_id} selesai. Total trade di history untuk pair ini: {len([t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'])}.", Fore.GREEN, Style.BRIGHT)
     return True
@@ -782,7 +795,7 @@ def check_and_run_backtests():
             run_pair_backtest(pair_id, timeframe) 
         
         print_colored("\nBacktest Selesai untuk semua pair yang diperlukan.", Fore.GREEN, Style.BRIGHT)
-        load_trades() 
+        # load_trades() # No longer strictly needed here as autopilot_trades is updated in run_pair_backtest
     else:
         print_colored(f"\nTidak ada Backtest yang diperlukan. Riwayat trade sudah cukup untuk pembelajaran.", Fore.GREEN)
 
@@ -815,13 +828,14 @@ def handle_settings_command(parts):
             value = parts[2] 
             if key_short in ['sl', 'fee', 'delay', 'tp_act', 'tp_gap', 'caution', 'winrate']: 
                 value = float(value)
-                # Removed the validation 'not (0.0 <= value <= 1.0)' for caution_level
-                if key_short == 'delay' and value <= 0:
-                    print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
+                if key_short == 'caution' and value < 0: # Only check for negative, no upper bound
+                    print_colored("Error: Nilai 'caution' tidak boleh negatif.", Fore.RED); return
                 if key_short == 'winrate' and not (0.0 <= value <= 100.0): 
                     print_colored("Error: Nilai 'winrate' harus antara 0.0 dan 100.0.", Fore.RED); return
-                if value < 0 and key_short not in ['sl']: # SL can be negative conceptually, but its value is usually positive. Re-added check for other values.
-                     print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return # This check is for positive numeric values. SL is handled by abs()
+                if key_short == 'delay' and value <= 0:
+                    print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
+            if value < 0: # General check for other numeric types if any (though currently handled above)
+                print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka untuk kunci ini.", Fore.RED); return
         
         key_full, unit = setting_map[key_short]
