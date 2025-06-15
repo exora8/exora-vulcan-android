@@ -66,12 +66,12 @@ def display_help():
 def load_settings():
     global current_settings
     default_settings = {
-        "stop_loss_pct": 0.20,
+        "stop_loss_pct": 0.15,
         "fee_pct": 0.1,
         "analysis_interval_sec": 10, # Keep default 10s for live, as discussed.
-        "trailing_tp_activation_pct": 0.30,
+        "trailing_tp_activation_pct": 0.25,
         "trailing_tp_gap_pct": 0.05,
-        "caution_level": 0.5,
+        "caution_level": 1.0,
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
