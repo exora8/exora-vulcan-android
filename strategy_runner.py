@@ -12,9 +12,9 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/histominute" # NEW: CryptoCompare API URL
+CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/" # NEW: CryptoCompare API URL
 REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data live
-STATIC_BACKTEST_CANDLE_LIMIT = 1000 # Static limit for backtest candles
+BACKTEST_FETCH_CHUNK_LIMIT = 1000 # NEW: Number of candles to fetch per historical API call in backtest
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -59,7 +59,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, cc_key)", Fore.GREEN) # Added cc_key
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, winrate, cc_key)", Fore.GREEN) # Added winrate, cc_key
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -73,6 +73,7 @@ def load_settings():
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
         "caution_level": 0.5,
+        "target_winrate_pct": 85.0, # NEW: Target winrate for dynamic backtest
         "cryptocompare_api_key": "YOUR_CRYPTOCOMPARE_API_KEY", # NEW: API Key for CryptoCompare
         "watched_pairs": {}
     }
@@ -166,110 +167,82 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         print_colored(f"Unknown Error fetching live data for {instId}: {e}", Fore.RED)
         return None
 
-# MODIFIED: fetch_historical_candles_by_limit to use CryptoCompare
-def fetch_historical_candles_by_limit(instId, timeframe, limit):
-    timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'day', '1W': 'week', '1M': 'month'}
+# MODIFIED: fetch_historical_candles_backward_from_ts to use CryptoCompare
+def fetch_historical_candles_backward_from_ts(instId, timeframe, to_ts_seconds, limit_per_request):
+    """
+    Fetches historical candles backward from a given timestamp (to_ts_seconds) using CryptoCompare.
+    Returns the fetched candles (oldest first) and the timestamp of the earliest candle in the batch.
+    """
+    timeframe_map = {'1m': 'histominute', '1H': 'histohour', '1D': 'histoday'} # Simplified map for CC endpoints
     
-    # CryptoCompare uses 'histominute', 'histohour', 'histoday' based on interval.
-    # For 1m, it's histominute. For H1, histohour. For D1, histoday.
-    cc_interval_endpoint = "histominute" # Default for 1m
-    cc_timeframe_multiplier = 1 # Multiplier for toTs (in minutes)
-
-    if timeframe == '1H': cc_interval_endpoint = "histohour"; cc_timeframe_multiplier = 60
-    elif timeframe == '1D': cc_interval_endpoint = "histoday"; cc_timeframe_multiplier = 1440 # 24*60
-    # Add other timeframes if needed
+    cc_endpoint = timeframe_map.get(timeframe)
+    if not cc_endpoint:
+        print_colored(f"Error: Timeframe '{timeframe}' tidak didukung untuk CryptoCompare backtest.", Fore.RED)
+        return [], 0 # Return empty and 0 timestamp
 
     # Split instId (e.g., APE-USDT -> APE, USDT)
     try:
         fsym, tsym = instId.split('-')
     except ValueError:
         print_colored(f"Error: Pair ID '{instId}' tidak dalam format FSMBAL-TSYMBOL (e.g., APE-USDT) untuk CryptoCompare.", Fore.RED)
-        return []
+        return [], 0
 
     api_key = current_settings.get("cryptocompare_api_key")
     if not api_key or api_key == "YOUR_CRYPTOCOMPARE_API_KEY":
         print_colored("Error: CryptoCompare API Key belum diatur di settings.json atau menggunakan placeholder.", Fore.RED, Style.BRIGHT)
         print_colored("Dapatkan API Key di cryptocompare.com dan set dengan '!set cc_key <your_key>'.", Fore.YELLOW)
-        return []
+        return [], 0
 
-    print_colored(f"  [DEBUG] Fetching {limit} historical candles for {instId} ({timeframe}) from CryptoCompare...", Fore.BLUE)
-
-    all_candles = []
-    # CryptoCompare limit is typically 2000 per request for histominute on free tier
-    max_cc_limit_per_req = 2000 
+    url = f"{CRYPTOCOMPARE_API_URL}{cc_endpoint}?fsym={fsym}&tsym={tsym}&limit={limit_per_request}&toTs={to_ts_seconds}&api_key={api_key}"
     
-    current_to_ts = int(datetime.now().timestamp()) # Start fetching from current timestamp backwards
+    try:
+        response = requests.get(url, timeout=20) 
+        response.raise_for_status() 
+        data = response.json()
 
-    req_count = 0
-    consecutive_empty_responses = 0
-
-    while len(all_candles) < limit:
-        req_count += 1
-        # Calculate how many more candles are needed, max out at 2000 per request
-        current_limit_for_request = min(limit - len(all_candles), max_cc_limit_per_req)
-        if current_limit_for_request <= 0: break
-
-        url = f"https://min-api.cryptocompare.com/data/v2/{cc_interval_endpoint}?fsym={fsym}&tsym={tsym}&limit={current_limit_for_request}&toTs={current_to_ts}&api_key={api_key}"
-        
-        try:
-            response = requests.get(url, timeout=20) # Increased timeout for external API
-            response.raise_for_status() 
-            data = response.json()
-
-            if data.get("Response") == "Success" and 'Data' in data.get('Data', {}):
-                candles_batch_raw = data['Data']['Data']
-                
-                if not candles_batch_raw:
-                    consecutive_empty_responses += 1
-                    print_colored(f"  [DEBUG] CC: No candles in batch {req_count}. Consecutive empty: {consecutive_empty_responses}. Current toTs: {datetime.fromtimestamp(current_to_ts).strftime('%Y-%m-%d %H:%M')}", Fore.YELLOW)
-                    if consecutive_empty_responses >= 5: # If 5 consecutive empty batches, assume no more data
-                        print_colored(f"  [DEBUG] CC: Too many consecutive empty batches for {instId}. Breaking fetching.", Fore.RED)
-                        break 
-                    # If empty, and not yet too many consecutive, just jump back in time and try again
-                    current_to_ts -= (current_limit_for_request + 10) * cc_timeframe_multiplier * 60 # Jump back a bit more than requested limit
-                    time.sleep(0.5) # Longer sleep for empty batch
-                    continue # Continue to next iteration
-                else:
-                    consecutive_empty_responses = 0 # Reset counter if candles are found
-
-                # Convert to desired format. CryptoCompare returns oldest first.
-                formatted_batch = [{"time": c['time'] * 1000, "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'], "volume": c['volumefrom']} for c in candles_batch_raw]
-                all_candles.extend(formatted_batch)
-                
-                # Update current_to_ts to the timestamp of the oldest candle in this batch - 1 second
-                # (CryptoCompare 'time' is in seconds, so oldest is first. We need its time-1s for next request)
-                current_to_ts = candles_batch_raw[0]['time'] - 1 
-                
-                # Update progress bar for fetching
-                print_progress_bar(len(all_candles), limit, prefix=f'  {instId} Fetching', suffix='Candles', length=50, fill='=')
-
-                time.sleep(0.15) # Delay to avoid rate limits
-            else:
-                print_colored(f"  API Error fetching historical batch {req_count} for {instId}: Response: {data.get('Response')}, Message: {data.get('Message', 'Unknown error')}. Breaking fetching.", Fore.RED)
-                break
-        except requests.exceptions.RequestException as e:
-            print_colored(f"  Network/Request Error fetching historical batch {req_count} for {instId}: {e}. Retrying in 5s...", Fore.RED)
-            time.sleep(5) 
-            continue 
-        except Exception as e: 
-            print_colored(f"  Unknown Error fetching historical batch {req_count} for {instId}: {e}. Breaking fetching.", Fore.RED)
-            break
-    
-    # Sort all collected candles by timestamp (oldest first) and remove duplicates
-    # Use a dict to ensure uniqueness is applied first, then sort by timestamp
-    all_candles_dict = {c['time']: c for c in all_candles} 
-    unique_and_sorted_candles = sorted(all_candles_dict.values(), key=lambda x: x['time'])
+        if data.get("Response") == "Success" and 'Data' in data.get('Data', {}):
+            candles_batch_raw = data['Data']['Data']
             
-    # Take only the exact 'limit' number of candles (the most recent ones)
-    final_candles = unique_and_sorted_candles[-limit:] if len(unique_and_sorted_candles) > limit else unique_and_sorted_candles
+            if not candles_batch_raw:
+                return [], 0 # No candles in this batch
 
-    print_colored(f"  [DEBUG] Final fetched {len(final_candles)} candles for {instId}.", Fore.GREEN)
-    return final_candles
+            # CryptoCompare returns oldest first. Time is in seconds.
+            formatted_batch = [{"time": c['time'] * 1000, "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'], "volume": c['volumefrom']} for c in candles_batch_raw]
+            
+            earliest_ts_in_batch = candles_batch_raw[0]['time'] # Oldest candle in this batch (in seconds)
+            return formatted_batch, earliest_ts_in_batch
+        else:
+            print_colored(f"  API Error fetching historical data from CC for {instId}: Response: {data.get('Response')}, Message: {data.get('Message', 'Unknown error')}", Fore.RED)
+            return [], 0
+    except requests.exceptions.RequestException as e:
+        print_colored(f"  Network/Request Error fetching historical data from CC for {instId}: {e}. Retrying in 5s...", Fore.RED)
+        time.sleep(5) 
+        return [], 0 # Indicate failure or retry
+    except Exception as e: 
+        print_colored(f"  Unknown Error fetching historical data from CC for {instId}: {e}. Breaking fetching.", Fore.RED)
+        return [], 0
 
 def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
     elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
     return 0
+
+# NEW: Helper to calculate winrate
+def calculate_winrate(trades_list, fee_pct):
+    if not trades_list:
+        return 0.0
+    
+    total_trades = len(trades_list)
+    profitable_trades = 0
+    
+    for trade in trades_list:
+        if trade.get('status') == 'CLOSED' and trade.get('pl_percent', 0) > fee_pct:
+            profitable_trades += 1
+            
+    if total_trades == 0:
+        return 0.0
+        
+    return (profitable_trades / total_trades) * 100
 
 # --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot and learning) ---
 class LocalAI:
@@ -634,11 +607,12 @@ def data_refresh_worker():
             for pair_id, timeframe in watched_pairs.items():
                 data = fetch_recent_candles(pair_id, timeframe) 
                 if data: 
-                    if len(data) >= 100 + 3: 
-                        analysis = LocalAI(current_settings, []).get_market_analysis(data)
-                    else:
-                        analysis = None 
+                    if len(data) < 100 + 3: 
+                        print_colored(f"Warning: Not enough live candle data for {pair_id} to analyze ({len(data)} candles). Skipping analysis.", Fore.YELLOW)
+                        market_state[pair_id] = {"candle_data": data, "analysis": None} # Store data even if not enough for analysis
+                        continue
 
+                    analysis = LocalAI(current_settings, []).get_market_analysis(data)
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     
                     if is_autopilot_running:
@@ -661,81 +635,166 @@ def run_pair_backtest(pair_id, timeframe):
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
-    # 1. Fetch historical data with static limit
-    historical_candles = fetch_historical_candles_by_limit(pair_id, timeframe, STATIC_BACKTEST_CANDLE_LIMIT)
-
-    if not historical_candles or len(historical_candles) < 100 + 3: 
-        print_colored(f"  Gagal backtest {pair_id}: Tidak cukup data historis atau gagal fetching. Minimal 103 candles diperlukan.", Fore.RED)
-        return False
-
-    initial_trades_for_learning = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED']
-    backtested_trades_for_pair_list = [] 
-
+    cumulative_historical_candles = []
+    cumulative_backtested_trades_for_pair_list = [] # List to accumulate new backtested trades
     open_backtest_trades = [] 
-
-    total_candles = len(historical_candles)
-    print_colored(f"  Menganalisis {total_candles} candle...", Fore.YELLOW)
-
-    # Simulate candles one by one
-    for i in range(len(historical_candles)):
-        current_historical_data_slice = historical_candles[:i+1] # All candles up to current point
-        current_candle = historical_candles[i] # The current candle being processed
+    
+    current_to_ts = int(datetime.now().timestamp()) # Start fetching from current timestamp (in seconds)
+    target_winrate = current_settings.get("target_winrate_pct", 85.0)
+    
+    # Track the highest winrate achieved and the number of trades for it
+    highest_achieved_winrate = 0.0
+    trades_at_highest_winrate = 0
+    
+    # Loop to fetch historical data in chunks and analyze them
+    fetch_iteration = 0
+    while True:
+        fetch_iteration += 1
+        print_colored(f"  [DEBUG] Fetching historical chunk #{fetch_iteration}...", Fore.BLUE)
         
-        if len(current_historical_data_slice) < 100 + 3: 
-            print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
-            continue
-
-        market_state[pair_id] = {"candle_data": current_historical_data_slice, 
-                                 "analysis": LocalAI(current_settings, initial_trades_for_learning + backtested_trades_for_pair_list).get_market_analysis(current_historical_data_slice)}
-
-        trades_to_close_in_current_candle = []
-        for open_bt_trade in list(open_backtest_trades): 
-            # Pass the trade object and the current_candle data
-            asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
-            
-            if open_bt_trade['status'] == 'CLOSED':
-                 trades_to_close_in_current_candle.append(open_bt_trade)
+        # Fetch candles backward from current_to_ts
+        fetched_chunk, earliest_ts_in_chunk = fetch_historical_candles_backward_from_ts(
+            pair_id, timeframe, current_to_ts, BACKTEST_FETCH_CHUNK_LIMIT
+        )
         
-        for trade_to_remove in trades_to_close_in_current_candle:
-            if trade_to_remove in open_backtest_trades: 
-                open_backtest_trades.remove(trade_to_remove)
-                backtested_trades_for_pair_list.append(trade_to_remove)
-
-
-        if not any(t for t in open_backtest_trades if t['instrumentId'] == pair_id):
-            local_brain_for_decision = LocalAI(current_settings, initial_trades_for_learning + backtested_trades_for_pair_list)
-            decision = local_brain_for_decision.get_decision(current_historical_data_slice, None, pair_id) 
+        if not fetched_chunk:
+            print_colored(f"  [DEBUG] No more historical data to fetch for {pair_id}. Ending backtest.", Fore.YELLOW)
+            break # No more data
             
-            if decision.get('action') in ["BUY", "SELL"]:
-                trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
-                new_trade = {
-                    "id": int(current_candle['time'] / 1000), 
-                    "instrumentId": pair_id,
-                    "type": trade_type,
-                    "entryTimestamp": datetime.fromtimestamp(current_candle['time'] / 1000).isoformat(),
-                    "entryPrice": current_candle['close'],
-                    "entryReason": decision.get("reason"),
-                    "status": 'OPEN',
-                    "entry_snapshot": decision.get("snapshot"),
-                    "run_up_percent": 0.0, 
-                    "max_drawdown_percent": 0.0, 
-                    "trailing_stop_price": None,
-                    "current_tp_checkpoint_level": 0.0
-                }
-                open_backtest_trades.append(new_trade)
+        # Add new chunk to the cumulative list, ensuring chronological order (prepend)
+        cumulative_historical_candles = fetched_chunk + cumulative_historical_candles 
+        
+        # Ensure only unique candles are kept and sorted
+        cumulative_historical_candles_dict = {c['time']: c for c in cumulative_historical_candles}
+        cumulative_historical_candles = sorted(cumulative_historical_candles_dict.values(), key=lambda x: x['time'])
+
+        # Update current_to_ts for the next fetch to be before the oldest candle in this chunk
+        current_to_ts = earliest_ts_in_chunk - 1 # One second before the oldest candle in the current chunk
+
+        # --- Analyze the newly added chunk of candles ---
+        # The backtest loop needs to process new candles added to cumulative_historical_candles.
+        # We need to find the starting point for processing.
+        # It's safest to re-process the entire cumulative_historical_candles for each check for simplicity,
+        # but for performance, we only want to process the *new* candles.
+        # Let's adjust for correct slicing and processing:
+        
+        # We only analyze candles that are beyond the initial 100+3 for EMA calculation
+        # and candles that haven't been analyzed before in previous chunks.
+        # The previous version processed by slicing `historical_candles[:i+1]`.
+        # Now, we process a new 'sub-chunk' of candles.
+        
+        # To avoid complex tracking of which candles were processed, and ensure LocalAI always has
+        # a full sequence, we can process the *entire* `cumulative_historical_candles` in a fresh loop,
+        # but only add trades if they haven't been added already (by ID).
+        
+        # Simpler approach: Process the whole cumulative historical data again.
+        # This can be slow for very large amounts of data, but guarantees correctness.
+        # Alternatively, refactor to only process the NEW chunk and carry over open trades state.
+        
+        # For now, let's process the whole `cumulative_historical_candles` for simplicity and correctness.
+        # This will reset `open_backtest_trades` and `backtested_trades_for_pair_list` for this sub-run,
+        # but `initial_trades_for_learning` will persist, ensuring learning.
+        
+        # This is a bit inefficient for large backtests, but guarantees the logic is applied correctly
+        # across the continuous historical data.
+        
+        # Reset open trades for this re-analysis of cumulative data
+        temp_open_backtest_trades = []
+        temp_backtested_trades_list = []
+        
+        # All existing trades for learning (from previous backtest segments + global)
+        current_learning_trades = initial_trades_for_learning + cumulative_backtested_trades_for_pair_list
+
+        total_candles_in_cumulative = len(cumulative_historical_candles)
+        print_colored(f"  [DEBUG] Re-analyzing {total_candles_in_cumulative} cumulative candles for {pair_id}...", Fore.BLUE)
+        
+        for i in range(total_candles_in_cumulative):
+            current_historical_data_slice = cumulative_historical_candles[:i+1] 
+            current_candle = cumulative_historical_candles[i]
+            
+            if len(current_historical_data_slice) < 100 + 3: 
+                print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
+                continue
+
+            market_state[pair_id] = {"candle_data": current_historical_data_slice, 
+                                     "analysis": LocalAI(current_settings, current_learning_trades + temp_backtested_trades_list).get_market_analysis(current_historical_data_slice)}
+
+            trades_to_close_in_current_candle = []
+            for open_bt_trade in list(temp_open_backtest_trades): 
+                asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
+                
+                if open_bt_trade['status'] == 'CLOSED':
+                     trades_to_close_in_current_candle.append(open_bt_trade)
+            
+            for trade_to_remove in trades_to_close_in_current_candle:
+                if trade_to_remove in temp_open_backtest_trades: 
+                    temp_open_backtest_trades.remove(trade_to_remove)
+                    temp_backtested_trades_list.append(trade_to_remove)
 
 
-        print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
+            if not any(t for t in temp_open_backtest_trades if t['instrumentId'] == pair_id): # Only consider entry if no open trade for this pair
+                local_brain_for_decision = LocalAI(current_settings, current_learning_trades + temp_backtested_trades_list)
+                decision = local_brain_for_decision.get_decision(current_historical_data_slice, None, pair_id) 
+                
+                if decision.get('action') in ["BUY", "SELL"]:
+                    trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
+                    new_trade = {
+                        "id": int(current_candle['time'] / 1000), 
+                        "instrumentId": pair_id,
+                        "type": trade_type,
+                        "entryTimestamp": datetime.fromtimestamp(current_candle['time'] / 1000).isoformat(),
+                        "entryPrice": current_candle['close'],
+                        "entryReason": decision.get("reason"),
+                        "status": 'OPEN',
+                        "entry_snapshot": decision.get("snapshot"),
+                        "run_up_percent": 0.0, 
+                        "max_drawdown_percent": 0.0, 
+                        "trailing_stop_price": None,
+                        "current_tp_checkpoint_level": 0.0
+                    }
+                    temp_open_backtest_trades.append(new_trade)
 
-    for open_bt_trade in list(open_backtest_trades): 
-        asyncio.run(analyze_and_close_trade(open_bt_trade, historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
-        backtested_trades_for_pair_list.append(open_bt_trade)
 
-    autopilot_trades.extend(backtested_trades_for_pair_list)
+            print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
+
+        # After processing all candles in the cumulative set
+        # Close any remaining open trades at the end of this cumulative historical period
+        for open_bt_trade in list(temp_open_backtest_trades): # Iterate over a copy
+            asyncio.run(analyze_and_close_trade(open_bt_trade, cumulative_historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
+            temp_backtested_trades_list.append(open_bt_trade)
+
+        cumulative_backtested_trades_for_pair_list = temp_backtested_trades_list # Update the list for next chunk iteration
+
+        # Calculate winrate after processing this chunk of history
+        current_cumulative_winrate = calculate_winrate(cumulative_backtested_trades_for_pair_list, current_settings.get('fee_pct', 0.1))
+        
+        print_colored(f"\n  [DEBUG] Winrate untuk {pair_id} setelah {total_candles_in_cumulative} candle: {current_cumulative_winrate:.2f}% (Target: {target_winrate:.2f}%)", Fore.CYAN)
+        
+        # Track highest achieved winrate
+        if current_cumulative_winrate > highest_achieved_winrate:
+            highest_achieved_winrate = current_cumulative_winrate
+            trades_at_highest_winrate = len(cumulative_backtested_trades_for_pair_list)
+
+        # Stopping condition: if winrate is achieved AND enough trades have occurred for stability
+        # Add a minimum trade count for winrate to be meaningful
+        MIN_TRADES_FOR_WINRATE_STABILITY = 50 # Example: require at least 50 trades for winrate to be stable
+        if current_cumulative_winrate >= target_winrate and len(cumulative_backtested_trades_for_pair_list) >= MIN_TRADES_FOR_WINRATE_STABILITY:
+            print_colored(f"✅ Target Winrate ({target_winrate:.2f}%) tercapai untuk {pair_id} setelah {total_candles_in_cumulative} candle dan {len(cumulative_backtested_trades_for_pair_list)} trade.", Fore.GREEN, Style.BRIGHT)
+            break
+        elif total_candles_in_cumulative >= BACKTEST_FETCH_CHUNK_LIMIT * 50: # Fail-safe: stop after X chunks (e.g., 50 * 1000 = 50k candles)
+             print_colored(f"⚠️ Backtest untuk {pair_id} dihentikan: Terlalu banyak candle diproses tanpa mencapai target winrate. Winrate tertinggi: {highest_achieved_winrate:.2f}% ({trades_at_highest_winrate} trade).", Fore.YELLOW, Style.BRIGHT)
+             break
+
+        time.sleep(0.5) # Small delay between fetching chunks
+
+    # Add all newly backtested trades to the global list
+    # Remove any existing trades for this pair before adding the new backtested ones
+    autopilot_trades[:] = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
+    autopilot_trades.extend(cumulative_backtested_trades_for_pair_list)
     autopilot_trades.sort(key=lambda x: x['entryTimestamp']) 
     save_trades() 
     
-    print_colored(f"✅ Backtest untuk {pair_id} selesai. {len(backtested_trades_for_pair_list)} trade disimulasikan dan ditambahkan.", Fore.GREEN, Style.BRIGHT)
+    print_colored(f"✅ Backtest untuk {pair_id} selesai. Total {len(cumulative_backtested_trades_for_pair_list)} trade disimulasikan dan ditambahkan.", Fore.GREEN, Style.BRIGHT)
     return True
 
 
@@ -745,13 +804,14 @@ def check_and_run_backtests():
     pairs_to_backtest = []
     
     for pair_id, timeframe in watched_pairs.items():
+        # Check if any trade exists for this pair in autopilot_trades
         has_existing_trades = any(t for t in autopilot_trades if t['instrumentId'] == pair_id)
         
-        if not has_existing_trades:
+        if not has_existing_trades: # Only backtest if pair has NO history yet
             pairs_to_backtest.append((pair_id, timeframe))
     
     if pairs_to_backtest:
-        print_colored(f"\nMemerlukan Backtest untuk pembelajaran AI ({STATIC_BACKTEST_CANDLE_LIMIT} candle terakhir):", Fore.CYAN, Style.BRIGHT)
+        print_colored(f"\nMemerlukan Backtest untuk pembelajaran AI (hingga Winrate {current_settings.get('target_winrate_pct'):.2f}% tercapai):", Fore.CYAN, Style.BRIGHT)
         for pair_id, timeframe in pairs_to_backtest:
             print_colored(f"- {pair_id} ({timeframe})", Fore.YELLOW)
         
@@ -760,9 +820,9 @@ def check_and_run_backtests():
             run_pair_backtest(pair_id, timeframe) 
         
         print_colored("\nBacktest Selesai untuk semua pair yang diperlukan.", Fore.GREEN, Style.BRIGHT)
-        load_trades() 
+        load_trades() # Reload trades to ensure global autopilot_trades is updated for live analysis.
     else:
-        print_colored(f"\nTidak ada Backtest yang diperlukan untuk {STATIC_BACKTEST_CANDLE_LIMIT} candle terakhir. Riwayat trade sudah cukup.", Fore.GREEN)
+        print_colored(f"\nTidak ada Backtest yang diperlukan. Riwayat trade sudah cukup untuk pembelajaran.", Fore.GREEN)
 
 
 def handle_settings_command(parts):
@@ -773,7 +833,8 @@ def handle_settings_command(parts):
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''), 
-        'cc_key': ('cryptocompare_api_key', '') # NEW: For CryptoCompare API Key
+        'winrate': ('target_winrate_pct', '%'), # NEW: for target winrate
+        'cc_key': ('cryptocompare_api_key', '') # For CryptoCompare API Key
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
@@ -784,18 +845,19 @@ def handle_settings_command(parts):
             if full_key == 'cryptocompare_api_key' and display_value != "YOUR_CRYPTOCOMPARE_API_KEY":
                 display_value = display_value[:4] + '...' + display_value[-4:] # Show only first/last 4 chars
             print_colored(f"{display_key} ({key:<10}) : {display_value}{unit}", Fore.WHITE)
-        print_colored(f"Backtest Limit  : {STATIC_BACKTEST_CANDLE_LIMIT} candles (Static)", Fore.WHITE)
+        print_colored(f"Backtest Chunk  : {BACKTEST_FETCH_CHUNK_LIMIT} candles (Static)", Fore.WHITE) # Display static chunk limit
         print(); return
     if len(parts) == 3 and parts[0] == '!set':
         key_short = parts[1].lower()
         if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
         try:
-            value = parts[2] # Read value as string first
-            # Special handling for numeric settings
-            if key_short in ['sl', 'fee', 'delay', 'tp_act', 'tp_gap', 'caution']:
+            value = parts[2] 
+            if key_short in ['sl', 'fee', 'delay', 'tp_act', 'tp_gap', 'caution', 'winrate']: # Added winrate to numeric list
                 value = float(value)
                 if key_short == 'caution' and not (0.0 <= value <= 1.0):
                     print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
+                if key_short == 'winrate' and not (0.0 <= value <= 100.0): # Winrate should be 0-100%
+                    print_colored("Error: Nilai 'winrate' harus antara 0.0 dan 100.0.", Fore.RED); return
                 if key_short == 'delay' and value <= 0:
                     print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
                 if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
