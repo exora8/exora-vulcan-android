@@ -58,7 +58,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # 'delay' already here
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # Removed bt_months
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -121,6 +121,7 @@ def display_history():
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             run_up = trade.get('run_up_percent', pl_percent)
             print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
+            print_colored(f"  Max Drawdown (MDD): {trade.get('max_drawdown_percent', 0.0):.2f}%", Fore.YELLOW) # Display MDD
             if 'entry_snapshot' in trade and not is_profit:
                 snapshot = trade['entry_snapshot']
                 print_colored(f"  Pelajaran (Snapshot):", Fore.MAGENTA)
@@ -502,55 +503,96 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 10)) # Uses settable interval
         else: time.sleep(1)
 
-async def check_realtime_position_management(instrument_id, latest_price, is_backtest=False):
-    open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
-    if not open_position: return
+# MODIFIED: check_realtime_position_management to correctly track run_up_percent and max_drawdown_percent
+async def check_realtime_position_management(trade_obj, current_candle_data, is_backtest=False):
+    # Renamed open_position to trade_obj for clarity since it's passed as an arg
+    if not trade_obj: return
     
-    current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
+    # Calculate PnL based on current candle's close price for general status
+    pnl_at_close = calculate_pnl(trade_obj['entryPrice'], current_candle_data['close'], trade_obj.get('type'))
     
-    if current_pnl > open_position.get('run_up_percent', 0.0):
-        open_position['run_up_percent'] = current_pnl
-    if current_pnl < open_position.get('max_drawdown_percent', 0.0):
-        open_position['max_drawdown_percent'] = current_pnl
+    # --- Update Run-up and Max Drawdown ---
+    # For LONG trades: run_up is highest profit (using high), drawdown is lowest profit (using low)
+    if trade_obj['type'] == 'LONG':
+        pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
+        pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'LONG')
         
+        if pnl_at_high > trade_obj.get('run_up_percent', 0.0):
+            trade_obj['run_up_percent'] = pnl_at_high
+        if pnl_at_low < trade_obj.get('max_drawdown_percent', 0.0): # Drawdown is negative PnL
+            trade_obj['max_drawdown_percent'] = pnl_at_low
+
+    # For SHORT trades: run_up is highest profit (using low), drawdown is lowest profit (using high)
+    elif trade_obj['type'] == 'SHORT':
+        pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT') # Short profit from lower price
+        pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'SHORT') # Short loss from higher price
+        
+        if pnl_at_low > trade_obj.get('run_up_percent', 0.0):
+            trade_obj['run_up_percent'] = pnl_at_low
+        if pnl_at_high < trade_obj.get('max_drawdown_percent', 0.0): # Drawdown is negative PnL
+            trade_obj['max_drawdown_percent'] = pnl_at_high
+
+    # --- SL Logic ---
     sl_pct = current_settings.get('stop_loss_pct')
+    sl_price = trade_obj['entryPrice'] * (1 - abs(sl_pct) / 100) if trade_obj['type'] == 'LONG' else \
+               trade_obj['entryPrice'] * (1 + abs(sl_pct) / 100)
     
-    if sl_pct is not None and current_pnl <= -abs(sl_pct): 
+    sl_hit = False
+    if trade_obj['type'] == 'LONG' and current_candle_data['low'] <= sl_price:
+        sl_hit = True; exit_price = sl_price
+    elif trade_obj['type'] == 'SHORT' and current_candle_data['high'] >= sl_price:
+        sl_hit = True; exit_price = sl_price
+    
+    if sl_hit:
         global is_ai_thinking
         if not is_ai_thinking: 
             is_ai_thinking = True
-            await analyze_and_close_trade(open_position, latest_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai.", is_backtest)
+            await analyze_and_close_trade(trade_obj, exit_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai.", is_backtest)
             is_ai_thinking = False
-        return
+        return # Trade closed, nothing more to do for this trade
 
+    # --- Trailing TP Logic ---
     activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
     gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     
-    current_tp_checkpoint_level = open_position.get("current_tp_checkpoint_level", 0.0)
+    current_tp_checkpoint_level = trade_obj.get("current_tp_checkpoint_level", 0.0)
 
-    if current_tp_checkpoint_level == 0.0 and current_pnl >= activation_pct:
-        open_position['current_tp_checkpoint_level'] = activation_pct
-        open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + activation_pct / 100) if open_position['type'] == 'LONG' else \
-                                                open_position['entryPrice'] * (1 - activation_pct / 100)
+    # 1. Activation Phase
+    if current_tp_checkpoint_level == 0.0 and pnl_at_close >= activation_pct: # Use pnl_at_close for activation
+        trade_obj['current_tp_checkpoint_level'] = activation_pct
+        trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + activation_pct / 100) if trade_obj['type'] == 'LONG' else \
+                                            trade_obj['entryPrice'] * (1 - activation_pct / 100)
 
+    # 2. Update Checkpoint Phase
     if current_tp_checkpoint_level > 0.0: 
-        steps_passed = math.floor((current_pnl - current_tp_checkpoint_level) / gap_pct)
-        
+        # For LONG, check if high of current candle passed new checkpoint
+        if trade_obj['type'] == 'LONG':
+            potential_new_checkpoint_pnl = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
+            steps_passed = math.floor((potential_new_checkpoint_pnl - current_tp_checkpoint_level) / gap_pct)
+        # For SHORT, check if low of current candle passed new checkpoint
+        else: # trade_obj['type'] == 'SHORT'
+            potential_new_checkpoint_pnl = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT')
+            steps_passed = math.floor((potential_new_checkpoint_pnl - current_tp_checkpoint_level) / gap_pct)
+
         if steps_passed > 0:
-            open_position['current_tp_checkpoint_level'] += steps_passed * gap_pct
-            open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + open_position['current_tp_checkpoint_level'] / 100) if open_position['type'] == 'LONG' else \
-                                                    open_position['entryPrice'] * (1 - open_position['current_tp_checkpoint_level'] / 100)
+            trade_obj['current_tp_checkpoint_level'] += steps_passed * gap_pct
+            trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + trade_obj['current_tp_checkpoint_level'] / 100) if trade_obj['type'] == 'LONG' else \
+                                                    trade_obj['entryPrice'] * (1 - trade_obj['current_tp_checkpoint_level'] / 100)
         
-        if open_position['type'] == 'LONG' and latest_price <= open_position.get('trailing_stop_price', 0):
+        # 3. Exit Condition Phase
+        tp_hit = False
+        if trade_obj.get('trailing_stop_price') is not None:
+            if trade_obj['type'] == 'LONG' and current_candle_data['low'] <= trade_obj['trailing_stop_price']:
+                tp_hit = True; exit_price = trade_obj['trailing_stop_price']
+            elif trade_obj['type'] == 'SHORT' and current_candle_data['high'] >= trade_obj['trailing_stop_price']:
+                tp_hit = True; exit_price = trade_obj['trailing_stop_price']
+        
+        if tp_hit:
             if not is_ai_thinking:
                 is_ai_thinking = True
-                await analyze_and_close_trade(open_position, latest_price, f"Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai.", is_backtest)
+                await analyze_and_close_trade(trade_obj, exit_price, f"Trailing TP (checkpoint {trade_obj['current_tp_checkpoint_level']:.2f}%) tercapai.", is_backtest)
                 is_ai_thinking = False
-        elif open_position['type'] == 'SHORT' and latest_price >= open_position.get('trailing_stop_price', float('inf')):
-             if not is_ai_thinking:
-                is_ai_thinking = True
-                await analyze_and_close_trade(open_position, latest_price, f"Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai.", is_backtest)
-                is_ai_thinking = False
+            return # Trade closed, nothing more to do for this trade
     
     if not is_backtest:
         save_trades() 
@@ -571,8 +613,8 @@ def data_refresh_worker():
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     
                     if is_autopilot_running:
-                        latest_price = data[-1]['close']
-                        asyncio.run(check_realtime_position_management(pair_id, latest_price))
+                        # Pass the latest candle data directly
+                        asyncio.run(check_realtime_position_management(pair_id, data[-1])) # Changed this call
                 time.sleep(0.5) 
         stop_event.wait(REFRESH_INTERVAL_SECONDS) 
 
@@ -607,7 +649,7 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
     # Simulate candles one by one
     for i in range(len(historical_candles)):
         current_historical_data_slice = historical_candles[:i+1] # All candles up to current point
-        current_candle = historical_candles[i]
+        current_candle = historical_candles[i] # The current candle being processed
         
         if len(current_historical_data_slice) < 100 + 3: # Need 100 for EMA100 + 3 for snapshot access (index -4)
             print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
@@ -618,40 +660,18 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
 
         trades_to_close_in_current_candle = []
         for open_bt_trade in open_backtest_trades:
-            sl_price = open_bt_trade['entryPrice'] * (1 - current_settings['stop_loss_pct'] / 100) if open_bt_trade['type'] == 'LONG' else \
-                       open_bt_trade['entryPrice'] * (1 + current_settings['stop_loss_pct'] / 100)
+            # Check for SL/TP and update run_up/drawdown using the current_candle_data
+            # We call it with the trade object itself as the first argument, and the current_candle
+            asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
             
-            sl_hit_in_candle = False
-            if open_bt_trade['type'] == 'LONG' and current_candle['low'] <= sl_price:
-                sl_hit_in_candle = True
-            elif open_bt_trade['type'] == 'SHORT' and current_candle['high'] >= sl_price:
-                sl_hit_in_candle = True
-            
-            if sl_hit_in_candle:
-                asyncio.run(analyze_and_close_trade(open_bt_trade, sl_price, "Backtest SL", is_backtest=True))
-                trades_to_close_in_current_candle.append(open_bt_trade)
-                continue 
-            
-            simulated_current_price = current_candle['high'] if open_bt_trade['type'] == 'LONG' else current_candle['low']
-            asyncio.run(check_realtime_position_management(open_bt_trade['instrumentId'], simulated_current_price, is_backtest=True))
-            
+            # If the trade was closed by the above call (it calls analyze_and_close_trade), then add it to remove list
             if open_bt_trade['status'] == 'CLOSED':
                  trades_to_close_in_current_candle.append(open_bt_trade)
-                 continue
-
-            tp_hit_in_candle = False
-            if open_bt_trade.get('trailing_stop_price') is not None:
-                if open_bt_trade['type'] == 'LONG' and current_candle['low'] <= open_bt_trade['trailing_stop_price']:
-                    tp_hit_in_candle = True
-                elif open_bt_trade['type'] == 'SHORT' and current_candle['high'] >= open_bt_trade['trailing_stop_price']:
-                    tp_hit_in_candle = True
-            
-            if tp_hit_in_candle:
-                asyncio.run(analyze_and_close_trade(open_bt_trade, open_bt_trade['trailing_stop_price'], "Backtest Trailing TP", is_backtest=True))
-                trades_to_close_in_current_candle.append(open_bt_trade)
+                 continue # Move to next open trade if this one was closed
         
+        # Remove closed trades from open_backtest_trades and add to backtested_trades_for_pair_list
         for trade_to_remove in trades_to_close_in_current_candle:
-            if trade_to_remove in open_backtest_trades: 
+            if trade_to_remove in open_backtest_trades: # Ensure it's still there before removing
                 open_backtest_trades.remove(trade_to_remove)
                 backtested_trades_for_pair_list.append(trade_to_remove)
 
@@ -671,8 +691,8 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
                     "entryReason": decision.get("reason"),
                     "status": 'OPEN',
                     "entry_snapshot": decision.get("snapshot"),
-                    "run_up_percent": 0.0,
-                    "max_drawdown_percent": 0.0,
+                    "run_up_percent": 0.0, # Initialize here, will be updated by check_realtime_position_management
+                    "max_drawdown_percent": 0.0, # Initialize here, will be updated by check_realtime_position_management
                     "trailing_stop_price": None,
                     "current_tp_checkpoint_level": 0.0
                 }
@@ -681,6 +701,7 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
 
         print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
 
+    # Close any remaining open trades at the end of backtest period
     for open_bt_trade in open_backtest_trades:
         asyncio.run(analyze_and_close_trade(open_bt_trade, historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
         backtested_trades_for_pair_list.append(open_bt_trade)
@@ -695,12 +716,10 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
 
 def check_and_run_backtests():
     watched_pairs = current_settings.get("watched_pairs", {})
-    # Removed backtest_months, now uses STATIC_BACKTEST_CANDLE_LIMIT
     
     pairs_to_backtest = []
     
     for pair_id, timeframe in watched_pairs.items():
-        # Check if any trade exists for this pair in autopilot_trades
         has_existing_trades = any(t for t in autopilot_trades if t['instrumentId'] == pair_id)
         
         if not has_existing_trades:
@@ -713,7 +732,7 @@ def check_and_run_backtests():
         
         print_colored("Memulai proses Backtest. Mohon tunggu...", Fore.BLUE)
         for pair_id, timeframe in pairs_to_backtest:
-            run_pair_backtest(pair_id, timeframe) # Removed duration_months
+            run_pair_backtest(pair_id, timeframe) 
         
         print_colored("\nBacktest Selesai untuk semua pair yang diperlukan.", Fore.GREEN, Style.BRIGHT)
         load_trades() 
@@ -725,18 +744,16 @@ def handle_settings_command(parts):
     setting_map = {
         'sl': ('stop_loss_pct', '%'),
         'fee': ('fee_pct', '%'),
-        'delay': ('analysis_interval_sec', ' detik'), # 'delay' added here
+        'delay': ('analysis_interval_sec', ' detik'), 
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''), 
-        # 'bt_months': ('backtest_duration_months', ' bulan') # REMOVED from settings
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
         for key, (full_key, unit) in setting_map.items():
             display_key = key.capitalize().ljust(10)
             print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
-        # Display static backtest limit
         print_colored(f"Backtest Limit  : {STATIC_BACKTEST_CANDLE_LIMIT} candles (Static)", Fore.WHITE)
         print(); return
     if len(parts) == 3 and parts[0] == '!set':
@@ -746,7 +763,6 @@ def handle_settings_command(parts):
             value = float(parts[2])
             if key_short == 'caution' and not (0.0 <= value <= 1.0):
                 print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
-            # Validation for 'delay' to ensure it's positive
             if key_short == 'delay' and value <= 0:
                  print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
             if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
@@ -839,8 +855,6 @@ def main():
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan. Dashboard aktif.", Fore.YELLOW)
                 elif not current_settings.get("watched_pairs"): print_colored("Error: Watchlist kosong. Gunakan '!watch <PAIR>' dulu.", Fore.RED)
                 else: 
-                    # Re-check and run backtests only for truly new/unbacktested pairs since last !start
-                    # This is slightly redundant as it's also called on initial start, but ensures new pairs added while bot is running are caught.
                     check_and_run_backtests() 
 
                     is_autopilot_running = True
@@ -878,7 +892,7 @@ def main():
             elif cmd == '!history':
                 display_history()
             elif cmd in ['!settings', '!set']:
-                handle_settings_command(command_parts)
+                handle_settings_command(parts)
             else:
                 print_colored(f"Perintah '{user_input}' tidak dikenal. Ketik '!help'.", Fore.RED)
         except KeyboardInterrupt: break
