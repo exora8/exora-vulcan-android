@@ -13,7 +13,7 @@ SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data live
-STATIC_BACKTEST_CANDLE_LIMIT = 1000 # NEW: Static limit for backtest candles
+STATIC_BACKTEST_CANDLE_LIMIT = 1000 # NEW: Static limit for backtest candles (e.g., 1000 candles back)
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -68,11 +68,10 @@ def load_settings():
     default_settings = {
         "stop_loss_pct": 0.20,
         "fee_pct": 0.1,
-        "analysis_interval_sec": 0.5,
+        "analysis_interval_sec": 10, # Keep default 10s for live, as discussed.
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
         "caution_level": 0.5,
-        # "backtest_duration_months": 2, # REMOVED: Static limit now
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -143,7 +142,7 @@ def display_history():
         print()
 
 # --- FUNGSI API (BYBIT) ---
-# MODIFIED: Renamed original fetch_bybit_candle_data to fetch_recent_candles
+# Function to fetch recent candles for live data
 def fetch_recent_candles(instId, timeframe, limit=300):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
@@ -176,11 +175,15 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
     all_candles = []
     # Bybit limit is 1000 per request, so loop if limit > 1000
     requests_needed = math.ceil(limit / 1000)
-    current_limit_for_request = min(limit, 1000)
     
-    end_time_ms = int(datetime.now().timestamp() * 1000) # Start fetching from current time backwards
+    # Start fetching from current time backwards
+    end_time_ms = int(datetime.now().timestamp() * 1000) 
 
     for req_num in range(requests_needed):
+        current_limit_for_request = min(limit - len(all_candles), 1000) # Adjust limit for current request
+        if current_limit_for_request <= 0: # Stop if already fetched enough
+            break
+
         url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={current_limit_for_request}&endTime={end_time_ms}"
         try:
             response = requests.get(url, timeout=15)
@@ -200,10 +203,6 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
                 # Update end_time for next request to fetch older candles
                 end_time_ms = int(candles_batch[-1][0]) - 1 # Oldest candle in batch - 1ms
                 
-                # Adjust limit for the last request if total candles fetched is close to target
-                remaining_to_fetch = limit - len(all_candles)
-                current_limit_for_request = min(remaining_to_fetch, 1000)
-
                 # Update progress bar for fetching
                 print_progress_bar(len(all_candles), limit, prefix=f'  {instId} Fetching', suffix='Candles', length=50, fill='=')
 
@@ -230,7 +229,7 @@ def fetch_historical_candles_by_limit(instId, timeframe, limit):
             unique_candles.append(candle)
             seen_timestamps.add(candle['time'])
             
-    # Take only the exact 'limit' number of candles if more were fetched due to API granularity
+    # Take only the exact 'limit' number of candles (from the most recent ones if more than 'limit' are fetched)
     final_candles = unique_candles[-limit:] if len(unique_candles) > limit else unique_candles
 
     print_colored(f"  [DEBUG] Final fetched {len(final_candles)} candles for {instId}.", Fore.GREEN)
@@ -614,7 +613,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
-def run_pair_backtest(pair_id, timeframe): # Removed duration_months
+def run_pair_backtest(pair_id, timeframe): 
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
@@ -724,7 +723,6 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
 
 def check_and_run_backtests():
     watched_pairs = current_settings.get("watched_pairs", {})
-    # Removed backtest_months, now uses STATIC_BACKTEST_CANDLE_LIMIT
     
     pairs_to_backtest = []
     
@@ -742,7 +740,7 @@ def check_and_run_backtests():
         
         print_colored("Memulai proses Backtest. Mohon tunggu...", Fore.BLUE)
         for pair_id, timeframe in pairs_to_backtest:
-            run_pair_backtest(pair_id, timeframe) # Removed duration_months
+            run_pair_backtest(pair_id, timeframe) 
         
         print_colored("\nBacktest Selesai untuk semua pair yang diperlukan.", Fore.GREEN, Style.BRIGHT)
         load_trades() 
@@ -758,7 +756,6 @@ def handle_settings_command(parts):
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''), 
-        # 'bt_months': ('backtest_duration_months', ' bulan') # REMOVED from settings
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
@@ -775,7 +772,6 @@ def handle_settings_command(parts):
             value = float(parts[2])
             if key_short == 'caution' and not (0.0 <= value <= 1.0):
                 print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
-            # Removed bt_months validation
             if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
@@ -866,8 +862,6 @@ def main():
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan. Dashboard aktif.", Fore.YELLOW)
                 elif not current_settings.get("watched_pairs"): print_colored("Error: Watchlist kosong. Gunakan '!watch <PAIR>' dulu.", Fore.RED)
                 else: 
-                    # Re-check and run backtests only for truly new/unbacktested pairs since last !start
-                    # This is slightly redundant as it's also called on initial start, but ensures new pairs added while bot is running are caught.
                     check_and_run_backtests() 
 
                     is_autopilot_running = True
