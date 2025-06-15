@@ -188,14 +188,15 @@ def fetch_candles_in_range(instId, timeframe, start_time_ms, end_time_ms):
                 
                 if not candles_batch:
                     consecutive_empty_batches += 1
-                    print_colored(f"  [DEBUG] No candles in batch. Consecutive empty batches: {consecutive_empty_batches}", Fore.YELLOW)
+                    print_colored(f"  [DEBUG] No candles in batch for {instId}. Consecutive empty batches: {consecutive_empty_batches}", Fore.YELLOW)
                     if consecutive_empty_batches >= 3: # If 3 consecutive empty batches, stop
                         print_colored(f"  [DEBUG] Too many consecutive empty batches for {instId}. Breaking loop.", Fore.RED)
                         break 
-                    # If empty, and not yet 3 consecutive, just try again with slightly older timestamp
+                    # If empty, and not yet 3 consecutive, try to jump back slightly more in time
+                    # This attempts to skip over potential data gaps
                     current_end_time -= max_limit * int(bybit_interval) * 1000 # Jump back approx. max_limit candles worth of time
                     time.sleep(0.5) # Longer sleep for empty batch
-                    continue # Continue to next iteration
+                    continue 
                 else:
                     consecutive_empty_batches = 0 # Reset counter if candles are found
 
@@ -203,23 +204,22 @@ def fetch_candles_in_range(instId, timeframe, start_time_ms, end_time_ms):
                 formatted_batch = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candles_batch]
                 
                 # Only add candles within the desired historical range and not already collected
-                # Use a set for quick lookup of existing timestamps to avoid duplicates
-                existing_timestamps = {c['time'] for c in all_candles}
-                new_candles_to_add = [c for c in formatted_batch if c['time'] >= start_time_ms and c['time'] <= end_time_ms and c['time'] not in existing_timestamps]
+                existing_timestamps_in_all = {c['time'] for c in all_candles} # Efficient lookup for existing timestamps
+                new_candles_to_add = [c for c in formatted_batch if c['time'] >= start_time_ms and c['time'] <= end_time_ms and c['time'] not in existing_timestamps_in_all]
                 all_candles.extend(new_candles_to_add)
                 
                 # Update current_end_time to the timestamp of the oldest candle in this batch - 1ms
                 current_end_time = int(candles_batch[-1][0]) - 1 
 
-                # Debug: Show progress towards start_time
-                print_colored(f"  [DEBUG] Fetched {len(candles_batch)} candles. Oldest candle in batch: {datetime.fromtimestamp(candles_batch[-1][0]/1000).strftime('%Y-%m-%d %H:%M')}. Current end_time: {datetime.fromtimestamp(current_end_time/1000).strftime('%Y-%m-%d %H:%M')}. Target start_time: {datetime.fromtimestamp(start_time_ms/1000).strftime('%Y-%m-%d %H:%M')}", Fore.BLUE)
+                # Debug: Show progress towards start_time - FIX: Convert to int before division
+                print_colored(f"  [DEBUG] Fetched {len(candles_batch)} candles. Oldest batch timestamp: {datetime.fromtimestamp(int(candles_batch[-1][0])/1000).strftime('%Y-%m-%d %H:%M')}. Current end_time: {datetime.fromtimestamp(current_end_time/1000).strftime('%Y-%m-%d %H:%M')}. Target start_time: {datetime.fromtimestamp(start_time_ms/1000).strftime('%Y-%m-%d %H:%M')}", Fore.BLUE)
 
 
                 if current_end_time < start_time_ms:
                     print_colored(f"  [DEBUG] Reached or passed target start_time for {instId}. Breaking loop.", Fore.YELLOW)
                     break 
 
-                time.sleep(0.15) # Increased from 0.1 to 0.15 for better rate limit avoidance
+                time.sleep(0.15) 
             else:
                 print_colored(f"  API Error fetching historical data for {instId}: retCode {data.get('retCode')}, retMsg {data.get('retMsg', 'Unknown error')}. Breaking loop.", Fore.RED)
                 break
@@ -232,11 +232,9 @@ def fetch_candles_in_range(instId, timeframe, start_time_ms, end_time_ms):
             break
     
     # Sort all_candles by timestamp to ensure chronological order and remove duplicates (if any remaining)
-    # Using a dict to ensure uniqueness is applied first
     all_candles_dict = {c['time']: c for c in all_candles} 
     final_filtered_candles = sorted(all_candles_dict.values(), key=lambda x: x['time'])
 
-    # Final filter to ensure only candles within exact range are kept
     final_filtered_candles = [c for c in final_filtered_candles if c['time'] >= start_time_ms and c['time'] <= end_time_ms]
 
     print_colored(f"  [DEBUG] Final collected {len(final_filtered_candles)} candles for {instId}.", Fore.GREEN)
@@ -742,19 +740,14 @@ def check_and_run_backtests():
     
     for pair_id, timeframe in watched_pairs.items():
         oldest_trade_date = None
-        # Find the timestamp of the oldest trade that IS CLOSED and within the backtest range
-        # We don't want to backtest over existing *open* trades
         for trade in autopilot_trades:
-            if trade['instrumentId'] == pair_id and trade['status'] == 'CLOSED': # Only consider closed trades for backtest starting point
+            if trade['instrumentId'] == pair_id and trade['status'] == 'CLOSED': 
                 trade_date = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', ''))
                 if oldest_trade_date is None or trade_date < oldest_trade_date:
                     oldest_trade_date = trade_date
         
         required_start_date = datetime.now() - timedelta(days=backtest_months * 30)
 
-        # A backtest is needed if:
-        # 1. No trades exist for this pair.
-        # 2. The oldest *closed* trade is newer than the required backtest start date.
         if oldest_trade_date is None or oldest_trade_date > required_start_date:
             pairs_to_backtest.append((pair_id, timeframe))
     
@@ -927,7 +920,7 @@ def main():
             elif cmd == '!history':
                 display_history()
             elif cmd in ['!settings', '!set']:
-                handle_settings_command(command_parts)
+                handle_settings_command(parts)
             else:
                 print_colored(f"Perintah '{user_input}' tidak dikenal. Ketik '!help'.", Fore.RED)
         except KeyboardInterrupt: break
