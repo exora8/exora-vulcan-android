@@ -12,9 +12,9 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/" # NEW: CryptoCompare API URL
-REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data live
-BACKTEST_FETCH_CHUNK_LIMIT = 1000 # NEW: Number of candles to fetch per historical API call in backtest
+CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/" 
+REFRESH_INTERVAL_SECONDS = 0.5 
+BACKTEST_FETCH_CHUNK_LIMIT = 1000 
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -123,7 +123,7 @@ def display_history():
             print_colored(f"  P/L: {pl_percent:.2f}%", pl_color, Style.BRIGHT)
             run_up = trade.get('run_up_percent', pl_percent)
             print_colored(f"  Profit Tertinggi (Run-up): {run_up:.2f}%", Fore.YELLOW)
-            print_colored(f"  Max Drawdown (MDD): {trade.get('max_drawdown_percent', 0.0):.2f}%", Fore.YELLOW) # Display MDD
+            print_colored(f"  Max Drawdown (MDD): {trade.get('max_drawdown_percent', 0.0):.2f}%", Fore.YELLOW) 
             if 'entry_snapshot' in trade and not is_profit:
                 snapshot = trade['entry_snapshot']
                 print_colored(f"  Pelajaran (Snapshot):", Fore.MAGENTA)
@@ -201,12 +201,12 @@ def fetch_historical_candles_backward_from_ts(instId, timeframe, to_ts_seconds, 
             candles_batch_raw = data['Data']['Data']
             
             if not candles_batch_raw:
-                return [], 0 
+                return [], 0 # No candles in this batch
 
             # CryptoCompare returns oldest first. Time is in seconds.
             formatted_batch = [{"time": c['time'] * 1000, "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'], "volume": c['volumefrom']} for c in candles_batch_raw]
             
-            earliest_ts_in_batch = candles_batch_raw[0]['time'] 
+            earliest_ts_in_batch = candles_batch_raw[0]['time'] # Oldest candle in this batch (in seconds)
             return formatted_batch, earliest_ts_in_batch
         else:
             print_colored(f"  API Error fetching historical data from CC for {instId}: Response: {data.get('Response')}, Message: {data.get('Message', 'Unknown error')}", Fore.RED)
@@ -445,6 +445,7 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason, is_ba
     if is_profit and 'entry_snapshot' in trade:
         del trade['entry_snapshot'] 
     
+    # Save trades is now handled by the backtest loop or data_refresh_worker
     if not is_backtest:
         save_trades()
         notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
@@ -469,7 +470,7 @@ async def run_autopilot_analysis(instrument_id):
         decision = local_brain.get_decision(candle_data, open_position, instrument_id)
         
         action = decision.get('action', 'HOLD').upper(); reason = decision.get('reason', 'No reason provided.')
-        current_price = candle_data[-1]['close'] 
+        current_price = candle_data[-1]['close'] # Entry price is the close of the trigger candle
         
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
@@ -488,7 +489,7 @@ async def run_autopilot_analysis(instrument_id):
                 "current_tp_checkpoint_level": 0.0 
             }
             autopilot_trades.append(new_trade)
-            save_trades()
+            save_trades() # Save immediately for live trades
             notif_title = f"{'🟢' if action == 'BUY' else '🔴'} Posisi {trade_type} Dibuka"
             notif_content = f"{instrument_id}: Entry @ {current_price:.4f} | {reason}"
             send_termux_notification(notif_title, notif_content)
@@ -626,135 +627,104 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
-# MODIFIED: run_pair_backtest for efficient chunk-by-chunk analysis
 def run_pair_backtest(pair_id, timeframe): 
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
-    # Trades already existing in trades.json before this backtest run (for learning context)
-    initial_trades_for_learning = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED']
+    # 1. Clear existing trades for this pair from global autopilot_trades and save
+    # This ensures backtest for this pair starts with a clean slate in trades.json
+    # So that LocalAI will learn only from trades created by *this* backtest.
+    trades_before_backtest_for_pair = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
+    autopilot_trades[:] = trades_before_backtest_for_pair
+    save_trades() # Save immediately so the file reflects the cleared state for this pair
+    load_trades() # Reload to ensure global autopilot_trades is updated from file
 
-    # These lists accumulate state *across chunks* during this backtest run
-    cumulative_backtested_trades_for_pair_list = [] # Stores trades closed during this backtest run
-    open_backtest_trades = [] # Stores trades currently open across chunks
 
-    # List to hold ALL historical candles fetched and processed so far in chronological order
-    all_fetched_candles_sorted = [] 
+    cumulative_historical_candles = [] 
+    open_backtest_trades = [] 
     
-    current_to_ts_for_fetch = int(datetime.now().timestamp()) # Start fetching from current timestamp (in seconds)
+    current_to_ts_for_fetch = int(datetime.now().timestamp()) 
     target_winrate = current_settings.get("target_winrate_pct", 85.0)
     
     highest_achieved_winrate = 0.0
     trades_at_highest_winrate = 0
     
     fetch_iteration = 0
-    while True: # Outer loop to fetch chunks of historical data and process them
+    while True: 
         fetch_iteration += 1
-        print_colored(f"  [DEBUG] Fetching historical chunk #{fetch_iteration}...", Fore.BLUE)
+        print_colored(f"  [DEBUG] Fetching historical chunk #{fetch_iteration} for {pair_id}...", Fore.BLUE)
         
-        # Fetch candles backward from current_to_ts
-        fetched_chunk_raw, earliest_ts_in_chunk = fetch_historical_candles_backward_from_ts(
+        fetched_chunk, earliest_ts_in_chunk = fetch_historical_candles_backward_from_ts(
             pair_id, timeframe, current_to_ts_for_fetch, BACKTEST_FETCH_CHUNK_LIMIT
         )
         
-        if not fetched_chunk_raw:
+        if not fetched_chunk:
             print_colored(f"  [DEBUG] No more historical data to fetch for {pair_id}. Ending backtest.", Fore.YELLOW)
             break 
             
-        # Add new chunk to the front of all_fetched_candles_sorted (prepend)
-        all_fetched_candles_sorted = fetched_chunk_raw + all_fetched_candles_sorted
+        # Add new chunk to the cumulative list (prepend to keep chronological order)
+        cumulative_historical_candles = fetched_chunk + cumulative_historical_candles 
         
-        # Ensure only unique candles are kept and sorted (important after prepend and for correct indexing)
-        all_fetched_candles_dict = {c['time']: c for c in all_fetched_candles_sorted}
-        all_fetched_candles_sorted = sorted(all_fetched_candles_dict.values(), key=lambda x: x['time'])
+        # Ensure only unique candles are kept and sorted
+        cumulative_historical_candles_dict = {c['time']: c for c in cumulative_historical_candles}
+        cumulative_historical_candles = sorted(cumulative_historical_candles_dict.values(), key=lambda x: x['time'])
 
-        # Update current_to_ts for the next fetch to be before the oldest candle in this chunk
         current_to_ts_for_fetch = earliest_ts_in_chunk - 1 
 
-        # --- Process the NEWLY ADDED CANDLES from this fetched chunk ---
-        # We need to find where the newly fetched chunk starts within `all_fetched_candles_sorted`
-        # and process only those new candles.
+        # --- Re-analyze the entire `cumulative_historical_candles` for the current total history ---
+        # This means we simulate all trades from the start of the collected history up to the latest candle.
+        # This re-analysis ensures correct state for open trades and learning.
         
-        # Determine the starting index for processing (index of the first candle in fetched_chunk_raw within all_fetched_candles_sorted)
-        # This assumes fetched_chunk_raw are chronologically ordered.
-        # Find the index of the first candle of the current chunk in the combined list
-        start_index_for_processing = -1
-        if fetched_chunk_raw[0]['time'] in all_fetched_candles_dict: # Check if the first candle from this chunk exists
-            # This is a bit tricky, better to just iterate over the `fetched_chunk_raw` directly and provide
-            # the full `all_fetched_candles_sorted` as context to `LocalAI`.
-            pass # We'll just loop through fetched_chunk_raw directly below
+        # Reset open trades for this full re-analysis iteration
+        temp_open_backtest_trades = []
+        temp_backtested_trades_list_in_run = [] # Trades closed during *this* full re-analysis iteration
 
-        print_colored(f"  [DEBUG] Analyzing {len(fetched_chunk_raw)} new candles from chunk #{fetch_iteration}...", Fore.BLUE)
-        total_candles_in_this_chunk = len(fetched_chunk_raw)
-
-        for i, current_candle_in_chunk in enumerate(fetched_chunk_raw):
-            # The 'slice' for LocalAI's context: all candles up to and including current_candle_in_chunk
-            # This means we need to find the current_candle_in_chunk in the full sorted list.
-            # Simpler: just pass the `all_fetched_candles_sorted` and LocalAI uses its tail.
-            # Indexing `all_fetched_candles_sorted` is based on its full length.
+        total_candles_in_cumulative = len(cumulative_historical_candles)
+        print_colored(f"  [DEBUG] Re-analyzing {total_candles_in_cumulative} cumulative candles for {pair_id}...", Fore.BLUE)
+        
+        for i in range(total_candles_in_cumulative): 
+            current_historical_data_slice = cumulative_historical_candles[:i+1] 
+            current_candle = cumulative_historical_candles[i] 
             
-            # Find the actual index of current_candle_in_chunk in all_fetched_candles_sorted
-            # This is inefficient: better to pass entire list and let LocalAI take [:idx+1]
-            # To simulate sequential analysis, we need the slice up to current_candle_in_chunk's position in the full list.
-            
-            # Re-index to get the slice for LocalAI.get_market_analysis
-            # current_candle_global_idx = all_fetched_candles_sorted.index(current_candle_in_chunk) # This requires unique objects
-            
-            # To ensure correctness and avoid complex index tracking, we pass the *entire* list to LocalAI
-            # and let LocalAI take the appropriate slice for analysis within its method.
-            # However, for the loop to run, we simply process `fetched_chunk_raw`
-            # and provide `all_fetched_candles_sorted` for LocalAI's context.
-            
-            # `current_historical_data_slice` for LocalAI's internal methods should reflect the full history up to this candle.
-            # We must pass a slice of `all_fetched_candles_sorted` that ends with `current_candle_in_chunk`.
-            # A more robust way to get the correct slice ending with `current_candle_in_chunk`:
-            current_candle_global_idx = -1
-            for k, c in enumerate(all_fetched_candles_sorted):
-                if c['time'] == current_candle_in_chunk['time']:
-                    current_candle_global_idx = k
-                    break
-            
-            if current_candle_global_idx == -1: # Should not happen if fetched_chunk is part of all_fetched_candles_sorted
-                print_colored(f"  [DEBUG] Candle {current_candle_in_chunk['time']} not found in main list. Skipping.", Fore.RED)
+            if len(current_historical_data_slice) < 100 + 3: 
+                print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
                 continue
 
-            current_historical_data_slice_for_analysis = all_fetched_candles_sorted[:current_candle_global_idx + 1]
-            
-            if len(current_historical_data_slice_for_analysis) < 100 + 3: 
-                print_progress_bar(i + 1, total_candles_in_this_chunk, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
-                continue
+            # Load trades from trades.json for LocalAI to learn from (updated after previous chunk)
+            # This is the crucial part for progressive learning
+            load_trades() # Reload autopilot_trades from file
+            # Filter trades for this pair ONLY for LocalAI's past_trades, as it only learns from its own asset history
+            # And also include trades closed in this re-analysis run
+            learning_trades_for_local_ai = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'] + temp_backtested_trades_list_in_run
 
-            # Crucial: Define `learning_trades_for_local_ai` right before use in this scope.
-            learning_trades_for_local_ai = initial_trades_for_learning + cumulative_backtested_trades_for_pair_list
-
-            market_state[pair_id] = {"candle_data": current_historical_data_slice_for_analysis, 
-                                     "analysis": LocalAI(current_settings, learning_trades_for_local_ai).get_market_analysis(current_historical_data_slice_for_analysis)}
+            market_state[pair_id] = {"candle_data": current_historical_data_slice, 
+                                     "analysis": LocalAI(current_settings, learning_trades_for_local_ai).get_market_analysis(current_historical_data_slice)}
 
             trades_to_close_in_current_candle = []
-            for open_bt_trade in list(open_backtest_trades): 
-                asyncio.run(check_realtime_position_management(open_bt_trade, current_candle_in_chunk, is_backtest=True))
+            for open_bt_trade in list(temp_open_backtest_trades): 
+                asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
                 
                 if open_bt_trade['status'] == 'CLOSED':
                      trades_to_close_in_current_candle.append(open_bt_trade)
             
             for trade_to_remove in trades_to_close_in_current_candle:
-                if trade_to_remove in open_backtest_trades: 
-                    open_backtest_trades.remove(trade_to_remove)
-                    cumulative_backtested_trades_for_pair_list.append(trade_to_remove) # Add to cumulative list
+                if trade_to_remove in temp_open_backtest_trades: 
+                    temp_open_backtest_trades.remove(trade_to_remove)
+                    temp_backtested_trades_list_in_run.append(trade_to_remove)
 
 
-            if not any(t for t in open_backtest_trades if t['instrumentId'] == pair_id): 
+            if not any(t for t in temp_open_backtest_trades if t['instrumentId'] == pair_id): 
                 local_brain_for_decision = LocalAI(current_settings, learning_trades_for_local_ai) 
-                decision = local_brain_for_decision.get_decision(current_historical_data_slice_for_analysis, None, pair_id) 
+                decision = local_brain_for_decision.get_decision(current_historical_data_slice, None, pair_id) 
                 
                 if decision.get('action') in ["BUY", "SELL"]:
                     trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
                     new_trade = {
-                        "id": int(current_candle_in_chunk['time'] / 1000), 
+                        "id": int(current_candle['time'] / 1000), 
                         "instrumentId": pair_id,
                         "type": trade_type,
-                        "entryTimestamp": datetime.fromtimestamp(current_candle_in_chunk['time'] / 1000).isoformat(),
-                        "entryPrice": current_candle_in_chunk['close'],
+                        "entryTimestamp": datetime.fromtimestamp(current_candle['time'] / 1000).isoformat(),
+                        "entryPrice": current_candle['close'],
                         "entryReason": decision.get("reason"),
                         "status": 'OPEN',
                         "entry_snapshot": decision.get("snapshot"),
@@ -763,46 +733,52 @@ def run_pair_backtest(pair_id, timeframe):
                         "trailing_stop_price": None,
                         "current_tp_checkpoint_level": 0.0
                     }
-                    open_backtest_trades.append(new_trade)
+                    temp_open_backtest_trades.append(new_trade)
 
 
-            print_progress_bar(i + 1, total_candles_in_this_chunk, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
+            print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
+
+        # After processing all candles in the cumulative set for this iteration
+        # Close any remaining open trades at the end of this cumulative historical period
+        for open_bt_trade in list(temp_open_backtest_trades): 
+            asyncio.run(analyze_and_close_trade(open_bt_trade, cumulative_historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
+            temp_backtested_trades_list_in_run.append(open_bt_trade)
+
+        # Update global autopilot_trades with trades from this re-analysis run
+        # Remove old trades of this pair, add new ones from this complete re-analysis
+        current_autopilot_trades_without_this_pair = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
+        current_autopilot_trades_without_this_pair.extend(temp_backtested_trades_list_in_run)
+        current_autopilot_trades_without_this_pair.sort(key=lambda x: x['entryTimestamp'])
+        autopilot_trades[:] = current_autopilot_trades_without_this_pair # Update global list directly
         
-        # After processing all candles in this specific chunk, update winrate based on cumulative trades
-        current_cumulative_winrate = calculate_winrate(cumulative_backtested_trades_for_pair_list, current_settings.get('fee_pct', 0.1))
+        save_trades() # Save trades.json after each chunk analysis is fully processed
+        load_trades() # Reload trades from the updated trades.json to refresh global autopilot_trades
         
-        print_colored(f"\n  [DEBUG] Winrate untuk {pair_id} setelah {len(cumulative_backtested_trades_for_pair_list)} trade: {current_cumulative_winrate:.2f}% (Target: {target_winrate:.2f}%)", Fore.CYAN)
+        # Calculate winrate from the actual trades.json (global autopilot_trades) for this pair
+        trades_for_winrate_calc = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED']
+        current_cumulative_winrate = calculate_winrate(trades_for_winrate_calc, current_settings.get('fee_pct', 0.1))
         
-        # Track highest achieved winrate
+        print_colored(f"\n  [DEBUG] Winrate untuk {pair_id} setelah {total_candles_in_cumulative} candle: {current_cumulative_winrate:.2f}% (Target: {target_winrate:.2f}%)", Fore.CYAN)
+        
         if current_cumulative_winrate > highest_achieved_winrate:
             highest_achieved_winrate = current_cumulative_winrate
-            trades_at_highest_winrate = len(cumulative_backtested_trades_for_pair_list)
+            trades_at_highest_winrate = len(trades_for_winrate_calc)
 
-        # Stopping condition: if winrate is achieved AND enough trades have occurred for stability
         MIN_TRADES_FOR_WINRATE_STABILITY = 50 
-        if current_cumulative_winrate >= target_winrate and len(cumulative_backtested_trades_for_pair_list) >= MIN_TRADES_FOR_WINRATE_STABILITY:
-            print_colored(f"✅ Target Winrate ({target_winrate:.2f}%) tercapai untuk {pair_id} setelah {len(cumulative_backtested_trades_for_pair_list)} trade.", Fore.GREEN, Style.BRIGHT)
+        if current_cumulative_winrate >= target_winrate and len(trades_for_winrate_calc) >= MIN_TRADES_FOR_WINRATE_STABILITY:
+            print_colored(f"✅ Target Winrate ({target_winrate:.2f}%) tercapai untuk {pair_id} setelah {total_candles_in_cumulative} candle dan {len(trades_for_winrate_calc)} trade.", Fore.GREEN, Style.BRIGHT)
             break
-        elif fetch_iteration >= 50: # Fail-safe: stop after X chunks (e.g., 50 chunks)
-             print_colored(f"⚠️ Backtest untuk {pair_id} dihentikan: Terlalu banyak chunk diproses tanpa mencapai target winrate. Winrate tertinggi: {highest_achieved_winrate:.2f}% ({trades_at_highest_winrate} trade).", Fore.YELLOW, Style.BRIGHT)
+        elif total_candles_in_cumulative >= BACKTEST_FETCH_CHUNK_LIMIT * 100: # Fail-safe: stop after X chunks (e.g., 100 * 1000 = 100k candles)
+             print_colored(f"⚠️ Backtest untuk {pair_id} dihentikan: Terlalu banyak candle diproses tanpa mencapai target winrate. Winrate tertinggi: {highest_achieved_winrate:.2f}% ({trades_at_highest_winrate} trade).", Fore.YELLOW, Style.BRIGHT)
              break
 
         time.sleep(0.5) 
 
-    # Close any remaining open trades at the very end of backtest period for the pair
-    # Use the last available candle in the cumulative history to close
-    if open_backtest_trades and all_fetched_candles_sorted:
-        for open_bt_trade in list(open_backtest_trades): 
-            asyncio.run(analyze_and_close_trade(open_bt_trade, all_fetched_candles_sorted[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
-            cumulative_backtested_trades_for_pair_list.append(open_bt_trade)
-
-    # Remove any existing trades for this pair from global autopilot_trades before adding the new backtested ones
-    autopilot_trades[:] = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
-    autopilot_trades.extend(cumulative_backtested_trades_for_pair_list)
+    # Final cleanup (redundant but harmless, ensures sorted and saved)
     autopilot_trades.sort(key=lambda x: x['entryTimestamp']) 
     save_trades() 
     
-    print_colored(f"✅ Backtest untuk {pair_id} selesai. Total {len(cumulative_backtested_trades_for_pair_list)} trade disimulasikan dan ditambahkan.", Fore.GREEN, Style.BRIGHT)
+    print_colored(f"✅ Backtest untuk {pair_id} selesai. Total trade di history untuk pair ini: {len([t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'])}.", Fore.GREEN, Style.BRIGHT)
     return True
 
 
