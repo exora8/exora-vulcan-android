@@ -12,8 +12,9 @@ import math
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
+CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/histominute" # NEW: CryptoCompare API URL
 REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data live
-STATIC_BACKTEST_CANDLE_LIMIT = 1000 # NEW: Static limit for backtest candles
+STATIC_BACKTEST_CANDLE_LIMIT = 1000 # Static limit for backtest candles
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -58,7 +59,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN)
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, cc_key)", Fore.GREEN) # Added cc_key
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -68,10 +69,11 @@ def load_settings():
     default_settings = {
         "stop_loss_pct": 0.20,
         "fee_pct": 0.1,
-        "analysis_interval_sec": 10, # Default value for analysis interval
+        "analysis_interval_sec": 10, 
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
         "caution_level": 0.5,
+        "cryptocompare_api_key": "YOUR_CRYPTOCOMPARE_API_KEY", # NEW: API Key for CryptoCompare
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -96,7 +98,6 @@ def load_trades():
     else:
         autopilot_trades = []
 
-    # Ensure new fields for trailing TP checkpoint are initialized if loading old trades
     for trade in autopilot_trades:
         if 'current_tp_checkpoint_level' not in trade:
             trade['current_tp_checkpoint_level'] = 0.0
@@ -142,7 +143,8 @@ def display_history():
                     print_colored(f"    3 Prev Candles Direction: {snapshot['pre_entry_candle_direction']}", Fore.MAGENTA)
         print()
 
-# --- FUNGSI API (BYBIT) ---
+# --- FUNGSI API ---
+# For fetching LIVE data (remains Bybit)
 def fetch_recent_candles(instId, timeframe, limit=300):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
@@ -164,65 +166,102 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         print_colored(f"Unknown Error fetching live data for {instId}: {e}", Fore.RED)
         return None
 
+# MODIFIED: fetch_historical_candles_by_limit to use CryptoCompare
 def fetch_historical_candles_by_limit(instId, timeframe, limit):
-    timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
-    bybit_interval = timeframe_map.get(timeframe, '60')
-    bybit_symbol = instId.replace('-', '')
+    timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'day', '1W': 'week', '1M': 'month'}
     
-    print_colored(f"  [DEBUG] Fetching {limit} historical candles for {instId} ({timeframe})...", Fore.BLUE)
+    # CryptoCompare uses 'histominute', 'histohour', 'histoday' based on interval.
+    # For 1m, it's histominute. For H1, histohour. For D1, histoday.
+    cc_interval_endpoint = "histominute" # Default for 1m
+    cc_timeframe_multiplier = 1 # Multiplier for toTs (in minutes)
+
+    if timeframe == '1H': cc_interval_endpoint = "histohour"; cc_timeframe_multiplier = 60
+    elif timeframe == '1D': cc_interval_endpoint = "histoday"; cc_timeframe_multiplier = 1440 # 24*60
+    # Add other timeframes if needed
+
+    # Split instId (e.g., APE-USDT -> APE, USDT)
+    try:
+        fsym, tsym = instId.split('-')
+    except ValueError:
+        print_colored(f"Error: Pair ID '{instId}' tidak dalam format FSMBAL-TSYMBOL (e.g., APE-USDT) untuk CryptoCompare.", Fore.RED)
+        return []
+
+    api_key = current_settings.get("cryptocompare_api_key")
+    if not api_key or api_key == "YOUR_CRYPTOCOMPARE_API_KEY":
+        print_colored("Error: CryptoCompare API Key belum diatur di settings.json atau menggunakan placeholder.", Fore.RED, Style.BRIGHT)
+        print_colored("Dapatkan API Key di cryptocompare.com dan set dengan '!set cc_key <your_key>'.", Fore.YELLOW)
+        return []
+
+    print_colored(f"  [DEBUG] Fetching {limit} historical candles for {instId} ({timeframe}) from CryptoCompare...", Fore.BLUE)
 
     all_candles = []
-    requests_needed = math.ceil(limit / 1000)
-    current_limit_for_request = min(limit, 1000)
+    # CryptoCompare limit is typically 2000 per request for histominute on free tier
+    max_cc_limit_per_req = 2000 
     
-    end_time_ms = int(datetime.now().timestamp() * 1000) 
+    current_to_ts = int(datetime.now().timestamp()) # Start fetching from current timestamp backwards
 
-    for req_num in range(requests_needed):
-        url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={current_limit_for_request}&endTime={end_time_ms}"
+    req_count = 0
+    consecutive_empty_responses = 0
+
+    while len(all_candles) < limit:
+        req_count += 1
+        # Calculate how many more candles are needed, max out at 2000 per request
+        current_limit_for_request = min(limit - len(all_candles), max_cc_limit_per_req)
+        if current_limit_for_request <= 0: break
+
+        url = f"https://min-api.cryptocompare.com/data/v2/{cc_interval_endpoint}?fsym={fsym}&tsym={tsym}&limit={current_limit_for_request}&toTs={current_to_ts}&api_key={api_key}"
+        
         try:
-            response = requests.get(url, timeout=15)
+            response = requests.get(url, timeout=20) # Increased timeout for external API
             response.raise_for_status() 
             data = response.json()
 
-            if data.get("retCode") == 0 and 'list' in data.get('result', {}):
-                candles_batch = data['result']['list']
+            if data.get("Response") == "Success" and 'Data' in data.get('Data', {}):
+                candles_batch_raw = data['Data']['Data']
                 
-                if not candles_batch:
-                    print_colored(f"  [DEBUG] No more candles returned in batch {req_num+1} for {instId}. Breaking fetching.", Fore.YELLOW)
-                    break 
+                if not candles_batch_raw:
+                    consecutive_empty_responses += 1
+                    print_colored(f"  [DEBUG] CC: No candles in batch {req_count}. Consecutive empty: {consecutive_empty_responses}. Current toTs: {datetime.fromtimestamp(current_to_ts).strftime('%Y-%m-%d %H:%M')}", Fore.YELLOW)
+                    if consecutive_empty_responses >= 5: # If 5 consecutive empty batches, assume no more data
+                        print_colored(f"  [DEBUG] CC: Too many consecutive empty batches for {instId}. Breaking fetching.", Fore.RED)
+                        break 
+                    # If empty, and not yet too many consecutive, just jump back in time and try again
+                    current_to_ts -= (current_limit_for_request + 10) * cc_timeframe_multiplier * 60 # Jump back a bit more than requested limit
+                    time.sleep(0.5) # Longer sleep for empty batch
+                    continue # Continue to next iteration
+                else:
+                    consecutive_empty_responses = 0 # Reset counter if candles are found
 
-                formatted_batch = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candles_batch]
+                # Convert to desired format. CryptoCompare returns oldest first.
+                formatted_batch = [{"time": c['time'] * 1000, "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'], "volume": c['volumefrom']} for c in candles_batch_raw]
                 all_candles.extend(formatted_batch)
                 
-                end_time_ms = int(candles_batch[-1][0]) - 1 
+                # Update current_to_ts to the timestamp of the oldest candle in this batch - 1 second
+                # (CryptoCompare 'time' is in seconds, so oldest is first. We need its time-1s for next request)
+                current_to_ts = candles_batch_raw[0]['time'] - 1 
                 
-                remaining_to_fetch = limit - len(all_candles)
-                current_limit_for_request = min(remaining_to_fetch, 1000)
-
+                # Update progress bar for fetching
                 print_progress_bar(len(all_candles), limit, prefix=f'  {instId} Fetching', suffix='Candles', length=50, fill='=')
 
-                time.sleep(0.15) 
+                time.sleep(0.15) # Delay to avoid rate limits
             else:
-                print_colored(f"  API Error fetching historical batch {req_num+1} for {instId}: retCode {data.get('retCode')}, retMsg {data.get('retMsg', 'Unknown error')}. Breaking fetching.", Fore.RED)
+                print_colored(f"  API Error fetching historical batch {req_count} for {instId}: Response: {data.get('Response')}, Message: {data.get('Message', 'Unknown error')}. Breaking fetching.", Fore.RED)
                 break
         except requests.exceptions.RequestException as e:
-            print_colored(f"  Network/Request Error fetching historical batch {req_num+1} for {instId}: {e}. Retrying in 5s...", Fore.RED)
+            print_colored(f"  Network/Request Error fetching historical batch {req_count} for {instId}: {e}. Retrying in 5s...", Fore.RED)
             time.sleep(5) 
             continue 
         except Exception as e: 
-            print_colored(f"  Unknown Error fetching historical batch {req_num+1} for {instId}: {e}. Breaking fetching.", Fore.RED)
+            print_colored(f"  Unknown Error fetching historical batch {req_count} for {instId}: {e}. Breaking fetching.", Fore.RED)
             break
     
-    all_candles.sort(key=lambda x: x['time'])
-    
-    unique_candles = []
-    seen_timestamps = set()
-    for candle in all_candles:
-        if candle['time'] not in seen_timestamps:
-            unique_candles.append(candle)
-            seen_timestamps.add(candle['time'])
+    # Sort all collected candles by timestamp (oldest first) and remove duplicates
+    # Use a dict to ensure uniqueness is applied first, then sort by timestamp
+    all_candles_dict = {c['time']: c for c in all_candles} 
+    unique_and_sorted_candles = sorted(all_candles_dict.values(), key=lambda x: x['time'])
             
-    final_candles = unique_candles[-limit:] if len(unique_candles) > limit else unique_candles
+    # Take only the exact 'limit' number of candles (the most recent ones)
+    final_candles = unique_and_sorted_candles[-limit:] if len(unique_and_sorted_candles) > limit else unique_and_sorted_candles
 
     print_colored(f"  [DEBUG] Final fetched {len(final_candles)} candles for {instId}.", Fore.GREEN)
     return final_candles
@@ -454,7 +493,6 @@ async def run_autopilot_analysis(instrument_id):
     is_ai_thinking = True
     try:
         candle_data = pair_state["candle_data"]
-        # The 'open_position' here is directly from the global autopilot_trades list (live trades)
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
         relevant_trades = [t for t in autopilot_trades if t['instrumentId'] == instrument_id]
         local_brain = LocalAI(current_settings, relevant_trades)
@@ -504,40 +542,29 @@ def autopilot_worker():
             stop_event.wait(current_settings.get("analysis_interval_sec", 10)) # Uses settable interval
         else: time.sleep(1)
 
-# MODIFIED: check_realtime_position_management to correctly track run_up_percent and max_drawdown_percent
-#           Now takes a trade object (not just ID) and full current_candle_data
 async def check_realtime_position_management(trade_obj, current_candle_data, is_backtest=False):
     if not trade_obj: return
     
-    # Calculate PnL based on current candle's close price for general status
     pnl_at_close = calculate_pnl(trade_obj['entryPrice'], current_candle_data['close'], trade_obj.get('type'))
     
-    # --- Update Run-up and Max Drawdown ---
-    # For LONG trades: run_up is highest profit (using high), drawdown is lowest profit (using low)
     if trade_obj['type'] == 'LONG':
         pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
         pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'LONG')
         
-        # Update run_up_percent if current high PnL is greater
         if pnl_at_high > trade_obj.get('run_up_percent', 0.0):
             trade_obj['run_up_percent'] = pnl_at_high
-        # Update max_drawdown_percent if current low PnL is lower (more negative)
         if pnl_at_low < trade_obj.get('max_drawdown_percent', 0.0): 
             trade_obj['max_drawdown_percent'] = pnl_at_low
 
-    # For SHORT trades: run_up is highest profit (using low), drawdown is lowest profit (using high)
     elif trade_obj['type'] == 'SHORT':
-        pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT') # Short profit from lower price
-        pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'SHORT') # Short loss from higher price
+        pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT') 
+        pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'SHORT') 
         
-        # Update run_up_percent if current low PnL is greater (more profit for short)
         if pnl_at_low > trade_obj.get('run_up_percent', 0.0):
             trade_obj['run_up_percent'] = pnl_at_low
-        # Update max_drawdown_percent if current high PnL is lower (more negative)
         if pnl_at_high < trade_obj.get('max_drawdown_percent', 0.0): 
             trade_obj['max_drawdown_percent'] = pnl_at_high
 
-    # --- SL Logic ---
     sl_pct = current_settings.get('stop_loss_pct')
     sl_price = trade_obj['entryPrice'] * (1 - abs(sl_pct) / 100) if trade_obj['type'] == 'LONG' else \
                trade_obj['entryPrice'] * (1 + abs(sl_pct) / 100)
@@ -554,17 +581,14 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
             is_ai_thinking = True
             await analyze_and_close_trade(trade_obj, exit_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai.", is_backtest)
             is_ai_thinking = False
-        return # Trade closed, nothing more to do for this trade
+        return 
 
-    # --- Trailing TP Logic ---
     activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
     gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     
     current_tp_checkpoint_level = trade_obj.get("current_tp_checkpoint_level", 0.0)
 
-    # 1. Activation Phase
-    if current_tp_checkpoint_level == 0.0: # If trailing TP not yet activated
-        # Check if PnL using current candle's high/low hits activation
+    if current_tp_checkpoint_level == 0.0: 
         if trade_obj['type'] == 'LONG' and calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG') >= activation_pct:
             trade_obj['current_tp_checkpoint_level'] = activation_pct
             trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + activation_pct / 100)
@@ -572,12 +596,11 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
             trade_obj['current_tp_checkpoint_level'] = activation_pct
             trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - activation_pct / 100)
 
-    # 2. Update Checkpoint Phase
-    if trade_obj['current_tp_checkpoint_level'] > 0.0: # Only if trailing TP has been activated
+    if trade_obj['current_tp_checkpoint_level'] > 0.0: 
         if trade_obj['type'] == 'LONG':
             potential_new_checkpoint_pnl = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
             steps_passed = math.floor((potential_new_checkpoint_pnl - trade_obj['current_tp_checkpoint_level']) / gap_pct)
-        else: # trade_obj['type'] == 'SHORT'
+        else: 
             potential_new_checkpoint_pnl = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT')
             steps_passed = math.floor((potential_new_checkpoint_pnl - trade_obj['current_tp_checkpoint_level']) / gap_pct)
 
@@ -586,7 +609,6 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
             trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + trade_obj['current_tp_checkpoint_level'] / 100) if trade_obj['type'] == 'LONG' else \
                                                     trade_obj['entryPrice'] * (1 - trade_obj['current_tp_checkpoint_level'] / 100)
         
-        # 3. Exit Condition Phase
         tp_hit = False
         if trade_obj.get('trailing_stop_price') is not None:
             if trade_obj['type'] == 'LONG' and current_candle_data['low'] <= trade_obj['trailing_stop_price']:
@@ -599,7 +621,7 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
                 is_ai_thinking = True
                 await analyze_and_close_trade(trade_obj, exit_price, f"Trailing TP (checkpoint {trade_obj['current_tp_checkpoint_level']:.2f}%) tercapai.", is_backtest)
                 is_ai_thinking = False
-            return # Trade closed, nothing more to do for this trade
+            return 
     
     if not is_backtest:
         save_trades() 
@@ -620,11 +642,9 @@ def data_refresh_worker():
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     
                     if is_autopilot_running:
-                        # Pass the latest full candle data (data[-1]) to check_realtime_position_management
-                        # We need to find the open position object first
                         open_pos_for_management = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                        if open_pos_for_management: # Only call if there's an open position
-                            asyncio.run(check_realtime_position_management(open_pos_for_management, data[-1]))
+                        if open_pos_for_management:
+                            asyncio.run(check_realtime_position_management(open_pos_for_management, data[-1])) # Pass full candle data
                 time.sleep(0.5) 
         stop_event.wait(REFRESH_INTERVAL_SECONDS) 
 
@@ -661,25 +681,21 @@ def run_pair_backtest(pair_id, timeframe):
         current_historical_data_slice = historical_candles[:i+1] # All candles up to current point
         current_candle = historical_candles[i] # The current candle being processed
         
-        if len(current_historical_data_slice) < 100 + 3: # Need 100 for EMA100 + 3 for snapshot access (index -4)
+        if len(current_historical_data_slice) < 100 + 3: 
             print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
             continue
 
-        # Update market_state for LocalAI's analysis context. Important: use the full current_historical_data_slice
         market_state[pair_id] = {"candle_data": current_historical_data_slice, 
                                  "analysis": LocalAI(current_settings, initial_trades_for_learning + backtested_trades_for_pair_list).get_market_analysis(current_historical_data_slice)}
 
         trades_to_close_in_current_candle = []
-        # Iterate over a copy of open_backtest_trades to allow modification during iteration
         for open_bt_trade in list(open_backtest_trades): 
             # Pass the trade object and the current_candle data
             asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
             
-            # If the trade was closed by the above call (it calls analyze_and_close_trade), then add it to remove list
             if open_bt_trade['status'] == 'CLOSED':
                  trades_to_close_in_current_candle.append(open_bt_trade)
         
-        # Remove closed trades from open_backtest_trades and add to backtested_trades_for_pair_list
         for trade_to_remove in trades_to_close_in_current_candle:
             if trade_to_remove in open_backtest_trades: 
                 open_backtest_trades.remove(trade_to_remove)
@@ -711,8 +727,7 @@ def run_pair_backtest(pair_id, timeframe):
 
         print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
 
-    # Close any remaining open trades at the end of backtest period
-    for open_bt_trade in list(open_backtest_trades): # Iterate over a copy
+    for open_bt_trade in list(open_backtest_trades): 
         asyncio.run(analyze_and_close_trade(open_bt_trade, historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
         backtested_trades_for_pair_list.append(open_bt_trade)
 
@@ -758,25 +773,34 @@ def handle_settings_command(parts):
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''), 
+        'cc_key': ('cryptocompare_api_key', '') # NEW: For CryptoCompare API Key
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
         for key, (full_key, unit) in setting_map.items():
             display_key = key.capitalize().ljust(10)
-            print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
+            # Hide CC API key for security in display
+            display_value = current_settings[full_key]
+            if full_key == 'cryptocompare_api_key' and display_value != "YOUR_CRYPTOCOMPARE_API_KEY":
+                display_value = display_value[:4] + '...' + display_value[-4:] # Show only first/last 4 chars
+            print_colored(f"{display_key} ({key:<10}) : {display_value}{unit}", Fore.WHITE)
         print_colored(f"Backtest Limit  : {STATIC_BACKTEST_CANDLE_LIMIT} candles (Static)", Fore.WHITE)
         print(); return
     if len(parts) == 3 and parts[0] == '!set':
         key_short = parts[1].lower()
         if key_short not in setting_map: print_colored(f"Error: Kunci '{key_short}' tidak dikenal.", Fore.RED); return
         try:
-            value = float(parts[2])
-            if key_short == 'caution' and not (0.0 <= value <= 1.0):
-                print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
-            if key_short == 'delay' and value <= 0:
-                 print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
-            if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
-        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
+            value = parts[2] # Read value as string first
+            # Special handling for numeric settings
+            if key_short in ['sl', 'fee', 'delay', 'tp_act', 'tp_gap', 'caution']:
+                value = float(value)
+                if key_short == 'caution' and not (0.0 <= value <= 1.0):
+                    print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
+                if key_short == 'delay' and value <= 0:
+                    print_colored("Error: Nilai 'delay' harus lebih besar dari 0.", Fore.RED); return
+                if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
+        except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka untuk kunci ini.", Fore.RED); return
+        
         key_full, unit = setting_map[key_short]
         current_settings[key_full] = value; save_settings()
         print_colored(f"Pengaturan '{key_full}' berhasil diubah menjadi {value}{unit}.", Fore.GREEN, Style.BRIGHT); return
@@ -858,11 +882,9 @@ def main():
             user_input = input(prompt_text)
             command_parts = user_input.split()
             if not command_parts: 
-                # If command_parts is empty, user just pressed Enter.
-                # 'cmd' won't be defined here, so 'continue' is correct.
                 continue 
 
-            cmd = command_parts[0].lower() # This line will always execute if command_parts is not empty
+            cmd = command_parts[0].lower() 
 
             if cmd == '!exit': break
             elif cmd == '!help': display_help()
@@ -907,7 +929,7 @@ def main():
             elif cmd == '!history':
                 display_history()
             elif cmd in ['!settings', '!set']:
-                handle_settings_command(command_parts) # 'command_parts' is always defined here
+                handle_settings_command(command_parts) 
             else:
                 print_colored(f"Perintah '{user_input}' tidak dikenal. Ketik '!help'.", Fore.RED)
         except KeyboardInterrupt: break
