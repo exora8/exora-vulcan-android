@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from colorama import init, Fore, Style
 import asyncio
 import math
-import parts
 
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
@@ -59,7 +58,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # 'delay' already here
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN)
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -621,8 +620,11 @@ def data_refresh_worker():
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     
                     if is_autopilot_running:
-                        # Pass the latest full candle data (data[-1])
-                        asyncio.run(check_realtime_position_management(next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None), data[-1]))
+                        # Pass the latest full candle data (data[-1]) to check_realtime_position_management
+                        # We need to find the open position object first
+                        open_pos_for_management = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                        if open_pos_for_management: # Only call if there's an open position
+                            asyncio.run(check_realtime_position_management(open_pos_for_management, data[-1]))
                 time.sleep(0.5) 
         stop_event.wait(REFRESH_INTERVAL_SECONDS) 
 
@@ -663,20 +665,19 @@ def run_pair_backtest(pair_id, timeframe):
             print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
             continue
 
+        # Update market_state for LocalAI's analysis context. Important: use the full current_historical_data_slice
         market_state[pair_id] = {"candle_data": current_historical_data_slice, 
                                  "analysis": LocalAI(current_settings, initial_trades_for_learning + backtested_trades_for_pair_list).get_market_analysis(current_historical_data_slice)}
 
         trades_to_close_in_current_candle = []
         # Iterate over a copy of open_backtest_trades to allow modification during iteration
         for open_bt_trade in list(open_backtest_trades): 
-            # Check for SL/TP and update run_up/drawdown using the current_candle_data
-            # Pass the trade object itself and the current_candle data
+            # Pass the trade object and the current_candle data
             asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
             
             # If the trade was closed by the above call (it calls analyze_and_close_trade), then add it to remove list
             if open_bt_trade['status'] == 'CLOSED':
                  trades_to_close_in_current_candle.append(open_bt_trade)
-                 # No need for continue, as open_bt_trade has already been processed and its status changed
         
         # Remove closed trades from open_backtest_trades and add to backtested_trades_for_pair_list
         for trade_to_remove in trades_to_close_in_current_candle:
@@ -856,8 +857,13 @@ def main():
             prompt_text = f"[Command] > "
             user_input = input(prompt_text)
             command_parts = user_input.split()
-            if not command_parts: continue
-            cmd = command_parts[0].lower()
+            if not command_parts: 
+                # If command_parts is empty, user just pressed Enter.
+                # 'cmd' won't be defined here, so 'continue' is correct.
+                continue 
+
+            cmd = command_parts[0].lower() # This line will always execute if command_parts is not empty
+
             if cmd == '!exit': break
             elif cmd == '!help': display_help()
             elif cmd == '!start':
@@ -901,7 +907,7 @@ def main():
             elif cmd == '!history':
                 display_history()
             elif cmd in ['!settings', '!set']:
-                handle_settings_command(parts)
+                handle_settings_command(command_parts) # 'command_parts' is always defined here
             else:
                 print_colored(f"Perintah '{user_input}' tidak dikenal. Ketik '!help'.", Fore.RED)
         except KeyboardInterrupt: break
