@@ -7,13 +7,13 @@ from datetime import datetime, timedelta
 from colorama import init, Fore, Style
 import asyncio
 import math
+import sys # Untuk progress bar
 
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data untuk live
-BYBIT_MAX_LIMIT_CANDLES = 1000 # Maksimal candle per request dari Bybit API
+REFRESH_INTERVAL_SECONDS = 0.5
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -58,7 +58,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, bt_months)", Fore.GREEN) # Added bt_months
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, bt_dur)", Fore.GREEN) # Added bt_dur
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -71,8 +71,8 @@ def load_settings():
         "analysis_interval_sec": 10,
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
-        "caution_level": 0.5,             
-        "backtest_duration_months": 2, # NEW: Default backtest duration in months
+        "caution_level": 0.5,
+        "backtest_duration_months": 2, # NEW: Default backtest duration
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -89,7 +89,13 @@ def save_settings():
 def load_trades():
     global autopilot_trades
     if os.path.exists(TRADES_FILE):
-        with open(TRADES_FILE, 'r') as f: autopilot_trades = json.load(f)
+        try:
+            with open(TRADES_FILE, 'r') as f: autopilot_trades = json.load(f)
+        except json.JSONDecodeError:
+            print_colored(f"Error: Format JSON di '{TRADES_FILE}' tidak valid. Membuat file baru.", Fore.RED)
+            autopilot_trades = []
+            save_trades() # Save empty list to fix the file
+    # Ensure new fields for trailing TP checkpoint are initialized if loading old trades
     for trade in autopilot_trades:
         if 'current_tp_checkpoint_level' not in trade:
             trade['current_tp_checkpoint_level'] = 0.0
@@ -104,7 +110,7 @@ def display_history():
         status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
         trade_type = trade.get('type', 'LONG'); type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
         print_colored(f"--- Trade ID: {trade['id']} ---", Fore.CYAN)
-        print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {status}", status_color)
+        print_colored(f"  Pair: {trade['instrumentId']} | Tipe: {trade_type} | Status: {trade['status']}", status_color)
         print_colored(f"  Entry: {entry_time} @ {trade['entryPrice']:.4f}", Fore.WHITE)
         if trade['status'] == 'CLOSED':
             exit_time = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).strftime('%Y-%m-%d %H:%M')
@@ -119,6 +125,7 @@ def display_history():
                 print_colored(f"  Pelajaran (Snapshot):", Fore.MAGENTA)
                 print_colored(f"    Bias: {snapshot.get('bias', 'N/A')}", Fore.MAGENTA)
                 
+                # Display EMA spread information if available
                 if 'ema50' in snapshot and 'ema100' in snapshot:
                     ema50_val = snapshot.get('ema50', 0)
                     ema100_val = snapshot.get('ema100', 0)
@@ -128,6 +135,7 @@ def display_history():
                 print_colored(f"    Prev Candle: Close {snapshot.get('prev_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_prev'):.4f}", Fore.MAGENTA)
                 print_colored(f"    Current Candle: Close {snapshot.get('current_candle_close'):.4f} vs EMA9 {snapshot.get('ema9_current'):.4f}", Fore.MAGENTA)
                 
+                # Display 3 previous candles snapshot
                 if 'pre_entry_candle_solidity' in snapshot and 'pre_entry_candle_direction' in snapshot:
                     solidity_str = [f"{s:.2f}" for s in snapshot['pre_entry_candle_solidity']]
                     print_colored(f"    3 Prev Candles Solidity: {solidity_str}", Fore.MAGENTA)
@@ -135,93 +143,108 @@ def display_history():
         print()
 
 # --- FUNGSI API (BYBIT) ---
-def fetch_bybit_candle_data(instId, timeframe, limit=300):
+# NOTE: This function is primarily for live data fetching for analysis in data_refresh_worker.
+# For backtesting, we need to fetch a larger range, handled by _get_candles_for_range.
+def fetch_bybit_candle_data(instId, timeframe):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
     try:
-        url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={limit}"
+        url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit=300"
         response = requests.get(url, timeout=10); response.raise_for_status(); data = response.json()
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
+            if len(candle_list) < 100 + 3: 
+                return None
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
         else: return None
-    except Exception as e:
-        # print_colored(f"Error fetching data for {instId} ({timeframe}): {e}", Fore.RED) # Suppress for normal operation, keep for debug
-        return None
+    except Exception: return None
 
-# NEW: Function to fetch historical candle data in chunks
-def fetch_bybit_historical_candle_data(instId, timeframe, start_timestamp_ms, end_timestamp_ms):
+# NEW: Function to fetch historical candles iteratively for backtesting
+def _get_candles_for_range(instId, interval, start_ms, end_ms):
+    timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
+    bybit_interval = timeframe_map.get(interval, '60'); bybit_symbol = instId.replace('-', '')
     all_candles = []
-    current_end_time = end_timestamp_ms
-    timeframe_minutes = int(timeframe.replace('m', '').replace('H', '*60').replace('D', '*1440').replace('W', '*10080').replace('M', '*43200'))
-    
-    # Estimate total candles needed
-    total_duration_ms = end_timestamp_ms - start_timestamp_ms
-    estimated_total_candles = total_duration_ms // (timeframe_minutes * 60 * 1000)
-    
-    # Loop backwards to fetch data
-    while current_end_time > start_timestamp_ms:
-        # Bybit API fetches candles up to end_time - 1
-        # so we need to fetch candles before current_end_time to avoid gaps
-        url = f"{BYBIT_API_URL}/kline?category=spot&symbol={instId.replace('-', '')}&interval={timeframe.replace('m','').replace('H','60')}&limit={BYBIT_MAX_LIMIT_CANDLES}&endTime={current_end_time}"
-        
+    current_end_time = end_ms
+    max_limit = 1000 # Max candles per request for Bybit kline
+
+    # Convert interval to milliseconds for calculation
+    interval_ms_map = {'1m': 60 * 1000, '3m': 3 * 60 * 1000, '5m': 5 * 60 * 1000, '15m': 15 * 60 * 1000, '30m': 30 * 60 * 1000,
+                       '1H': 60 * 60 * 1000, '2H': 2 * 60 * 60 * 1000, '4H': 4 * 60 * 60 * 1000, '1D': 24 * 60 * 60 * 1000}
+    interval_duration_ms = interval_ms_map.get(interval, 60 * 60 * 1000) # Default 1H
+
+    while current_end_time > start_ms:
         try:
-            response = requests.get(url, timeout=15)
+            # Calculate start time for this specific request, ensuring it doesn't go below overall start_ms
+            request_start_time = max(start_ms, current_end_time - (max_limit * interval_duration_ms))
+
+            url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={max_limit}&end={current_end_time}&start={request_start_time}"
+            response = requests.get(url, timeout=10)
             response.raise_for_status()
             data = response.json()
 
             if data.get("retCode") == 0 and 'list' in data.get('result', {}):
-                candle_list_raw = data['result']['list']
-                
-                if not candle_list_raw: # No more data available
-                    break
+                candles_batch = data['result']['list']
+                if not candles_batch:
+                    break # No more data for this range
 
-                # Convert to our format and sort by oldest first
-                new_candles = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list_raw]
+                # Format and add to all_candles (list of lists, reverse to chronological later)
+                # Bybit returns latest first, we want oldest first for backtesting
+                formatted_candles = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candles_batch]
+                all_candles.extend(formatted_candles)
                 
-                # Filter out candles outside our desired range (older than start_timestamp_ms)
-                new_candles = [c for c in new_candles if c['time'] >= start_timestamp_ms]
-
-                # Add to the front of all_candles to maintain chronological order
-                all_candles = new_candles[::-1] + all_candles 
+                # Update current_end_time to the timestamp of the oldest candle fetched in this batch
+                current_end_time = int(candles_batch[-1][0]) 
                 
-                # Update current_end_time to be the timestamp of the oldest candle fetched + 1 (to avoid refetching)
-                # Or, simply to the oldest candle's timestamp
-                if new_candles:
-                    current_end_time = new_candles[-1]['time'] # The oldest candle's timestamp from this fetch
-                else:
-                    # If new_candles is empty after filtering, we've gone too far back or no more data
+                # If we requested 1000 and got less, it means we hit the start of available data for this symbol
+                if len(candles_batch) < max_limit:
                     break
                 
-                # Basic rate limit compliance
-                time.sleep(0.1) # Small delay between requests
-
+                time.sleep(0.1) # Respect rate limits
             else:
                 print_colored(f"Error fetching historical data for {instId}: {data.get('retMsg', 'Unknown error')}", Fore.RED)
                 break
+        except requests.exceptions.RequestException as e:
+            print_colored(f"Network error fetching historical data for {instId}: {e}", Fore.RED)
+            break
         except Exception as e:
-            print_colored(f"Exception fetching historical data for {instId}: {e}", Fore.RED)
+            print_colored(f"An unexpected error occurred while fetching historical data for {instId}: {e}", Fore.RED)
             break
             
-    # Remove any duplicate candles (can happen if timestamps overlap exactly on chunk boundaries)
-    seen_timestamps = set()
-    unique_candles = []
-    for candle in all_candles:
-        if candle['time'] not in seen_timestamps:
-            unique_candles.append(candle)
-            seen_timestamps.add(candle['time'])
+    # Sort candles by timestamp to ensure chronological order (oldest first)
+    all_candles.sort(key=lambda x: x['time'])
     
-    # Ensure sorted by time (oldest first)
-    unique_candles.sort(key=lambda x: x['time'])
+    # Filter to ensure they are strictly within the requested start_ms and end_ms
+    final_filtered_candles = [c for c in all_candles if start_ms <= c['time'] <= end_ms]
 
-    return unique_candles
+    return final_filtered_candles
 
 def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
     elif trade_type == 'SHORT': return ((entry_price - current_price) / entry_price) * 100
     return 0
 
-# --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot and learning) ---
+# NEW: Progress Bar utility
+def _print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, bar_length=50, fill='█'):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        bar_length  - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(bar_length * iteration // total)
+    bar = fill * filled_length + '-' * (bar_length - filled_length)
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+    sys.stdout.flush()
+    if iteration == total: 
+        sys.stdout.write('\n')
+
+# OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot and learning)
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
     
@@ -229,12 +252,16 @@ class LocalAI:
         if len(data) < period: return []
         closes = [d['close'] for d in data]
         ema_values = []
+        
         initial_sma = sum(closes[:period]) / period
         ema_values.append(initial_sma)
+        
         multiplier = 2 / (period + 1)
+        
         for i in range(period, len(closes)):
             ema = (closes[i] - ema_values[-1]) * multiplier + ema_values[-1]
             ema_values.append(ema)
+            
         return ema_values
     
     def analyze_candle_solidity(self, candle):
@@ -245,7 +272,7 @@ class LocalAI:
 
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100 + 3: 
-            return None 
+            return None
 
         ema9_series = self.calculate_ema(candle_data, 9)
         ema50_series = self.calculate_ema(candle_data, 50)
@@ -256,7 +283,7 @@ class LocalAI:
 
         analysis = {
             "ema9_current": ema9_series[-1],
-            "ema9_prev": ema9_series[-2], 
+            "ema9_prev": ema9_series[-2],
             "ema50": ema50_series[-1],
             "ema100": ema100_series[-1],
             "current_candle_close": candle_data[-1]['close'],
@@ -295,10 +322,11 @@ class LocalAI:
 
         caution_level = self.settings.get("caution_level", 0.5) 
 
-        BASE_SOL_TOL = 0.05      
-        MAX_ADD_SOL_TOL = 0.20   
-        BASE_EMA_TOL = 0.00005   
-        MAX_ADD_EMA_TOL = 0.0005 
+        BASE_SOL_TOL = 0.05
+        MAX_ADD_SOL_TOL = 0.20
+        
+        BASE_EMA_TOL = 0.00005
+        MAX_ADD_EMA_TOL = 0.0005
 
         actual_solidity_tolerance = BASE_SOL_TOL + (caution_level * MAX_ADD_SOL_TOL)
         actual_ema_spread_tolerance = BASE_EMA_TOL + (caution_level * MAX_ADD_EMA_TOL)
@@ -312,9 +340,11 @@ class LocalAI:
             if not past_snapshot or not all(key in past_snapshot for key in required_keys):
                 continue
 
+            # 1. Bias match: Trend must be the same (STILL EXACT)
             if current_bias != past_snapshot['bias']:
                 continue
 
+            # 1.1. EMA Spread match (Tolerance for trend strength)
             if current_bias != "RANGING":
                 current_spread = abs(current_ema50 - current_ema100)
                 past_ema50 = past_snapshot.get('ema50', 0)
@@ -326,6 +356,7 @@ class LocalAI:
             else: 
                 pass 
 
+            # 2. EMA9 Cross state match: Entry trigger conditions must be similar (STILL EXACT)
             past_prev_close = past_snapshot['prev_candle_close']
             past_curr_close = past_snapshot['current_candle_close']
             past_ema9_prev = past_snapshot['ema9_prev']
@@ -346,17 +377,20 @@ class LocalAI:
             if not ema9_cross_match:
                 continue
             
+            # 3. Relaxed 3-Candle Direction match: Last direction must match AND at least 2 out of 3 overall directions must match
             past_pre_direction = past_snapshot['pre_entry_candle_direction']
             
             if len(current_pre_direction) < 3 or len(past_pre_direction) < 3:
                 continue
 
             last_direction_matches = (current_pre_direction[-1] == past_pre_direction[-1])
+            
             matching_directions_count = sum(1 for x, y in zip(current_pre_direction, past_pre_direction) if x == y)
 
             if not (last_direction_matches and matching_directions_count >= 2):
                 continue
 
+            # 4. Relaxed 3-Candle Solidity match: At least 2 out of 3 solidities must be within actual_solidity_tolerance
             past_pre_solidity = past_snapshot['pre_entry_candle_solidity']
             
             if len(current_pre_solidity) < 3 or len(past_pre_solidity) < 3:
@@ -399,173 +433,219 @@ class LocalAI:
             
             if potential_trade_type == 'LONG':
                 return {"action": "BUY", "reason": "BULLISH TREND: Candle retrace dan close di atas EMA9.", "snapshot": analysis}
-            else: 
+            else: # potential_trade_type == 'SHORT'
                 return {"action": "SELL", "reason": "BEARISH TREND: Candle retrace dan close di bawah EMA9.", "snapshot": analysis}
         
         return {"action": "HOLD", "reason": f"Menunggu setup Exora Vulcan Sniper. Bias: {analysis['bias']}."}
 
-# NEW: Backtest Manager Class
-class BacktestManager:
-    def __init__(self, settings, instrument_id, timeframe):
-        self.settings = settings
-        self.instrument_id = instrument_id
-        self.timeframe = timeframe
-        self.open_positions = []
-        self.closed_positions = []
-        self.candle_history_for_analysis = [] # To store candles needed for LocalAI's analysis (min 100+3)
+# NEW: Helper to process an open trade within a backtest candle
+def _process_open_trade_in_backtest(trade, current_candle, settings, autopilot_trades_ref):
+    # This simulates SL/TP hits WITHIN a single candle
+    entry_price = trade['entryPrice']
+    trade_type = trade.get('type', 'LONG')
+    
+    sl_pct = settings.get('stop_loss_pct')
+    activation_pct = settings.get("trailing_tp_activation_pct", 0.30)
+    gap_pct = settings.get("trailing_tp_gap_pct", 0.05)
+    fee_pct = settings.get('fee_pct', 0.1)
 
-    # Simplified check for backtest context
-    def check_position_status_backtest(self, open_position, current_candle):
-        """Checks if an open position is closed by SL/TP/Trailing TP within the current candle's range."""
+    # Calculate current PnL based on the candle's close for display/trailing purposes
+    current_pnl = calculate_pnl(entry_price, current_candle['close'], trade_type)
+
+    # Update run_up_percent and max_drawdown_percent
+    if current_pnl > trade.get('run_up_percent', 0.0):
+        trade['run_up_percent'] = current_pnl
+    if current_pnl < trade.get('max_drawdown_percent', 0.0):
+        trade['max_drawdown_percent'] = current_pnl
+
+    # 1. Check Stop Loss (prioritize SL hit)
+    sl_price = 0
+    if trade_type == 'LONG':
+        sl_price = entry_price * (1 - abs(sl_pct) / 100)
+        # Check if low of current candle hit SL
+        if current_candle['low'] <= sl_price:
+            analyze_and_close_trade_sync(trade, sl_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai (Backtest).", autopilot_trades_ref, settings)
+            return True # Trade closed
+    elif trade_type == 'SHORT':
+        sl_price = entry_price * (1 + abs(sl_pct) / 100)
+        # Check if high of current candle hit SL
+        if current_candle['high'] >= sl_price:
+            analyze_and_close_trade_sync(trade, sl_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai (Backtest).", autopilot_trades_ref, settings)
+            return True # Trade closed
+
+    # 2. Check Trailing Take Profit (if SL not hit)
+    current_tp_checkpoint_level = trade.get("current_tp_checkpoint_level", 0.0)
+
+    # Activation Phase
+    if current_tp_checkpoint_level == 0.0 and current_pnl >= activation_pct:
+        trade['current_tp_checkpoint_level'] = activation_pct
+        trade['trailing_stop_price'] = entry_price * (1 + activation_pct / 100) if trade_type == 'LONG' else \
+                                       entry_price * (1 - activation_pct / 100)
+
+    # Update Checkpoint Phase
+    if current_tp_checkpoint_level > 0.0:
+        steps_passed = math.floor((current_pnl - current_tp_checkpoint_level) / gap_pct)
         
-        pnl_at_open = calculate_pnl(open_position['entryPrice'], current_candle['open'], open_position.get('type'))
-        pnl_at_close = calculate_pnl(open_position['entryPrice'], current_candle['close'], open_position.get('type'))
-        pnl_at_high = calculate_pnl(open_position['entryPrice'], current_candle['high'], open_position.get('type'))
-        pnl_at_low = calculate_pnl(open_position['entryPrice'], current_candle['low'], open_position.get('type'))
+        if steps_passed > 0:
+            trade['current_tp_checkpoint_level'] += steps_passed * gap_pct
+            trade['trailing_stop_price'] = entry_price * (1 + trade['current_tp_checkpoint_level'] / 100) if trade_type == 'LONG' else \
+                                           entry_price * (1 - trade['current_tp_checkpoint_level'] / 100)
         
-        # Update run_up_percent and max_drawdown_percent for backtest
-        if pnl_at_high > open_position.get('run_up_percent', 0.0) and open_position.get('type') == 'LONG':
-            open_position['run_up_percent'] = pnl_at_high
-        elif pnl_at_low > open_position.get('run_up_percent', 0.0) and open_position.get('type') == 'SHORT':
-            open_position['run_up_percent'] = pnl_at_low
+        # Exit Condition Phase
+        if trade_type == 'LONG' and current_candle['close'] <= trade.get('trailing_stop_price', 0):
+             # Check if price hit or went below trailing_stop_price
+            analyze_and_close_trade_sync(trade, trade['trailing_stop_price'], f"Trailing TP (checkpoint {trade['current_tp_checkpoint_level']:.2f}%) tercapai (Backtest).", autopilot_trades_ref, settings)
+            return True # Trade closed
+        elif trade_type == 'SHORT' and current_candle['close'] >= trade.get('trailing_stop_price', float('inf')):
+             # Check if price hit or went above trailing_stop_price
+            analyze_and_close_trade_sync(trade, trade['trailing_stop_price'], f"Trailing TP (checkpoint {trade['current_tp_checkpoint_level']:.2f}%) tercapai (Backtest).", autopilot_trades_ref, settings)
+            return True # Trade closed
+    
+    return False # Trade not closed
 
-        if pnl_at_low < open_position.get('max_drawdown_percent', 0.0) and open_position.get('type') == 'LONG':
-            open_position['max_drawdown_percent'] = pnl_at_low
-        elif pnl_at_high < open_position.get('max_drawdown_percent', 0.0) and open_position.get('type') == 'SHORT':
-            open_position['max_drawdown_percent'] = pnl_at_high
+# NEW: Synchronous version of analyze_and_close_trade for backtesting
+def analyze_and_close_trade_sync(trade, exit_price, close_trigger_reason, autopilot_trades_ref, settings):
+    pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
+    fee = settings.get('fee_pct', 0.1)
+    is_profit = pnl > fee
+    
+    # In backtest, we don't have a live market_state snapshot from external source.
+    # We can pass dummy data or simply omit the exit_snapshot for backtest closures if not critical for future learning.
+    # For now, let's omit the exit_snapshot, as its primary use is for manual review of live closed trades.
+    # Or, we could pass the candle_data_buffer to LocalAI to generate a valid snapshot for backtest.
+    # For simplicity, we won't generate exit_snapshot for backtest closed trades, to keep it minimal.
+    
+    trade.update({
+        'status': 'CLOSED', 
+        'exitPrice': exit_price, 
+        'exitTimestamp': datetime.fromtimestamp(trade['time'] / 1000).isoformat() if 'time' in trade else datetime.now().isoformat(), # Use candle time if available
+        'pl_percent': pnl
+        # entry_snapshot is kept if trade is loss, otherwise deleted. Handled at end of backtest.
+    })
+    
+    # Mark trade in the reference list as closed.
+    # In this backtesting setup, we modify the existing trade object reference in autopilot_trades_ref directly.
+    # No need to remove and re-add.
+
+# NEW: Main backtesting function for a single pair
+def perform_backtest_for_pair(instrument_id, timeframe, duration_months):
+    global autopilot_trades # Access global list to add new trades
+
+    end_datetime = datetime.now()
+    start_datetime = end_datetime - timedelta(days=duration_months * 30) # Approximate months to days
+    
+    start_ms = int(start_datetime.timestamp() * 1000)
+    end_ms = int(end_datetime.timestamp() * 1000)
+
+    print_colored(f"  Fetching historical data for {instrument_id} ({timeframe}) from {start_datetime.strftime('%Y-%m-%d')} to {end_datetime.strftime('%Y-%m-%d')}...", Fore.CYAN)
+    historical_candles = _get_candles_for_range(instrument_id, timeframe, start_ms, end_ms)
+    
+    if not historical_candles:
+        print_colored(f"  Tidak ada data historis yang cukup untuk {instrument_id}.", Fore.YELLOW)
+        return
+
+    print_colored(f"  Mulai backtest untuk {instrument_id} ({len(historical_candles)} candles)...", Fore.CYAN)
+
+    backtest_local_brain = LocalAI(current_settings, []) # Start with empty past trades for backtest brain
+    backtest_open_position = None
+    candle_data_buffer = [] # Buffer to simulate market_state's candle_data for analysis
+    
+    # Store initial count of trades to only save new ones (or modified ones)
+    initial_trades_count = len([t for t in autopilot_trades if t['instrumentId'] == instrument_id])
+    
+    # Temporarily store new/modified trades from this backtest to append later
+    backtest_trades_results = []
+    
+    min_candles_for_analysis = 100 + 3 # Requirement for LocalAI.get_market_analysis
+
+    for i, candle in enumerate(historical_candles):
+        _print_progress_bar(i + 1, len(historical_candles), prefix=f'    Progress {instrument_id}:', suffix=f'({i+1}/{len(historical_candles)} candles)', bar_length=30)
         
-        sl_pct = self.settings.get('stop_loss_pct')
-        activation_pct = self.settings.get("trailing_tp_activation_pct", 0.30)
-        gap_pct = self.settings.get("trailing_tp_gap_pct", 0.05)
+        candle_data_buffer.append(candle)
+        if len(candle_data_buffer) > 300: # Keep buffer size reasonable, e.g., max 300 candles for EMA calc
+            candle_data_buffer.pop(0) # Remove oldest candle
 
-        # Calculate target prices
-        sl_price_target = open_position['entryPrice'] * (1 - sl_pct / 100) if open_position['type'] == 'LONG' else \
-                          open_position['entryPrice'] * (1 + sl_pct / 100)
+        if len(candle_data_buffer) < min_candles_for_analysis:
+            continue # Not enough data for initial analysis
 
-        # Check SL (primary exit if hit within candle)
-        if open_position['type'] == 'LONG' and current_candle['low'] <= sl_price_target:
-            return True, sl_price_target, f"Backtest SL @ {-abs(sl_pct):.2f}% tercapai."
-        elif open_position['type'] == 'SHORT' and current_candle['high'] >= sl_price_target:
-            return True, sl_price_target, f"Backtest SL @ {-abs(sl_pct):.2f}% tercapai."
+        # Use a shallow copy of autopilot_trades to simulate the "current" past_trades for the local_brain
+        # This allows the backtest_local_brain to learn from trades closed within this very backtest.
+        trades_for_brain = [t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'CLOSED'] + backtest_trades_results
 
-        # Trailing TP Logic (simplified for backtest to just check if checkpoint is hit/crossed then back off)
-        current_pnl_realtime = calculate_pnl(open_position['entryPrice'], current_candle['close'], open_position.get('type'))
-        current_tp_checkpoint_level = open_position.get("current_tp_checkpoint_level", 0.0)
+        # Update the brain's past_trades with the latest closed trades
+        backtest_local_brain.past_trades = trades_for_brain
 
-        if current_tp_checkpoint_level == 0.0 and current_pnl_realtime >= activation_pct:
-            open_position['current_tp_checkpoint_level'] = activation_pct
-            open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + activation_pct / 100) if open_position['type'] == 'LONG' else \
-                                                    open_position['entryPrice'] * (1 - activation_pct / 100)
 
-        if current_tp_checkpoint_level > 0.0:
-            steps_passed = math.floor((current_pnl_realtime - current_tp_checkpoint_level) / gap_pct)
-            if steps_passed > 0:
-                open_position['current_tp_checkpoint_level'] += steps_passed * gap_pct
-                open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + open_position['current_tp_checkpoint_level'] / 100) if open_position['type'] == 'LONG' else \
-                                                        open_position['entryPrice'] * (1 - open_position['current_tp_checkpoint_level'] / 100)
-            
-            # Check Trailing TP hit (close price falls back to or crosses trailing_stop_price)
-            if open_position['type'] == 'LONG' and current_candle['close'] <= open_position.get('trailing_stop_price', 0):
-                return True, open_position["trailing_stop_price"], f"Backtest Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai."
-            elif open_position['type'] == 'SHORT' and current_candle['close'] >= open_position.get('trailing_stop_price', float('inf')):
-                return True, open_position["trailing_stop_price"], f"Backtest Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai."
+        if backtest_open_position:
+            # Pass autopilot_trades directly so _process_open_trade_in_backtest can modify the global list
+            is_closed = _process_open_trade_in_backtest(backtest_open_position, candle, current_settings, autopilot_trades)
+            if is_closed:
+                # Add a unique identifier for this particular trade closure snapshot
+                backtest_open_position['time'] = candle['time'] # Store candle time of closure for history display
+                backtest_trades_results.append(backtest_open_position) # Add to results
+                backtest_open_position = None # Reset open position
         
-        return False, None, None
+        if not backtest_open_position: # Only look for new entry if no position is open
+            analysis = backtest_local_brain.get_market_analysis(candle_data_buffer)
+            if analysis:
+                decision = backtest_local_brain.get_decision(candle_data_buffer, None, instrument_id)
+                action = decision.get('action', 'HOLD').upper()
+                reason = decision.get('reason', 'No reason provided.')
+                
+                if action in ["BUY", "SELL"]:
+                    trade_type = "LONG" if action == "BUY" else "SHORT"
+                    new_trade = {
+                        "id": int(candle['time']), # Use candle time as ID for backtest uniqueness
+                        "instrumentId": instrument_id,
+                        "type": trade_type,
+                        "entryTimestamp": datetime.fromtimestamp(candle['time'] / 1000).isoformat(),
+                        "entryPrice": candle['close'],
+                        "entryReason": reason,
+                        "status": 'OPEN',
+                        "entry_snapshot": decision.get("snapshot"),
+                        "run_up_percent": 0.0,
+                        "max_drawdown_percent": 0.0,
+                        "trailing_stop_price": None,
+                        "current_tp_checkpoint_level": 0.0
+                    }
+                    backtest_open_position = new_trade # Set this as the open position for the backtest
 
-    def run_backtest(self, historical_candles):
-        if not historical_candles:
-            print_colored(f"No historical data for {self.instrument_id} ({self.timeframe}). Skipping backtest.", Fore.YELLOW)
-            return []
 
-        print_colored(f"Starting backtest for {self.instrument_id} ({self.timeframe})...", Fore.CYAN)
+    # After loop, if there's any open position, close it with current_candle['close']
+    if backtest_open_position:
+        analyze_and_close_trade_sync(backtest_open_position, historical_candles[-1]['close'], "Closed at end of backtest (Backtest).", autopilot_trades, current_settings)
+        backtest_open_position['time'] = historical_candles[-1]['time']
+        backtest_trades_results.append(backtest_open_position)
+
+    # Add all new/modified trades from this backtest to the global autopilot_trades list
+    # Filter out initial trades to avoid duplicates from existing trades.json
+    existing_pair_trades = {t['id'] for t in autopilot_trades if t['instrumentId'] == instrument_id}
+    newly_added_count = 0
+    for trade_result in backtest_trades_results:
+        # Before adding, ensure entry_snapshot is deleted if profitable, as per live logic
+        if trade_result.get('pl_percent', 0) > current_settings.get('fee_pct', 0.1) and 'entry_snapshot' in trade_result:
+            del trade_result['entry_snapshot']
         
-        # We need at least 100+3 candles for initial analysis
-        required_initial_candles = 100 + 3 # For EMA100 + 3 pre-entry candles
-        if len(historical_candles) < required_initial_candles:
-            print_colored(f"Not enough historical data for {self.instrument_id} ({self.timeframe}) to perform full analysis ({len(historical_candles)} candles). Needs at least {required_initial_candles}.", Fore.YELLOW)
-            return []
+        # Only add if it's not already in the global list (e.g., if trade ID based on timestamp might clash)
+        if trade_result['id'] not in existing_pair_trades:
+            autopilot_trades.append(trade_result)
+            newly_added_count += 1
+            
+    # Sort the global trades list by timestamp after adding
+    autopilot_trades.sort(key=lambda t: t.get('entryTimestamp', '0').replace('Z', ''))
+    
+    save_trades()
+    print_colored(f"  Backtest untuk {instrument_id} selesai. {newly_added_count} trade baru ditambahkan. Total trades untuk {instrument_id}: {len([t for t in autopilot_trades if t['instrumentId'] == instrument_id])}", Fore.GREEN)
 
-        for i, candle in enumerate(historical_candles):
-            # Accumulate candle history for LocalAI.get_market_analysis
-            self.candle_history_for_analysis.append(candle)
-
-            # Only start processing after enough candles for initial EMA calculations
-            if len(self.candle_history_for_analysis) < required_initial_candles:
-                continue
-
-            # LocalAI needs historical *closed* trades for learning.
-            # Here, self.closed_positions serves as the 'past_trades' for LocalAI.
-            local_brain = LocalAI(self.settings, self.closed_positions) 
-            
-            # Check for new entry opportunities
-            # For backtesting, we consider the trade based on the current candle's data
-            decision = local_brain.get_decision(self.candle_history_for_analysis, len(self.open_positions) > 0, self.instrument_id)
-            action = decision.get('action', 'HOLD').upper()
-            
-            # --- Check and Close Existing Positions First ---
-            trades_to_remove = []
-            for open_pos in self.open_positions:
-                is_closed, close_price, reason = self.check_position_status_backtest(open_pos, candle)
-                if is_closed:
-                    open_pos.update({
-                        'status': 'CLOSED', 
-                        'exitPrice': close_price, 
-                        'exitTimestamp': datetime.fromtimestamp(candle['time']/1000).isoformat(), # Use candle time for exit timestamp
-                        'pl_percent': calculate_pnl(open_pos['entryPrice'], close_price, open_pos['type'])
-                    })
-                    if open_pos['pl_percent'] >= self.settings.get('fee_pct', 0.1) and 'entry_snapshot' in open_pos:
-                        del open_pos['entry_snapshot'] # Remove snapshot if profitable
-                    self.closed_positions.append(open_pos)
-                    trades_to_remove.append(open_pos)
-            
-            for trade_removed in trades_to_remove:
-                self.open_positions.remove(trade_removed)
-            
-            # --- Then Check for New Entry if No Open Position and Signal Exists ---
-            if action in ["BUY", "SELL"] and not self.open_positions:
-                trade_type = "LONG" if action == "BUY" else "SHORT"
-                # Entry price is the close of the current candle for backtest
-                new_trade = {
-                    "id": int(candle['time']), # Use candle timestamp as ID for unique ID in backtest
-                    "instrumentId": self.instrument_id,
-                    "type": trade_type,
-                    "entryTimestamp": datetime.fromtimestamp(candle['time']/1000).isoformat(), # Use candle time
-                    "entryPrice": candle['close'], 
-                    "entryReason": decision.get("reason"),
-                    "status": 'OPEN',
-                    "entry_snapshot": decision.get("snapshot"), 
-                    "run_up_percent": 0.0,
-                    "max_drawdown_percent": 0.0,
-                    "trailing_stop_price": None, 
-                    "current_tp_checkpoint_level": 0.0 
-                }
-                self.open_positions.append(new_trade)
-            
-            # Periodically print progress
-            if (i + 1) % 1000 == 0 or (i + 1) == len(historical_candles):
-                print_colored(f"  Processed {i + 1}/{len(historical_candles)} candles for {self.instrument_id}. Open: {len(self.open_positions)}, Closed: {len(self.closed_positions)}.", Fore.BLUE)
-        
-        # After loop, close any remaining open positions (as if at end of backtest period)
-        for open_pos in self.open_positions:
-            open_pos.update({
-                'status': 'CLOSED', 
-                'exitPrice': historical_candles[-1]['close'], # Close at last candle's close
-                'exitTimestamp': datetime.fromtimestamp(historical_candles[-1]['time']/1000).isoformat(),
-                'pl_percent': calculate_pnl(open_pos['entryPrice'], historical_candles[-1]['close'], open_pos['type'])
-            })
-            if open_pos['pl_percent'] >= self.settings.get('fee_pct', 0.1) and 'entry_snapshot' in open_pos:
-                del open_pos['entry_snapshot']
-            self.closed_positions.append(open_pos)
-
-        print_colored(f"Backtest for {self.instrument_id} completed. Total trades: {len(self.closed_positions)}.", Fore.GREEN)
-        return self.closed_positions
 
 # --- LOGIKA TRADING UTAMA ---
+# Existing async analyze_and_close_trade for live trading
 async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     pnl = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
     fee = current_settings.get('fee_pct', 0.1)
     is_profit = pnl > fee
-    exit_snapshot = None # Only create exit snapshot for live trades if needed for learning
+    
+    exit_snapshot = None
     if trade['instrumentId'] in market_state and market_state[trade['instrumentId']].get('candle_data'):
         exit_snapshot = LocalAI(current_settings, []).get_market_analysis(market_state[trade['instrumentId']]['candle_data'])
     
@@ -577,77 +657,6 @@ async def analyze_and_close_trade(trade, exit_price, close_trigger_reason):
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL: {pnl:.2f}% | Entry: {trade['entryPrice']:.4f} | Exit: {exit_price:.4f} | Trigger: {close_trigger_reason}"
     send_termux_notification(notif_title, notif_content)
-
-# Refactored for re-use in both live and backtest
-async def check_realtime_position_management(instrument_id, latest_price, is_live=True, candle_ohlc=None):
-    open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
-    if not open_position: return
-    
-    current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
-    
-    # Update run_up_percent and max_drawdown_percent
-    if current_pnl > open_position.get('run_up_percent', 0.0):
-        open_position['run_up_percent'] = current_pnl
-    if current_pnl < open_position.get('max_drawdown_percent', 0.0):
-        open_position['max_drawdown_percent'] = current_pnl
-        
-    sl_pct = current_settings.get('stop_loss_pct')
-    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
-    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
-    
-    # Determine which price to use for SL/TP check
-    price_for_sl_tp_check = latest_price
-    if not is_live and candle_ohlc: # If backtesting, use candle's low/high for more realistic checks
-        # For backtest, we need to compare against high/low for immediate hits, then close for trailing
-        # This is simplified: if any part of the candle crosses SL, it's hit. Same for TP.
-        # Trailing TP uses close price.
-        pass # The actual backtest logic is in BacktestManager.check_position_status_backtest
-
-    # SL Logic 
-    sl_price_target = open_position['entryPrice'] * (1 - sl_pct / 100) if open_position['type'] == 'LONG' else \
-                      open_position['entryPrice'] * (1 + sl_pct / 100)
-    
-    # For live: check against latest_price
-    if open_position['type'] == 'LONG' and latest_price <= sl_price_target:
-        if not is_ai_thinking:
-            is_ai_thinking = True
-            await analyze_and_close_trade(open_position, latest_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai.")
-            is_ai_thinking = False
-        return
-    elif open_position['type'] == 'SHORT' and latest_price >= sl_price_target:
-        if not is_ai_thinking:
-            is_ai_thinking = True
-            await analyze_and_close_trade(open_position, latest_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai.")
-            is_ai_thinking = False
-        return
-
-    # Trailing TP Logic (real-time for live trading)
-    current_tp_checkpoint_level = open_position.get("current_tp_checkpoint_level", 0.0)
-
-    if current_tp_checkpoint_level == 0.0 and current_pnl >= activation_pct:
-        open_position['current_tp_checkpoint_level'] = activation_pct
-        open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + activation_pct / 100) if open_position['type'] == 'LONG' else \
-                                                open_position['entryPrice'] * (1 - activation_pct / 100)
-
-    if current_tp_checkpoint_level > 0.0:
-        steps_passed = math.floor((current_pnl - current_tp_checkpoint_level) / gap_pct)
-        if steps_passed > 0:
-            open_position['current_tp_checkpoint_level'] += steps_passed * gap_pct
-            open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + open_position['current_tp_checkpoint_level'] / 100) if open_position['type'] == 'LONG' else \
-                                                    open_position['entryPrice'] * (1 - open_position['current_tp_checkpoint_level'] / 100)
-        
-        if open_position['type'] == 'LONG' and latest_price <= open_position.get('trailing_stop_price', 0):
-            if not is_ai_thinking:
-                is_ai_thinking = True
-                await analyze_and_close_trade(open_position, latest_price, f"Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai.")
-                is_ai_thinking = False
-        elif open_position['type'] == 'SHORT' and latest_price >= open_position.get('trailing_stop_price', float('inf')):
-             if not is_ai_thinking:
-                is_ai_thinking = True
-                await analyze_and_close_trade(open_position, latest_price, f"Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai.")
-                is_ai_thinking = False
-    
-    save_trades()
 
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
@@ -667,7 +676,7 @@ async def run_autopilot_analysis(instrument_id):
         decision = local_brain.get_decision(candle_data, open_position, instrument_id)
         
         action = decision.get('action', 'HOLD').upper(); reason = decision.get('reason', 'No reason provided.')
-        current_price = candle_data[-1]['close'] # Entry price is the close of the trigger candle
+        current_price = candle_data[-1]['close']
         
         if action in ["BUY", "SELL"] and not open_position:
             trade_type = "LONG" if action == "BUY" else "SHORT"
@@ -679,11 +688,11 @@ async def run_autopilot_analysis(instrument_id):
                 "entryPrice": current_price,
                 "entryReason": reason,
                 "status": 'OPEN',
-                "entry_snapshot": decision.get("snapshot"), 
+                "entry_snapshot": decision.get("snapshot"),
                 "run_up_percent": 0.0,
                 "max_drawdown_percent": 0.0,
-                "trailing_stop_price": None, 
-                "current_tp_checkpoint_level": 0.0 
+                "trailing_stop_price": None,
+                "current_tp_checkpoint_level": 0.0
             }
             autopilot_trades.append(new_trade)
             save_trades()
@@ -705,9 +714,61 @@ def autopilot_worker():
             if watched_pairs:
                 for pair_id in watched_pairs:
                     asyncio.run(run_autopilot_analysis(pair_id))
-                    time.sleep(0.1) 
+                    time.sleep(0.1)
             stop_event.wait(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
+
+async def check_realtime_position_management(instrument_id, latest_price):
+    open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
+    if not open_position: return
+    
+    current_pnl = calculate_pnl(open_position['entryPrice'], latest_price, open_position.get('type'))
+    
+    if current_pnl > open_position.get('run_up_percent', 0.0):
+        open_position['run_up_percent'] = current_pnl
+    if current_pnl < open_position.get('max_drawdown_percent', 0.0):
+        open_position['max_drawdown_percent'] = current_pnl
+        
+    sl_pct = current_settings.get('stop_loss_pct')
+    if sl_pct is not None and current_pnl <= -abs(sl_pct):
+        global is_ai_thinking
+        if not is_ai_thinking:
+            is_ai_thinking = True
+            await analyze_and_close_trade(open_position, latest_price, f"Stop Loss @ {-abs(sl_pct):.2f}% tercapai.")
+            is_ai_thinking = False
+        return
+
+    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
+    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+    
+    current_tp_checkpoint_level = open_position.get("current_tp_checkpoint_level", 0.0)
+
+    if current_tp_checkpoint_level == 0.0 and current_pnl >= activation_pct:
+        open_position['current_tp_checkpoint_level'] = activation_pct
+        open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + activation_pct / 100) if open_position['type'] == 'LONG' else \
+                                                open_position['entryPrice'] * (1 - activation_pct / 100)
+
+    if current_tp_checkpoint_level > 0.0:
+        steps_passed = math.floor((current_pnl - current_tp_checkpoint_level) / gap_pct)
+        
+        if steps_passed > 0:
+            open_position['current_tp_checkpoint_level'] += steps_passed * gap_pct
+            open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + open_position['current_tp_checkpoint_level'] / 100) if open_position['type'] == 'LONG' else \
+                                                    open_position['entryPrice'] * (1 - open_position['current_tp_checkpoint_level'] / 100)
+        
+        if open_position['type'] == 'LONG' and latest_price <= open_position.get('trailing_stop_price', 0):
+            if not is_ai_thinking:
+                is_ai_thinking = True
+                await analyze_and_close_trade(open_position, open_position['trailing_stop_price'], f"Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai.")
+                is_ai_thinking = False
+        elif open_position['type'] == 'SHORT' and latest_price >= open_position.get('trailing_stop_price', float('inf')):
+             if not is_ai_thinking:
+                is_ai_thinking = True
+                await analyze_and_close_trade(open_position, open_position['trailing_stop_price'], f"Trailing TP (checkpoint {open_position['current_tp_checkpoint_level']:.2f}%) tercapai.")
+                is_ai_thinking = False
+    
+    save_trades()
+
 
 def data_refresh_worker():
     global market_state
@@ -720,14 +781,14 @@ def data_refresh_worker():
                     if len(data) >= 100 + 3: 
                         analysis = LocalAI(current_settings, []).get_market_analysis(data)
                     else:
-                        analysis = None 
+                        analysis = None
 
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     
                     if is_autopilot_running:
                         latest_price = data[-1]['close']
                         asyncio.run(check_realtime_position_management(pair_id, latest_price))
-                time.sleep(0.5) 
+                time.sleep(0.5)
         stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
 def handle_settings_command(parts):
@@ -738,7 +799,7 @@ def handle_settings_command(parts):
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''),
-        'bt_months': ('backtest_duration_months', ' bulan') # NEW
+        'bt_dur': ('backtest_duration_months', ' bulan') # NEW: for backtest duration
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
@@ -753,8 +814,6 @@ def handle_settings_command(parts):
             value = float(parts[2])
             if key_short == 'caution' and not (0.0 <= value <= 1.0):
                 print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
-            if key_short == 'bt_months' and not (1 <= value <= 120): # Backtest 1 month to 10 years (120 months)
-                print_colored("Error: Nilai 'bt_months' harus antara 1 dan 120 bulan.", Fore.RED); return
             if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
@@ -765,7 +824,7 @@ def handle_settings_command(parts):
 def run_dashboard_mode():
     try:
         while True:
-            print("\033[H\033[J", end="") # Clear console
+            print("\033[H\033[J", end="")
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
             print_colored(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s", Fore.WHITE)
             print_colored("="*60, Fore.CYAN)
@@ -785,7 +844,7 @@ def run_dashboard_mode():
                     print_colored("  Status    : ", end=''); print_colored("POSITION OPEN", Fore.YELLOW, Style.BRIGHT)
                     print_colored("  Tipe      : ", end=''); print_colored(f"{open_pos.get('type')}", type_color, Style.BRIGHT)
                     print_colored("  Entry     : ", end=''); print_colored(f"{open_pos['entryPrice']:.4f}", Fore.WHITE)
-                    print_colored("  Current   : ", end=''); print_colored(f"{price:.4f}", Fore.WHITE) # Display current price
+                    print_colored("  Current   : ", end=''); print_colored(f"{price:.4f}", Fore.WHITE)
                     print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
                     
                     if open_pos.get("current_tp_checkpoint_level", 0.0) > 0:
@@ -830,42 +889,6 @@ def main():
     global is_autopilot_running
     load_settings(); load_trades(); display_welcome_message()
     
-    # Identify pairs that need backtesting
-    existing_backtested_pairs = set(t['instrumentId'] for t in autopilot_trades if t['status'] == 'CLOSED' or t['status'] == 'OPEN')
-    watched_pairs_config = current_settings.get("watched_pairs", {})
-    pairs_to_backtest = [
-        pair_id for pair_id in watched_pairs_config.keys() 
-        if pair_id not in existing_backtested_pairs
-    ]
-
-    if pairs_to_backtest:
-        print_colored("\n--- Memulai Backtesting untuk Pair Baru ---", Fore.CYAN, Style.BRIGHT)
-        print_colored(f"Durasi backtest: {current_settings['backtest_duration_months']} bulan", Fore.YELLOW)
-        for pair_id in pairs_to_backtest:
-            timeframe = watched_pairs_config[pair_id]
-            
-            # Calculate start and end timestamps for backtest
-            end_time_ms = int(datetime.now().timestamp() * 1000) # Current time
-            # Go back N months from now
-            start_time_delta = timedelta(days=current_settings['backtest_duration_months'] * 30) # Approximate days in months
-            start_time_ms = int((datetime.now() - start_time_delta).timestamp() * 1000)
-
-            print_colored(f"Fetching historical data for {pair_id} ({timeframe})...", Fore.CYAN)
-            historical_candles = fetch_bybit_historical_candle_data(pair_id, timeframe, start_time_ms, end_time_ms)
-            
-            if historical_candles:
-                backtest_manager = BacktestManager(current_settings, pair_id, timeframe)
-                backtested_trades = backtest_manager.run_backtest(historical_candles)
-                
-                # Append backtested trades to global autopilot_trades
-                autopilot_trades.extend(backtested_trades)
-                save_trades()
-                print_colored(f"Backtest for {pair_id} finished. {len(backtested_trades)} trades added to history.", Fore.GREEN, Style.BRIGHT)
-            else:
-                print_colored(f"Failed to fetch historical data or not enough data for {pair_id}. Skipping backtest.", Fore.YELLOW)
-        print_colored("--- Backtesting Selesai ---", Fore.CYAN, Style.BRIGHT)
-        time.sleep(2) # Give user time to read backtest summary
-
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True); autopilot_thread.start()
     data_thread = threading.Thread(target=data_refresh_worker, daemon=True); data_thread.start()
     while True:
@@ -878,6 +901,28 @@ def main():
             if cmd == '!exit': break
             elif cmd == '!help': display_help()
             elif cmd == '!start':
+                # Identify pairs to backtest: those in watchlist without any trade history
+                pairs_to_backtest = []
+                existing_pair_trades_ids = {t['instrumentId'] for t in autopilot_trades}
+                
+                print_colored("\nMemeriksa watchlist untuk backtest awal...", Fore.CYAN)
+                for pair_id, timeframe in current_settings.get("watched_pairs", {}).items():
+                    # Check if this pair has NO trade history at all in the trades.json
+                    if pair_id not in existing_pair_trades_ids:
+                        pairs_to_backtest.append((pair_id, timeframe))
+                
+                if pairs_to_backtest:
+                    print_colored(f"Mulai backtest awal untuk {len(pairs_to_backtest)} pair baru...", Fore.CYAN, Style.BRIGHT)
+                    for pair_id, timeframe in pairs_to_backtest:
+                        try:
+                            # Pass relevant settings to backtest function
+                            perform_backtest_for_pair(pair_id, timeframe, current_settings.get("backtest_duration_months", 2))
+                        except Exception as e:
+                            print_colored(f"  Gagal backtest untuk {pair_id}: {e}", Fore.RED)
+                    print_colored("\nBacktest awal selesai.", Fore.GREEN, Style.BRIGHT)
+                    time.sleep(1) # Give user time to read
+
+                # Now proceed with live dashboard
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan. Dashboard aktif.", Fore.YELLOW)
                 elif not current_settings.get("watched_pairs"): print_colored("Error: Watchlist kosong. Gunakan '!watch <PAIR>' dulu.", Fore.RED)
                 else: 
@@ -908,7 +953,10 @@ def main():
                     if pair_id in current_settings['watched_pairs']:
                         del current_settings['watched_pairs'][pair_id]
                         if pair_id in market_state: del market_state[pair_id]
-                        save_settings()
+                        # Remove existing trades for this pair from global autopilot_trades list
+                        global autopilot_trades
+                        autopilot_trades = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
+                        save_trades()
                         print_colored(f"Pair {pair_id} dihapus dari watchlist.", Fore.YELLOW)
                     else: print_colored(f"Error: Pair {pair_id} tidak ada di watchlist.", Fore.RED)
                 else: print_colored("Format salah. Gunakan: !unwatch <PAIR>", Fore.RED)
