@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from colorama import init, Fore, Style
 import asyncio
 import math
+import parts
 
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
