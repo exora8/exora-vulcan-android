@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from colorama import init, Fore, Style
 import asyncio
 import math
-import sys # <-- TAMBAHKAN INI UNTUK PROGRESS BAR
+import sys # Import sys for sys.stdout.flush()
 
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
@@ -59,7 +59,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, bt_dur)", Fore.GREEN) 
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, bt_dur)", Fore.GREEN) # Added bt_dur
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -635,19 +635,17 @@ async def _check_realtime_position_management_internal(open_position, latest_pri
         # Check if the market price has moved sufficiently beyond the current checkpoint to set a new one
         if open_position['type'] == 'LONG':
             # Price moved up enough to create a new checkpoint
-            # Use current_pnl for dynamic step calculation instead of fixed checkpoint price calculation
-            # This logic should be `if current_pnl >= (current_tp_checkpoint_level + gap_pct):`
-            # The steps_passed logic from previous version was more robust for multiple steps.
-            steps_passed = math.floor((current_pnl - current_tp_checkpoint_level) / gap_pct)
-            if steps_passed > 0:
+            if latest_price >= (checkpoint_price * (1 + gap_pct / 100)):
+                steps_passed = math.floor((latest_price - checkpoint_price) / (open_position['entryPrice'] * gap_pct / 100))
                 open_position['current_tp_checkpoint_level'] += steps_passed * gap_pct
+                # Update trailing stop price to reflect new checkpoint
                 open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 + open_position['current_tp_checkpoint_level'] / 100)
         else: # SHORT
             # Price moved down enough to create a new checkpoint
-            # This logic should be `if current_pnl >= (current_tp_checkpoint_level + gap_pct):`
-            steps_passed = math.floor((current_pnl - current_tp_checkpoint_level) / gap_pct)
-            if steps_passed > 0:
+            if latest_price <= (checkpoint_price * (1 - gap_pct / 100)):
+                steps_passed = math.floor((checkpoint_price - latest_price) / (open_position['entryPrice'] * gap_pct / 100))
                 open_position['current_tp_checkpoint_level'] += steps_passed * gap_pct
+                # Update trailing stop price to reflect new checkpoint
                 open_position['trailing_stop_price'] = open_position['entryPrice'] * (1 - open_position['current_tp_checkpoint_level'] / 100)
 
         # Check for exit condition (price falls back to or crosses trailing_stop_price/checkpoint)
@@ -660,6 +658,23 @@ async def _check_realtime_position_management_internal(open_position, latest_pri
     
     return False # Position not closed
 
+def _display_backtest_progress(current_candle_idx, total_candles, win_count, loss_count, total_profit, instId):
+    """Displays a dynamic progress bar and stats during backtest."""
+    progress_percent = (current_candle_idx + 1) / total_candles
+    bar_length = 30
+    filled_length = int(bar_length * progress_percent)
+    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+    
+    # Choose color based on current PnL
+    pnl_color = Fore.GREEN if total_profit > 0 else Fore.RED if total_profit < 0 else Fore.YELLOW
+    
+    display_text = (
+        f"\r[BACKTEST {instId}] |{bar}| {progress_percent:.1%} "
+        f"Trades: (W:{win_count}, L:{loss_count}) PnL: {pnl_color}{total_profit:.2f}%{Style.RESET_ALL}"
+    )
+    sys.stdout.write(display_text)
+    sys.stdout.flush()
+
 
 async def perform_backtest(instrument_id, timeframe, duration_months):
     """
@@ -669,19 +684,18 @@ async def perform_backtest(instrument_id, timeframe, duration_months):
     print_colored(f"\n[BACKTEST] Memulai backtest untuk {instrument_id} ({timeframe}) selama {duration_months} bulan...", Fore.CYAN, Style.BRIGHT)
     
     backtest_start_time = time.time()
-    backtest_total_trades_count = 0
-    backtest_win_trades = 0
-    backtest_loss_trades = 0
-    backtest_total_profit_sum = 0.0
+    
+    # Initialize backtest counters
+    win_count = 0
+    loss_count = 0
+    total_pnl_sum_during_backtest = 0.0
+    backtest_trades_count = 0
 
     historical_candles = _fetch_historical_candle_data(instrument_id, timeframe, duration_months)
 
     if not historical_candles:
         print_colored(f"[BACKTEST] Gagal mendapatkan data historis untuk {instrument_id}. Backtest dilewati.", Fore.RED)
         return False
-    
-    # Calculate total candles to process for progress bar
-    total_candles_to_process = len(historical_candles)
     
     open_position_during_backtest = None # Track a single open position for this backtest run
     
@@ -693,60 +707,58 @@ async def perform_backtest(instrument_id, timeframe, duration_months):
 
         # Before deciding on new trade, check any open position's SL/TP
         if open_position_during_backtest:
+            initial_pnl_before_closure = open_position_during_backtest['pl_percent'] # Store PnL before closure attempt
             closed = await _check_realtime_position_management_internal(
                 open_position_during_backtest, 
                 current_candle['close'], 
                 is_backtest=True # Mark as backtest
             )
             if closed:
-                # Update counters based on the just-closed trade
-                if open_position_during_backtest['pl_percent'] > current_settings.get('fee_pct', 0.1):
-                    backtest_win_trades += 1
+                backtest_trades_count += 1
+                final_pnl_after_closure = open_position_during_backtest['pl_percent']
+                total_pnl_sum_during_backtest += final_pnl_after_closure
+                if final_pnl_after_closure > current_settings.get('fee_pct', 0.1):
+                    win_count += 1
                 else:
-                    backtest_loss_trades += 1
-                backtest_total_trades_count += 1
-                backtest_total_profit_sum += open_position_during_backtest['pl_percent']
+                    loss_count += 1
                 open_position_during_backtest = None # Reset open position if closed
 
         # Run autopilot analysis for potential new trade entry
         await run_autopilot_analysis(instrument_id, is_backtest=True)
         
         # Update open_position_during_backtest from autopilot_trades after potential new trade
-        # Find the latest open backtest trade for this instrument.
         latest_open_trade = next((t for t in reversed(autopilot_trades) if t['instrumentId'] == instrument_id and t['status'] == 'OPEN' and t.get('source') == 'BACKTEST'), None)
         open_position_during_backtest = latest_open_trade
 
-        # Update and display progress bar
-        if total_candles_to_process > 0:
-            progress_percent = (i + 1) / total_candles_to_process * 100
-            sys.stdout.write(f"\r[BACKTEST] Progress: {progress_percent:.2f}% | Trades: {backtest_total_trades_count} (W:{backtest_win_trades}/L:{backtest_loss_trades}) | PnL: {backtest_total_profit_sum:.2f}%")
-            sys.stdout.flush()
+        # Update progress bar every 1% or every 100 candles, whichever is more frequent
+        if total_candles > 0 and (i % (total_candles // 100 + 1) == 0 or i == total_candles - 1):
+             _display_backtest_progress(i, total_candles, win_count, loss_count, total_pnl_sum_during_backtest, instrument_id)
 
     # After iterating all candles, if there's an open position, close it
     if open_position_during_backtest:
-        sys.stdout.write('\n') # Move to next line before final message
-        print_colored(f"[BACKTEST] Menutup sisa posisi terbuka untuk {instrument_id} pada akhir backtest.", Fore.YELLOW)
+        print_colored(f"\n[BACKTEST] Menutup sisa posisi terbuka untuk {instrument_id} pada akhir backtest...", Fore.YELLOW)
+        initial_pnl_before_closure = open_position_during_backtest['pl_percent'] # Store PnL before closure attempt
         await analyze_and_close_trade(open_position_during_backtest, historical_candles[-1]['close'], "End of backtest", is_backtest=True)
-        # Update final counters
-        if open_position_during_backtest['pl_percent'] > current_settings.get('fee_pct', 0.1):
-            backtest_win_trades += 1
+        
+        backtest_trades_count += 1
+        final_pnl_after_closure = open_position_during_backtest['pl_percent']
+        total_pnl_sum_during_backtest += final_pnl_after_closure
+        if final_pnl_after_closure > current_settings.get('fee_pct', 0.1):
+            win_count += 1
         else:
-            backtest_loss_trades += 1
-        backtest_total_trades_count += 1
-        backtest_total_profit_sum += open_position_during_backtest['pl_percent']
-        sys.stdout.write(f"\r{' ' * 100}\r") # Clear the progress line before final summary
-        sys.stdout.flush()
+            loss_count += 1
 
+    # Clear progress bar line and print final summary
+    sys.stdout.write("\r" + " " * (os.get_terminal_size().columns - 1) + "\r") # Clear the entire line
+    sys.stdout.flush()
 
     backtest_end_time = time.time()
     duration = backtest_end_time - backtest_start_time
     
     print_colored(f"\n[BACKTEST] Backtest untuk {instrument_id} selesai!", Fore.GREEN, Style.BRIGHT)
     print_colored(f"  Durasi: {duration:.2f} detik", Fore.GREEN)
-    print_colored(f"  Total Trade: {backtest_total_trades_count}", Fore.GREEN)
-    print_colored(f"  Win Trades: {backtest_win_trades}", Fore.GREEN)
-    print_colored(f"  Loss Trades: {backtest_loss_trades}", Fore.RED)
-    print_colored(f"  Total PnL: {backtest_total_profit_sum:.2f}%", Fore.GREEN if backtest_total_profit_sum > 0 else Fore.RED)
+    print_colored(f"  Total Trade: {backtest_trades_count} (Win: {win_count}, Loss: {loss_count})", Fore.GREEN)
+    print_colored(f"  Total PnL: {total_pnl_sum_during_backtest:.2f}%", Fore.GREEN if total_pnl_sum_during_backtest > 0 else Fore.RED)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
 
     return True
@@ -936,7 +948,8 @@ def main():
                     save_settings()
                     print_colored(f"[INIT] Backtest untuk {pair_id} selesai dan status diupdate.", Fore.GREEN)
                 else:
-                    print_colored(f"[INIT] Backtest untuk {pair_id} gagal atau tidak cukup data.", Fore.RED)
+                    print_colored(f"[INIT] Backtest untuk {pair_id} gagal atau tidak cukup data. Tidak akan diaktifkan untuk live trade.", Fore.RED)
+                    # Don't set backtested to True if failed, so it can be re-attempted or user is warned.
             except Exception as e:
                 print_colored(f"[INIT] Error saat backtest {pair_id}: {e}", Fore.RED)
                 # Keep backtested: false if error, so it can be re-attempted
@@ -983,7 +996,7 @@ def main():
                                     save_settings()
                                     print_colored(f"[INIT] Backtest untuk {pair_id_retry} selesai dan status diupdate.", Fore.GREEN)
                                 else:
-                                    print_colored(f"[INIT] Backtest untuk {pair_id_retry} gagal atau tidak cukup data.", Fore.RED)
+                                    print_colored(f"[INIT] Backtest untuk {pair_id_retry} gagal atau tidak cukup data. Tidak akan diaktifkan untuk live trade.", Fore.RED)
                             except Exception as e:
                                 print_colored(f"[INIT] Error saat backtest {pair_id_retry}: {e}", Fore.RED)
                             time.sleep(1)
