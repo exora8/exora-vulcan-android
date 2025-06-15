@@ -13,6 +13,7 @@ SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5 # Interval refresh data live
+STATIC_BACKTEST_CANDLE_LIMIT = 1000 # NEW: Static limit for backtest candles
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -57,7 +58,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, bt_months)", Fore.GREEN) # Added bt_months
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # Removed bt_months
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -71,7 +72,7 @@ def load_settings():
         "trailing_tp_activation_pct": 0.30,
         "trailing_tp_gap_pct": 0.05,
         "caution_level": 0.5,
-        "backtest_duration_months": 2, # NEW: Default 2 months for backtest
+        # "backtest_duration_months": 2, # REMOVED: Static limit now
         "watched_pairs": {}
     }
     if os.path.exists(SETTINGS_FILE):
@@ -142,7 +143,8 @@ def display_history():
         print()
 
 # --- FUNGSI API (BYBIT) ---
-def fetch_bybit_candle_data(instId, timeframe, limit=300):
+# MODIFIED: Renamed original fetch_bybit_candle_data to fetch_recent_candles
+def fetch_recent_candles(instId, timeframe, limit=300):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
     try:
@@ -163,21 +165,23 @@ def fetch_bybit_candle_data(instId, timeframe, limit=300):
         print_colored(f"Unknown Error fetching live data for {instId}: {e}", Fore.RED)
         return None
 
-# NEW: Function to fetch historical candles for a specific range
-def fetch_candles_in_range(instId, timeframe, start_time_ms, end_time_ms):
+# NEW: Function to fetch historical candles for a specific limit (used by backtest)
+def fetch_historical_candles_by_limit(instId, timeframe, limit):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60')
     bybit_symbol = instId.replace('-', '')
-    all_candles = []
-    current_end_time = end_time_ms
-    max_limit = 1000 # Max candles per request
     
-    print_colored(f"  [DEBUG] Fetching {instId} from {datetime.fromtimestamp(start_time_ms/1000).strftime('%Y-%m-%d %H:%M')} to {datetime.fromtimestamp(end_time_ms/1000).strftime('%Y-%m-%d %H:%M')}", Fore.BLUE)
+    print_colored(f"  [DEBUG] Fetching {limit} historical candles for {instId} ({timeframe})...", Fore.BLUE)
 
-    consecutive_empty_batches = 0 # Counter for consecutive empty batches
+    all_candles = []
+    # Bybit limit is 1000 per request, so loop if limit > 1000
+    requests_needed = math.ceil(limit / 1000)
+    current_limit_for_request = min(limit, 1000)
+    
+    end_time_ms = int(datetime.now().timestamp() * 1000) # Start fetching from current time backwards
 
-    while True:
-        url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={max_limit}&endTime={current_end_time}"
+    for req_num in range(requests_needed):
+        url = f"{BYBIT_API_URL}/kline?category=spot&symbol={bybit_symbol}&interval={bybit_interval}&limit={current_limit_for_request}&endTime={end_time_ms}"
         try:
             response = requests.get(url, timeout=15)
             response.raise_for_status() 
@@ -187,60 +191,50 @@ def fetch_candles_in_range(instId, timeframe, start_time_ms, end_time_ms):
                 candles_batch = data['result']['list']
                 
                 if not candles_batch:
-                    consecutive_empty_batches += 1
-                    print_colored(f"  [DEBUG] No candles in batch. Consecutive empty batches: {consecutive_empty_batches}", Fore.YELLOW)
-                    if consecutive_empty_batches >= 3: # If 3 consecutive empty batches, stop
-                        print_colored(f"  [DEBUG] Too many consecutive empty batches for {instId}. Breaking loop.", Fore.RED)
-                        break 
-                    # If empty, and not yet 3 consecutive, just try again with slightly older timestamp
-                    current_end_time -= max_limit * int(bybit_interval) * 1000 # Jump back approx. max_limit candles worth of time
-                    time.sleep(0.5) # Longer sleep for empty batch
-                    continue # Continue to next iteration
-                else:
-                    consecutive_empty_batches = 0 # Reset counter if candles are found
-
-                # Convert to desired format
-                formatted_batch = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candles_batch]
-                
-                # Only add candles within the desired historical range and not already collected
-                # Use a set for quick lookup of existing timestamps to avoid duplicates
-                existing_timestamps = {c['time'] for c in all_candles}
-                new_candles_to_add = [c for c in formatted_batch if c['time'] >= start_time_ms and c['time'] <= end_time_ms and c['time'] not in existing_timestamps]
-                all_candles.extend(new_candles_to_add)
-                
-                # Update current_end_time to the timestamp of the oldest candle in this batch - 1ms
-                current_end_time = int(candles_batch[-1][0]) - 1 
-
-                # Debug: Show progress towards start_time
-                print_colored(f"  [DEBUG] Fetched {len(candles_batch)} candles. Oldest candle in batch: {datetime.fromtimestamp(candles_batch[-1][0]/1000).strftime('%Y-%m-%d %H:%M')}. Current end_time: {datetime.fromtimestamp(current_end_time/1000).strftime('%Y-%m-%d %H:%M')}. Target start_time: {datetime.fromtimestamp(start_time_ms/1000).strftime('%Y-%m-%d %H:%M')}", Fore.BLUE)
-
-
-                if current_end_time < start_time_ms:
-                    print_colored(f"  [DEBUG] Reached or passed target start_time for {instId}. Breaking loop.", Fore.YELLOW)
+                    print_colored(f"  [DEBUG] No more candles returned in batch {req_num+1} for {instId}. Breaking fetching.", Fore.YELLOW)
                     break 
 
-                time.sleep(0.15) # Increased from 0.1 to 0.15 for better rate limit avoidance
+                formatted_batch = [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candles_batch]
+                all_candles.extend(formatted_batch)
+                
+                # Update end_time for next request to fetch older candles
+                end_time_ms = int(candles_batch[-1][0]) - 1 # Oldest candle in batch - 1ms
+                
+                # Adjust limit for the last request if total candles fetched is close to target
+                remaining_to_fetch = limit - len(all_candles)
+                current_limit_for_request = min(remaining_to_fetch, 1000)
+
+                # Update progress bar for fetching
+                print_progress_bar(len(all_candles), limit, prefix=f'  {instId} Fetching', suffix='Candles', length=50, fill='=')
+
+                time.sleep(0.15) # Delay to avoid rate limits
             else:
-                print_colored(f"  API Error fetching historical data for {instId}: retCode {data.get('retCode')}, retMsg {data.get('retMsg', 'Unknown error')}. Breaking loop.", Fore.RED)
+                print_colored(f"  API Error fetching historical batch {req_num+1} for {instId}: retCode {data.get('retCode')}, retMsg {data.get('retMsg', 'Unknown error')}. Breaking fetching.", Fore.RED)
                 break
         except requests.exceptions.RequestException as e:
-            print_colored(f"  Network/Request Error fetching historical data for {instId}: {e}. Retrying in 5s...", Fore.RED)
+            print_colored(f"  Network/Request Error fetching historical batch {req_num+1} for {instId}: {e}. Retrying in 5s...", Fore.RED)
             time.sleep(5) 
             continue 
         except Exception as e: 
-            print_colored(f"  Unknown Error fetching historical data for {instId}: {e}. Breaking loop.", Fore.RED)
+            print_colored(f"  Unknown Error fetching historical batch {req_num+1} for {instId}: {e}. Breaking fetching.", Fore.RED)
             break
     
-    # Sort all_candles by timestamp to ensure chronological order and remove duplicates (if any remaining)
-    # Using a dict to ensure uniqueness is applied first
-    all_candles_dict = {c['time']: c for c in all_candles} 
-    final_filtered_candles = sorted(all_candles_dict.values(), key=lambda x: x['time'])
+    # Sort all collected candles by timestamp (oldest first)
+    all_candles.sort(key=lambda x: x['time'])
+    
+    # Ensure uniqueness after fetching multiple batches (optional but good practice)
+    unique_candles = []
+    seen_timestamps = set()
+    for candle in all_candles:
+        if candle['time'] not in seen_timestamps:
+            unique_candles.append(candle)
+            seen_timestamps.add(candle['time'])
+            
+    # Take only the exact 'limit' number of candles if more were fetched due to API granularity
+    final_candles = unique_candles[-limit:] if len(unique_candles) > limit else unique_candles
 
-    # Final filter to ensure only candles within exact range are kept
-    final_filtered_candles = [c for c in final_filtered_candles if c['time'] >= start_time_ms and c['time'] <= end_time_ms]
-
-    print_colored(f"  [DEBUG] Final collected {len(final_filtered_candles)} candles for {instId}.", Fore.GREEN)
-    return final_filtered_candles
+    print_colored(f"  [DEBUG] Final fetched {len(final_candles)} candles for {instId}.", Fore.GREEN)
+    return final_candles
 
 def calculate_pnl(entry_price, current_price, trade_type):
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
@@ -596,7 +590,7 @@ def data_refresh_worker():
         watched_pairs = current_settings.get("watched_pairs", {})
         if watched_pairs:
             for pair_id, timeframe in watched_pairs.items():
-                data = fetch_bybit_candle_data(pair_id, timeframe) 
+                data = fetch_recent_candles(pair_id, timeframe) # Renamed to fetch_recent_candles
                 if data: 
                     if len(data) >= 100 + 3: 
                         analysis = LocalAI(current_settings, []).get_market_analysis(data)
@@ -620,18 +614,12 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
-def run_pair_backtest(pair_id, timeframe, duration_months):
+def run_pair_backtest(pair_id, timeframe): # Removed duration_months
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
-    # 1. Calculate time range
-    end_time_dt = datetime.now()
-    start_time_dt = end_time_dt - timedelta(days=duration_months * 30) 
-    end_time_ms = int(end_time_dt.timestamp() * 1000)
-    start_time_ms = int(start_time_dt.timestamp() * 1000)
-
-    # 2. Fetch all historical data for the period
-    historical_candles = fetch_candles_in_range(pair_id, timeframe, start_time_ms, end_time_ms)
+    # 1. Fetch historical data with static limit
+    historical_candles = fetch_historical_candles_by_limit(pair_id, timeframe, STATIC_BACKTEST_CANDLE_LIMIT)
 
     if not historical_candles or len(historical_candles) < 100 + 3: 
         print_colored(f"  Gagal backtest {pair_id}: Tidak cukup data historis atau gagal fetching. Minimal 103 candles diperlukan.", Fore.RED)
@@ -650,7 +638,7 @@ def run_pair_backtest(pair_id, timeframe, duration_months):
         current_historical_data_slice = historical_candles[:i+1] # All candles up to current point
         current_candle = historical_candles[i]
         
-        if len(current_historical_data_slice) < 100 + 3:
+        if len(current_historical_data_slice) < 100 + 3: # Need 100 for EMA100 + 3 for snapshot access (index -4)
             print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
             continue
 
@@ -736,41 +724,30 @@ def run_pair_backtest(pair_id, timeframe, duration_months):
 
 def check_and_run_backtests():
     watched_pairs = current_settings.get("watched_pairs", {})
-    backtest_months = current_settings.get("backtest_duration_months", 2)
+    # Removed backtest_months, now uses STATIC_BACKTEST_CANDLE_LIMIT
     
     pairs_to_backtest = []
     
     for pair_id, timeframe in watched_pairs.items():
-        oldest_trade_date = None
-        # Find the timestamp of the oldest trade that IS CLOSED and within the backtest range
-        # We don't want to backtest over existing *open* trades
-        for trade in autopilot_trades:
-            if trade['instrumentId'] == pair_id and trade['status'] == 'CLOSED': # Only consider closed trades for backtest starting point
-                trade_date = datetime.fromisoformat(trade['entryTimestamp'].replace('Z', ''))
-                if oldest_trade_date is None or trade_date < oldest_trade_date:
-                    oldest_trade_date = trade_date
+        # Check if any trade exists for this pair in autopilot_trades
+        has_existing_trades = any(t for t in autopilot_trades if t['instrumentId'] == pair_id)
         
-        required_start_date = datetime.now() - timedelta(days=backtest_months * 30)
-
-        # A backtest is needed if:
-        # 1. No trades exist for this pair.
-        # 2. The oldest *closed* trade is newer than the required backtest start date.
-        if oldest_trade_date is None or oldest_trade_date > required_start_date:
+        if not has_existing_trades:
             pairs_to_backtest.append((pair_id, timeframe))
     
     if pairs_to_backtest:
-        print_colored("\nMemerlukan Backtest untuk pembelajaran AI:", Fore.CYAN, Style.BRIGHT)
+        print_colored(f"\nMemerlukan Backtest untuk pembelajaran AI ({STATIC_BACKTEST_CANDLE_LIMIT} candle terakhir):", Fore.CYAN, Style.BRIGHT)
         for pair_id, timeframe in pairs_to_backtest:
-            print_colored(f"- {pair_id} ({timeframe}) selama {backtest_months} bulan terakhir.", Fore.YELLOW)
+            print_colored(f"- {pair_id} ({timeframe})", Fore.YELLOW)
         
         print_colored("Memulai proses Backtest. Mohon tunggu...", Fore.BLUE)
         for pair_id, timeframe in pairs_to_backtest:
-            run_pair_backtest(pair_id, timeframe, backtest_months)
+            run_pair_backtest(pair_id, timeframe) # Removed duration_months
         
         print_colored("\nBacktest Selesai untuk semua pair yang diperlukan.", Fore.GREEN, Style.BRIGHT)
         load_trades() 
     else:
-        print_colored("\nTidak ada Backtest yang diperlukan. Riwayat trade sudah cukup.", Fore.GREEN)
+        print_colored(f"\nTidak ada Backtest yang diperlukan untuk {STATIC_BACKTEST_CANDLE_LIMIT} candle terakhir. Riwayat trade sudah cukup.", Fore.GREEN)
 
 
 def handle_settings_command(parts):
@@ -781,13 +758,15 @@ def handle_settings_command(parts):
         'tp_act': ('trailing_tp_activation_pct', '%'),
         'tp_gap': ('trailing_tp_gap_pct', '%'),
         'caution': ('caution_level', ''), 
-        'bt_months': ('backtest_duration_months', ' bulan') 
+        # 'bt_months': ('backtest_duration_months', ' bulan') # REMOVED from settings
     }
     if len(parts) == 1 and parts[0] == '!settings':
         print_colored("\n--- Pengaturan Saat Ini ---", Fore.CYAN, Style.BRIGHT)
         for key, (full_key, unit) in setting_map.items():
             display_key = key.capitalize().ljust(10)
             print_colored(f"{display_key} ({key:<10}) : {current_settings[full_key]}{unit}", Fore.WHITE)
+        # Display static backtest limit
+        print_colored(f"Backtest Limit  : {STATIC_BACKTEST_CANDLE_LIMIT} candles (Static)", Fore.WHITE)
         print(); return
     if len(parts) == 3 and parts[0] == '!set':
         key_short = parts[1].lower()
@@ -796,10 +775,7 @@ def handle_settings_command(parts):
             value = float(parts[2])
             if key_short == 'caution' and not (0.0 <= value <= 1.0):
                 print_colored("Error: Nilai 'caution' harus antara 0.0 dan 1.0.", Fore.RED); return
-            if key_short == 'bt_months':
-                if not value.is_integer() or value <= 0:
-                    print_colored("Error: Nilai 'bt_months' harus berupa bilangan bulat positif.", Fore.RED); return
-                value = int(value) 
+            # Removed bt_months validation
             if value < 0: print_colored("Error: Nilai tidak boleh negatif.", Fore.RED); return
         except ValueError: print_colored(f"Error: Nilai '{parts[2]}' harus berupa angka.", Fore.RED); return
         key_full, unit = setting_map[key_short]
@@ -890,6 +866,8 @@ def main():
                 if is_autopilot_running: print_colored("Autopilot sudah berjalan. Dashboard aktif.", Fore.YELLOW)
                 elif not current_settings.get("watched_pairs"): print_colored("Error: Watchlist kosong. Gunakan '!watch <PAIR>' dulu.", Fore.RED)
                 else: 
+                    # Re-check and run backtests only for truly new/unbacktested pairs since last !start
+                    # This is slightly redundant as it's also called on initial start, but ensures new pairs added while bot is running are caught.
                     check_and_run_backtests() 
 
                     is_autopilot_running = True
