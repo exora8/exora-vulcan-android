@@ -58,7 +58,7 @@ def display_help():
     print_colored("!watchlist            - Tampilkan semua pair yang dipantau", Fore.GREEN)
     print_colored("!history              - Tampilkan riwayat trade", Fore.GREEN)
     print_colored("!settings             - Tampilkan semua pengaturan global", Fore.GREEN)
-    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # Removed bt_months
+    print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution)", Fore.GREEN) # 'delay' already here
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
 
@@ -454,6 +454,7 @@ async def run_autopilot_analysis(instrument_id):
     is_ai_thinking = True
     try:
         candle_data = pair_state["candle_data"]
+        # The 'open_position' here is directly from the global autopilot_trades list (live trades)
         open_position = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
         relevant_trades = [t for t in autopilot_trades if t['instrumentId'] == instrument_id]
         local_brain = LocalAI(current_settings, relevant_trades)
@@ -504,8 +505,8 @@ def autopilot_worker():
         else: time.sleep(1)
 
 # MODIFIED: check_realtime_position_management to correctly track run_up_percent and max_drawdown_percent
+#           Now takes a trade object (not just ID) and full current_candle_data
 async def check_realtime_position_management(trade_obj, current_candle_data, is_backtest=False):
-    # Renamed open_position to trade_obj for clarity since it's passed as an arg
     if not trade_obj: return
     
     # Calculate PnL based on current candle's close price for general status
@@ -517,9 +518,11 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
         pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
         pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'LONG')
         
+        # Update run_up_percent if current high PnL is greater
         if pnl_at_high > trade_obj.get('run_up_percent', 0.0):
             trade_obj['run_up_percent'] = pnl_at_high
-        if pnl_at_low < trade_obj.get('max_drawdown_percent', 0.0): # Drawdown is negative PnL
+        # Update max_drawdown_percent if current low PnL is lower (more negative)
+        if pnl_at_low < trade_obj.get('max_drawdown_percent', 0.0): 
             trade_obj['max_drawdown_percent'] = pnl_at_low
 
     # For SHORT trades: run_up is highest profit (using low), drawdown is lowest profit (using high)
@@ -527,9 +530,11 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
         pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT') # Short profit from lower price
         pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'SHORT') # Short loss from higher price
         
+        # Update run_up_percent if current low PnL is greater (more profit for short)
         if pnl_at_low > trade_obj.get('run_up_percent', 0.0):
             trade_obj['run_up_percent'] = pnl_at_low
-        if pnl_at_high < trade_obj.get('max_drawdown_percent', 0.0): # Drawdown is negative PnL
+        # Update max_drawdown_percent if current high PnL is lower (more negative)
+        if pnl_at_high < trade_obj.get('max_drawdown_percent', 0.0): 
             trade_obj['max_drawdown_percent'] = pnl_at_high
 
     # --- SL Logic ---
@@ -558,21 +563,23 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
     current_tp_checkpoint_level = trade_obj.get("current_tp_checkpoint_level", 0.0)
 
     # 1. Activation Phase
-    if current_tp_checkpoint_level == 0.0 and pnl_at_close >= activation_pct: # Use pnl_at_close for activation
-        trade_obj['current_tp_checkpoint_level'] = activation_pct
-        trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + activation_pct / 100) if trade_obj['type'] == 'LONG' else \
-                                            trade_obj['entryPrice'] * (1 - activation_pct / 100)
+    if current_tp_checkpoint_level == 0.0: # If trailing TP not yet activated
+        # Check if PnL using current candle's high/low hits activation
+        if trade_obj['type'] == 'LONG' and calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG') >= activation_pct:
+            trade_obj['current_tp_checkpoint_level'] = activation_pct
+            trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + activation_pct / 100)
+        elif trade_obj['type'] == 'SHORT' and calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT') >= activation_pct:
+            trade_obj['current_tp_checkpoint_level'] = activation_pct
+            trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - activation_pct / 100)
 
     # 2. Update Checkpoint Phase
-    if current_tp_checkpoint_level > 0.0: 
-        # For LONG, check if high of current candle passed new checkpoint
+    if trade_obj['current_tp_checkpoint_level'] > 0.0: # Only if trailing TP has been activated
         if trade_obj['type'] == 'LONG':
             potential_new_checkpoint_pnl = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
-            steps_passed = math.floor((potential_new_checkpoint_pnl - current_tp_checkpoint_level) / gap_pct)
-        # For SHORT, check if low of current candle passed new checkpoint
+            steps_passed = math.floor((potential_new_checkpoint_pnl - trade_obj['current_tp_checkpoint_level']) / gap_pct)
         else: # trade_obj['type'] == 'SHORT'
             potential_new_checkpoint_pnl = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT')
-            steps_passed = math.floor((potential_new_checkpoint_pnl - current_tp_checkpoint_level) / gap_pct)
+            steps_passed = math.floor((potential_new_checkpoint_pnl - trade_obj['current_tp_checkpoint_level']) / gap_pct)
 
         if steps_passed > 0:
             trade_obj['current_tp_checkpoint_level'] += steps_passed * gap_pct
@@ -613,8 +620,8 @@ def data_refresh_worker():
                     market_state[pair_id] = {"candle_data": data, "analysis": analysis}
                     
                     if is_autopilot_running:
-                        # Pass the latest candle data directly
-                        asyncio.run(check_realtime_position_management(pair_id, data[-1])) # Changed this call
+                        # Pass the latest full candle data (data[-1])
+                        asyncio.run(check_realtime_position_management(next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None), data[-1]))
                 time.sleep(0.5) 
         stop_event.wait(REFRESH_INTERVAL_SECONDS) 
 
@@ -627,7 +634,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
-def run_pair_backtest(pair_id, timeframe): # Removed duration_months
+def run_pair_backtest(pair_id, timeframe): 
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
@@ -659,19 +666,20 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
                                  "analysis": LocalAI(current_settings, initial_trades_for_learning + backtested_trades_for_pair_list).get_market_analysis(current_historical_data_slice)}
 
         trades_to_close_in_current_candle = []
-        for open_bt_trade in open_backtest_trades:
+        # Iterate over a copy of open_backtest_trades to allow modification during iteration
+        for open_bt_trade in list(open_backtest_trades): 
             # Check for SL/TP and update run_up/drawdown using the current_candle_data
-            # We call it with the trade object itself as the first argument, and the current_candle
+            # Pass the trade object itself and the current_candle data
             asyncio.run(check_realtime_position_management(open_bt_trade, current_candle, is_backtest=True))
             
             # If the trade was closed by the above call (it calls analyze_and_close_trade), then add it to remove list
             if open_bt_trade['status'] == 'CLOSED':
                  trades_to_close_in_current_candle.append(open_bt_trade)
-                 continue # Move to next open trade if this one was closed
+                 # No need for continue, as open_bt_trade has already been processed and its status changed
         
         # Remove closed trades from open_backtest_trades and add to backtested_trades_for_pair_list
         for trade_to_remove in trades_to_close_in_current_candle:
-            if trade_to_remove in open_backtest_trades: # Ensure it's still there before removing
+            if trade_to_remove in open_backtest_trades: 
                 open_backtest_trades.remove(trade_to_remove)
                 backtested_trades_for_pair_list.append(trade_to_remove)
 
@@ -691,8 +699,8 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
                     "entryReason": decision.get("reason"),
                     "status": 'OPEN',
                     "entry_snapshot": decision.get("snapshot"),
-                    "run_up_percent": 0.0, # Initialize here, will be updated by check_realtime_position_management
-                    "max_drawdown_percent": 0.0, # Initialize here, will be updated by check_realtime_position_management
+                    "run_up_percent": 0.0, 
+                    "max_drawdown_percent": 0.0, 
                     "trailing_stop_price": None,
                     "current_tp_checkpoint_level": 0.0
                 }
@@ -702,7 +710,7 @@ def run_pair_backtest(pair_id, timeframe): # Removed duration_months
         print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
 
     # Close any remaining open trades at the end of backtest period
-    for open_bt_trade in open_backtest_trades:
+    for open_bt_trade in list(open_backtest_trades): # Iterate over a copy
         asyncio.run(analyze_and_close_trade(open_bt_trade, historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
         backtested_trades_for_pair_list.append(open_bt_trade)
 
