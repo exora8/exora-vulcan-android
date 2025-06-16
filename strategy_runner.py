@@ -239,7 +239,6 @@ def calculate_winrate(trades_list, fee_pct):
         
     return (profitable_trades / total_trades) * 100
 
-# NEW: Helper function to calculate today's P/L
 def calculate_todays_pnl(all_trades):
     today_date = datetime.now().date()
     total_pnl = 0.0
@@ -251,8 +250,26 @@ def calculate_todays_pnl(all_trades):
                 if exit_date == today_date:
                     total_pnl += trade.get('pl_percent', 0.0)
             except ValueError:
-                continue # Skip if timestamp is malformed
+                continue 
                 
+    return total_pnl
+
+# NEW: Helper function to calculate this week's P/L
+def calculate_this_weeks_pnl(all_trades):
+    today = datetime.now().date()
+    start_of_week = today - timedelta(days=today.weekday()) # Monday
+    end_of_week = start_of_week + timedelta(days=6) # Sunday
+    total_pnl = 0.0
+
+    for trade in all_trades:
+        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade:
+            try:
+                exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
+                if start_of_week <= exit_date <= end_of_week:
+                    total_pnl += trade.get('pl_percent', 0.0)
+            except ValueError:
+                continue
+    
     return total_pnl
 
 # --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot and learning) ---
@@ -641,6 +658,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
+# MODIFIED: Logic for run_pair_backtest
 def run_pair_backtest(pair_id, timeframe): 
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
@@ -691,6 +709,7 @@ def run_pair_backtest(pair_id, timeframe):
                 print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
                 continue
 
+            # Load trades from trades.json for LocalAI to learn from (updated after previous chunk)
             load_trades() 
             learning_trades_for_local_ai = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'] + temp_backtested_trades_list_in_run
 
@@ -848,8 +867,10 @@ def run_dashboard_mode():
     try:
         while True:
             print("\033[H\033[J", end="") # Clear console
-            todays_pnl = calculate_todays_pnl(autopilot_trades) # NEW: Calculate today's P/L
-            pnl_color = Fore.GREEN if todays_pnl > 0 else Fore.RED if todays_pnl < 0 else Fore.WHITE
+            todays_pnl = calculate_todays_pnl(autopilot_trades) 
+            this_weeks_pnl = calculate_this_weeks_pnl(autopilot_trades) # NEW: Calculate this week's P/L
+            pnl_color_today = Fore.GREEN if todays_pnl > 0 else Fore.RED if todays_pnl < 0 else Fore.WHITE
+            pnl_color_week = Fore.GREEN if this_weeks_pnl > 0 else Fore.RED if this_weeks_pnl < 0 else Fore.WHITE
 
             # Build header string
             header = f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s"
@@ -857,7 +878,9 @@ def run_dashboard_mode():
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
             print_colored(header, end="")
             print_colored(f" | Today's P/L: ", end="")
-            print_colored(f"{todays_pnl:.2f}%", pnl_color, Style.BRIGHT)
+            print_colored(f"{todays_pnl:.2f}%", pnl_color_today, Style.BRIGHT, end="")
+            print_colored(f" | This Week's P/L: ", end="")
+            print_colored(f"{this_weeks_pnl:.2f}%", pnl_color_week, Style.BRIGHT)
             print_colored("="*60, Fore.CYAN)
             
             watched_pairs = current_settings.get("watched_pairs", {})
