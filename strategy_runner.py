@@ -167,10 +167,6 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         return None
 
 def fetch_historical_candles_backward_from_ts(instId, timeframe, to_ts_seconds, limit_per_request):
-    """
-    Fetches historical candles backward from a given timestamp (to_ts_seconds) using CryptoCompare.
-    Returns the fetched candles (oldest first) and the timestamp of the earliest candle in the batch.
-    """
     timeframe_map = {'1m': 'histominute', '1H': 'histohour', '1D': 'histoday'} 
     
     cc_endpoint = timeframe_map.get(timeframe)
@@ -254,7 +250,7 @@ def calculate_todays_pnl(all_trades):
                 
     return total_pnl
 
-# NEW: Helper function to calculate this week's P/L
+# NEW: Helper function to calculate this week's and last week's P/L
 def calculate_this_weeks_pnl(all_trades):
     today = datetime.now().date()
     start_of_week = today - timedelta(days=today.weekday()) # Monday
@@ -266,6 +262,24 @@ def calculate_this_weeks_pnl(all_trades):
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
                 if start_of_week <= exit_date <= end_of_week:
+                    total_pnl += trade.get('pl_percent', 0.0)
+            except ValueError:
+                continue
+    
+    return total_pnl
+
+def calculate_last_weeks_pnl(all_trades):
+    today = datetime.now().date()
+    start_of_current_week = today - timedelta(days=today.weekday())
+    end_of_last_week = start_of_current_week - timedelta(days=1)
+    start_of_last_week = end_of_last_week - timedelta(days=6)
+    total_pnl = 0.0
+
+    for trade in all_trades:
+        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade:
+            try:
+                exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
+                if start_of_last_week <= exit_date <= end_of_last_week:
                     total_pnl += trade.get('pl_percent', 0.0)
             except ValueError:
                 continue
@@ -658,7 +672,6 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
     if iteration == total: 
         print()
 
-# MODIFIED: Logic for run_pair_backtest
 def run_pair_backtest(pair_id, timeframe): 
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
@@ -709,7 +722,6 @@ def run_pair_backtest(pair_id, timeframe):
                 print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
                 continue
 
-            # Load trades from trades.json for LocalAI to learn from (updated after previous chunk)
             load_trades() 
             learning_trades_for_local_ai = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'] + temp_backtested_trades_list_in_run
 
@@ -868,9 +880,11 @@ def run_dashboard_mode():
         while True:
             print("\033[H\033[J", end="") # Clear console
             todays_pnl = calculate_todays_pnl(autopilot_trades) 
-            this_weeks_pnl = calculate_this_weeks_pnl(autopilot_trades) # NEW: Calculate this week's P/L
+            this_weeks_pnl = calculate_this_weeks_pnl(autopilot_trades) 
+            last_weeks_pnl = calculate_last_weeks_pnl(autopilot_trades) # NEW: Calculate last week's P/L
             pnl_color_today = Fore.GREEN if todays_pnl > 0 else Fore.RED if todays_pnl < 0 else Fore.WHITE
             pnl_color_week = Fore.GREEN if this_weeks_pnl > 0 else Fore.RED if this_weeks_pnl < 0 else Fore.WHITE
+            pnl_color_last_week = Fore.GREEN if last_weeks_pnl > 0 else Fore.RED if last_weeks_pnl < 0 else Fore.WHITE
 
             # Build header string
             header = f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s"
@@ -880,7 +894,10 @@ def run_dashboard_mode():
             print_colored(f" | Today's P/L: ", end="")
             print_colored(f"{todays_pnl:.2f}%", pnl_color_today, Style.BRIGHT, end="")
             print_colored(f" | This Week's P/L: ", end="")
-            print_colored(f"{this_weeks_pnl:.2f}%", pnl_color_week, Style.BRIGHT)
+            print_colored(f"{this_weeks_pnl:.2f}%", pnl_color_week, Style.BRIGHT, end="")
+            print_colored(f" | Last Week's P/L: ", end="") # NEW
+            print_colored(f"{last_weeks_pnl:.2f}%", pnl_color_last_week, Style.BRIGHT) # NEW
+
             print_colored("="*60, Fore.CYAN)
             
             watched_pairs = current_settings.get("watched_pairs", {})
