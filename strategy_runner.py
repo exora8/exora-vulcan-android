@@ -239,6 +239,22 @@ def calculate_winrate(trades_list, fee_pct):
         
     return (profitable_trades / total_trades) * 100
 
+# NEW: Helper function to calculate today's P/L
+def calculate_todays_pnl(all_trades):
+    today_date = datetime.now().date()
+    total_pnl = 0.0
+    
+    for trade in all_trades:
+        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade:
+            try:
+                exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
+                if exit_date == today_date:
+                    total_pnl += trade.get('pl_percent', 0.0)
+            except ValueError:
+                continue # Skip if timestamp is malformed
+                
+    return total_pnl
+
 # --- OTAK LOCAL AI (Updated for Exora Vulcan Sniper Entry with 3-candle snapshot and learning) ---
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
@@ -675,6 +691,7 @@ def run_pair_backtest(pair_id, timeframe):
                 print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
                 continue
 
+            load_trades() 
             learning_trades_for_local_ai = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'] + temp_backtested_trades_list_in_run
 
             market_state[pair_id] = {"candle_data": current_historical_data_slice, 
@@ -722,24 +739,23 @@ def run_pair_backtest(pair_id, timeframe):
             asyncio.run(analyze_and_close_trade(open_bt_trade, cumulative_historical_candles[-1]['close'], "Backtest End (Force Close)", is_backtest=True))
             temp_backtested_trades_list_in_run.append(open_bt_trade)
 
-        # Update global autopilot_trades with trades from this re-analysis run
         current_autopilot_trades_without_this_pair = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
         current_autopilot_trades_without_this_pair.extend(temp_backtested_trades_list_in_run)
         current_autopilot_trades_without_this_pair.sort(key=lambda x: x['entryTimestamp'])
         autopilot_trades[:] = current_autopilot_trades_without_this_pair 
         
-        save_trades() # Save trades.json after each chunk analysis is fully processed
-        load_trades() # Reload trades from the updated trades.json to refresh global autopilot_trades
+        save_trades() 
+        load_trades() 
         
         trades_for_winrate_calc = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED']
         current_cumulative_winrate = calculate_winrate(trades_for_winrate_calc, current_settings.get('fee_pct', 0.1))
         
-        # NEW: Calculate and display new metrics
+        # MODIFIED: Calculate and display new metrics
         total_pnl = sum(t.get('pl_percent', 0.0) for t in trades_for_winrate_calc)
         num_trades = len(trades_for_winrate_calc)
         average_pnl = total_pnl / num_trades if num_trades > 0 else 0.0
         
-        print_colored(f"\n  [DEBUG] Backtest Stats for {pair_id} ({num_trades} trades): Winrate: {current_cumulative_winrate:.2f}% | Avg P/L: {average_pnl:.2f}% | Total P/L: {total_pnl:.2f}% (Target Winrate: {target_winrate:.2f}%)", Fore.CYAN)
+        print_colored(f"\n  [DEBUG] Backtest Stats for {pair_id} ({num_trades} trades): Winrate: {current_cumulative_winrate:.2f}% | Avg P/L: {average_pnl:.2f}% | Total P/L: {total_pnl:.2f}% (Target: {target_winrate:.2f}%)", Fore.CYAN)
         
         if current_cumulative_winrate > highest_achieved_winrate:
             highest_achieved_winrate = current_cumulative_winrate
@@ -749,7 +765,7 @@ def run_pair_backtest(pair_id, timeframe):
         if current_cumulative_winrate >= target_winrate and len(trades_for_winrate_calc) >= MIN_TRADES_FOR_WINRATE_STABILITY:
             print_colored(f"✅ Target Winrate ({target_winrate:.2f}%) tercapai untuk {pair_id} setelah {total_candles_in_cumulative} candle dan {len(trades_for_winrate_calc)} trade.", Fore.GREEN, Style.BRIGHT)
             break
-        elif total_candles_in_cumulative >= BACKTEST_FETCH_CHUNK_LIMIT * 100: # Fail-safe: stop after X chunks
+        elif total_candles_in_cumulative >= BACKTEST_FETCH_CHUNK_LIMIT * 100: 
              print_colored(f"⚠️ Backtest untuk {pair_id} dihentikan: Terlalu banyak candle diproses tanpa mencapai target winrate. Winrate tertinggi: {highest_achieved_winrate:.2f}% ({trades_at_highest_winrate} trade).", Fore.YELLOW, Style.BRIGHT)
              break
 
@@ -832,9 +848,18 @@ def run_dashboard_mode():
     try:
         while True:
             print("\033[H\033[J", end="") # Clear console
+            todays_pnl = calculate_todays_pnl(autopilot_trades) # NEW: Calculate today's P/L
+            pnl_color = Fore.GREEN if todays_pnl > 0 else Fore.RED if todays_pnl < 0 else Fore.WHITE
+
+            # Build header string
+            header = f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s"
+            
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
-            print_colored(f"Last Update: {datetime.now().strftime('%H:%M:%S')} | Refresh: {REFRESH_INTERVAL_SECONDS}s | AI Cycle: {current_settings.get('analysis_interval_sec')}s", Fore.WHITE)
+            print_colored(header, end="")
+            print_colored(f" | Today's P/L: ", end="")
+            print_colored(f"{todays_pnl:.2f}%", pnl_color, Style.BRIGHT)
             print_colored("="*60, Fore.CYAN)
+            
             watched_pairs = current_settings.get("watched_pairs", {})
             if not watched_pairs:
                 print_colored("\nWatchlist kosong. Tekan Ctrl+C untuk kembali dan gunakan '!watch <PAIR>'.", Fore.YELLOW)
@@ -846,13 +871,13 @@ def run_dashboard_mode():
                 if open_pos:
                     price = pair_state['candle_data'][-1]['close'] if pair_state and pair_state.get('candle_data') and pair_state['candle_data'] else open_pos['entryPrice']
                     pnl = calculate_pnl(open_pos['entryPrice'], price, open_pos.get('type'))
-                    pnl_color = Fore.GREEN if pnl > 0 else Fore.RED
+                    pnl_color_indiv = Fore.GREEN if pnl > 0 else Fore.RED
                     type_color = Fore.GREEN if open_pos.get('type') == 'LONG' else Fore.RED
                     print_colored("  Status    : ", end=''); print_colored("POSITION OPEN", Fore.YELLOW, Style.BRIGHT)
                     print_colored("  Tipe      : ", end=''); print_colored(f"{open_pos.get('type')}", type_color, Style.BRIGHT)
                     print_colored("  Entry     : ", end=''); print_colored(f"{open_pos['entryPrice']:.4f}", Fore.WHITE)
                     print_colored("  Current   : ", end=''); print_colored(f"{price:.4f}", Fore.WHITE) 
-                    print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color, Style.BRIGHT)
+                    print_colored("  PnL       : ", end=''); print_colored(f"{pnl:.2f}%", pnl_color_indiv, Style.BRIGHT)
                     
                     if open_pos.get("current_tp_checkpoint_level", 0.0) > 0:
                         cp_level = open_pos["current_tp_checkpoint_level"]
