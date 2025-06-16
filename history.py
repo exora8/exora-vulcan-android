@@ -62,6 +62,7 @@ def get_key_input(timeout=1.0):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return None # Timeout occurred
 
+# MODIFIED: Logic to parse JSON from content string, not file object.
 def load_trades():
     """Loads and returns trades from trades.json."""
     if not os.path.exists(TRADES_FILE):
@@ -71,7 +72,9 @@ def load_trades():
             content = f.read().strip()
             if not content:
                 return []
-            return json.load(f)
+            # FIX: Use json.loads(content) to parse the string we already read
+            # not json.load(f) which tries to read from the file object again.
+            return json.loads(content) 
     except (json.JSONDecodeError, FileNotFoundError):
         return [] # Return empty list if file is corrupt or gone
 
