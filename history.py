@@ -10,18 +10,18 @@ import math
 try:
     import termios
     import tty
-    import select
+    import fcntl # Import fcntl untuk non-blocking read
     IS_UNIX = True
 except ImportError:
     IS_UNIX = False
-    print("Peringatan: Modul 'termios', 'tty', atau 'select' tidak ditemukan. Mode interaktif tidak akan berfungsi.")
+    print("Peringatan: Modul 'termios', 'tty', atau 'fcntl' tidak ditemukan.")
     print("Script ini dirancang untuk lingkungan Unix-like (Linux, macOS, Termux).")
 
 
 # --- KONFIGURASI ---
 TRADES_FILE = 'trades.json'
 TRADES_PER_PAGE = 3
-REFRESH_INTERVAL_SECONDS = 1.0 # Refresh rate in seconds if no key is pressed
+# REFRESH_INTERVAL_SECONDS sudah tidak digunakan karena input sekarang blocking
 
 # --- INISIALISASI ---
 init(autoreset=True)
@@ -36,28 +36,38 @@ def clear_screen():
     """Membersihkan layar terminal."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def get_key_input(timeout=1.0):
+# NEW, PROVEN-TO-WORK INPUT FUNCTION
+def get_key_input():
     """
-    Gets a single key press from the user with a timeout (non-blocking).
-    Returns the single character key or None on timeout.
+    Gets a single character or a full escape sequence from standard input.
+    This is a blocking function.
     """
     if not IS_UNIX:
-        time.sleep(timeout)
-        return None
+        # Fallback for non-unix systems, will not work interactively
+        return sys.stdin.read(1)
         
-    # Check if there's data to be read from stdin within the timeout
-    rlist, _, _ = select.select([sys.stdin], [], [], timeout)
-    
-    if rlist:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(sys.stdin.fileno())
-            ch = sys.stdin.read(1)
-            return ch
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return None # Timeout occurred
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        ch = sys.stdin.read(1)
+        # If it's an escape sequence (like an arrow key), read the rest
+        if ch == '\x1b':
+            # Set stdin to non-blocking to peek for more characters
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            try:
+                # Read all available characters in the escape sequence
+                while True:
+                    ch += sys.stdin.read(1)
+            except IOError:
+                # This exception is expected when no more characters are available
+                pass
+            # Restore blocking mode
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 def load_trades():
     """Loads and returns trades from trades.json."""
@@ -130,57 +140,56 @@ def run_viewer():
     current_page = 0
     running = True
 
+    # Initial display
     while running:
-        try:
-            # 1. Load Data
-            all_trades = load_trades()
-            trades_display_order = list(reversed(all_trades)) # Newest first
-            
-            total_trades = len(trades_display_order)
-            total_pages = math.ceil(total_trades / TRADES_PER_PAGE) if total_trades > 0 else 1
-            
-            # 2. Adjust current page if it's out of bounds (e.g., trades were deleted)
-            if current_page >= total_pages:
-                current_page = max(0, total_pages - 1)
-                
-            # 3. Clear Screen and Display Header
-            clear_screen()
-            print_colored("--- Vulcan AI Real-time Trade Viewer ---", Fore.CYAN, Style.BRIGHT)
-            print_colored(f"Last Refresh: {datetime.now().strftime('%H:%M:%S')} | Total Trades: {total_trades}", Fore.YELLOW)
-            print_colored(f"Halaman {current_page + 1} / {total_pages}", Fore.YELLOW)
-            print_colored("="*60, Fore.CYAN)
-            
-            # 4. Slice and Display Trades for the Current Page
-            start_idx = current_page * TRADES_PER_PAGE
-            end_idx = start_idx + TRADES_PER_PAGE
-            trades_for_page = trades_display_order[start_idx:end_idx]
-            
-            if not trades_for_page:
-                print_colored("\nTidak ada trade untuk ditampilkan.", Fore.WHITE)
-            else:
-                for trade in trades_for_page:
-                    print(format_trade_block(trade))
-            
-            # 5. Display Navigation Footer (UPDATED)
-            print_colored("\nNavigasi: [W] Halaman Sebelumnya | [S] Halaman Berikutnya | [Q] Keluar", Fore.GREEN, Style.BRIGHT)
-            
-            # 6. Wait for Input or Timeout
-            key = get_key_input(timeout=REFRESH_INTERVAL_SECONDS)
-            
-            if key:
-                key = key.lower() # Convert to lowercase for easier comparison
-                
-                if key == 'q':
-                    running = False
-                elif key == 'w': # 'w' for UP
-                    if current_page > 0:
-                        current_page -= 1
-                elif key == 's': # 's' for DOWN
-                    if current_page < total_pages - 1:
-                        current_page += 1
+        # 1. Load Data
+        all_trades = load_trades()
+        trades_display_order = list(reversed(all_trades)) # Newest first
         
-        except KeyboardInterrupt:
-            running = False
+        total_trades = len(trades_display_order)
+        total_pages = math.ceil(total_trades / TRADES_PER_PAGE) if total_trades > 0 else 1
+        
+        # 2. Adjust current page if it's out of bounds
+        if current_page >= total_pages:
+            current_page = max(0, total_pages - 1)
+            
+        # 3. Clear Screen and Display Header
+        clear_screen()
+        print_colored("--- Vulcan AI Real-time Trade Viewer ---", Fore.CYAN, Style.BRIGHT)
+        print_colored(f"Total Trades: {total_trades} | Halaman {current_page + 1} / {total_pages}", Fore.YELLOW)
+        print_colored("="*60, Fore.CYAN)
+        
+        # 4. Slice and Display Trades for the Current Page
+        start_idx = current_page * TRADES_PER_PAGE
+        end_idx = start_idx + TRADES_PER_PAGE
+        trades_for_page = trades_display_order[start_idx:end_idx]
+        
+        if not trades_for_page:
+            print_colored("\nTidak ada trade untuk ditampilkan.", Fore.WHITE)
+        else:
+            for trade in trades_for_page:
+                print(format_trade_block(trade))
+        
+        # 5. Display Navigation Footer
+        print_colored("\nNavigasi: [W] Halaman Sebelumnya | [S] Halaman Berikutnya | [Q] Keluar", Fore.GREEN, Style.BRIGHT)
+        
+        # 6. Wait for user input (now it's blocking)
+        key = get_key_input()
+        
+        if key:
+            key = key.lower() 
+            
+            if key == 'q':
+                running = False
+            elif key == 'w': # 'w' for UP
+                if current_page > 0:
+                    current_page -= 1
+            elif key == 's': # 's' for DOWN
+                if current_page < total_pages - 1:
+                    current_page += 1
+            # Arrow key support can be added here if needed, based on debug_input.py results
+            # e.g., elif key == '\x1b[A':
+            # But 'w' and 's' are more reliable across all terminals.
 
     clear_screen()
     print_colored("Trade viewer ditutup.", Fore.CYAN)
