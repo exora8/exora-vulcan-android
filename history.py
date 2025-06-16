@@ -36,11 +36,10 @@ def clear_screen():
     """Membersihkan layar terminal."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# MODIFIED: More robust get_key_input
 def get_key_input(timeout=1.0):
     """
     Gets a single key press from the user with a timeout (non-blocking).
-    More robustly captures multi-byte sequences like arrow keys.
+    Returns the single character key or None on timeout.
     """
     if not IS_UNIX:
         time.sleep(timeout)
@@ -54,13 +53,7 @@ def get_key_input(timeout=1.0):
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(sys.stdin.fileno())
-            # Read the first character
             ch = sys.stdin.read(1)
-            # If it's an escape sequence, read subsequent characters if available
-            if ch == '\x1b':
-                # Loop to read the rest of the sequence without blocking
-                while select.select([sys.stdin], [], [], 0)[0]:
-                    ch += sys.stdin.read(1)
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -168,25 +161,23 @@ def run_viewer():
                 for trade in trades_for_page:
                     print(format_trade_block(trade))
             
-            # 5. Display Navigation Footer
-            print_colored("\nNavigasi: [↑] Halaman Sebelumnya | [↓] Halaman Berikutnya | [Q] Keluar", Fore.GREEN, Style.BRIGHT)
+            # 5. Display Navigation Footer (UPDATED)
+            print_colored("\nNavigasi: [W] Halaman Sebelumnya | [S] Halaman Berikutnya | [Q] Keluar", Fore.GREEN, Style.BRIGHT)
             
             # 6. Wait for Input or Timeout
             key = get_key_input(timeout=REFRESH_INTERVAL_SECONDS)
             
             if key:
-                if key.lower() == 'q':
+                key = key.lower() # Convert to lowercase for easier comparison
+                
+                if key == 'q':
                     running = False
-                elif key == '\x1b[A': # Standard ANSI Up Arrow
+                elif key == 'w': # 'w' for UP
                     if current_page > 0:
                         current_page -= 1
-                elif key == '\x1b[B': # Standard ANSI Down Arrow
+                elif key == 's': # 's' for DOWN
                     if current_page < total_pages - 1:
                         current_page += 1
-                else:
-                    # NEW: Catch-all DEBUG line to show exactly what key was received.
-                    print_colored(f"\n[DEBUG] Unhandled Key Received: {repr(key)}. Tekan tombol apa saja untuk melanjutkan.", Fore.RED, Style.BRIGHT)
-                    get_key_input(timeout=5) # Wait for another key press or 5 seconds to allow user to read the message.
         
         except KeyboardInterrupt:
             running = False
