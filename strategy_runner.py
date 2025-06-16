@@ -167,10 +167,6 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         return None
 
 def fetch_historical_candles_backward_from_ts(instId, timeframe, to_ts_seconds, limit_per_request):
-    """
-    Fetches historical candles backward from a given timestamp (to_ts_seconds) using CryptoCompare.
-    Returns the fetched candles (oldest first) and the timestamp of the earliest candle in the batch.
-    """
     timeframe_map = {'1m': 'histominute', '1H': 'histohour', '1D': 'histoday'} 
     
     cc_endpoint = timeframe_map.get(timeframe)
@@ -254,6 +250,7 @@ def calculate_todays_pnl(all_trades):
                 
     return total_pnl
 
+# NEW: Helper function to calculate this week's and last week's P/L
 def calculate_this_weeks_pnl(all_trades):
     today = datetime.now().date()
     start_of_week = today - timedelta(days=today.weekday()) # Monday
@@ -449,7 +446,6 @@ class LocalAI:
 
         return False 
 
-    # MODIFIED: get_decision to include new 3-candle confirmation filter
     def get_decision(self, candle_data, open_position, instrument_id):
         analysis = self.get_market_analysis(candle_data)
         
@@ -460,34 +456,23 @@ class LocalAI:
             return {"action": "HOLD", "reason": "Memantau posisi terbuka..."}
         
         potential_trade_type = None
-        # Check for LONG entry signal
         if analysis['bias'] == 'BULLISH':
-            # 1. EMA9 cross must happen
             if analysis['prev_candle_close'] <= analysis['ema9_prev'] and \
                analysis['current_candle_close'] > analysis['ema9_current']:
-                # 2. NEW: Last 3 candles must be bearish
-                if all(direction == 'DOWN' for direction in analysis.get('pre_entry_candle_direction', [])):
-                    potential_trade_type = 'LONG'
-        
-        # Check for SHORT entry signal
+                potential_trade_type = 'LONG'
         elif analysis['bias'] == 'BEARISH':
-            # 1. EMA9 cross must happen
             if analysis['prev_candle_close'] >= analysis['ema9_prev'] and \
                analysis['current_candle_close'] < analysis['ema9_current']:
-                # 2. NEW: Last 3 candles must be bullish
-                if all(direction == 'UP' for direction in analysis.get('pre_entry_candle_direction', [])):
-                    potential_trade_type = 'SHORT'
+                potential_trade_type = 'SHORT'
         
-        # If a valid setup is found, check against past mistakes
         if potential_trade_type:
             if self.check_for_repeated_mistake(analysis, potential_trade_type, instrument_id):
                 return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan {potential_trade_type} berdasarkan riwayat loss."}
             
-            # If not a repeated mistake, then proceed with the entry
             if potential_trade_type == 'LONG':
-                return {"action": "BUY", "reason": "BULLISH: EMA9 cross setelah 3 candle pullback bearish.", "snapshot": analysis}
-            else: # potential_trade_type == 'SHORT'
-                return {"action": "SELL", "reason": "BEARISH: EMA9 cross setelah 3 candle pullback bullish.", "snapshot": analysis}
+                return {"action": "BUY", "reason": "BULLISH TREND: Candle retrace dan close di atas EMA9.", "snapshot": analysis}
+            else: 
+                return {"action": "SELL", "reason": "BEARISH TREND: Candle retrace dan close di bawah EMA9.", "snapshot": analysis}
         
         return {"action": "HOLD", "reason": f"Menunggu setup Exora Vulcan Sniper. Bias: {analysis['bias']}."}
 
@@ -691,6 +676,7 @@ def run_pair_backtest(pair_id, timeframe):
     global autopilot_trades 
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
 
+    # 1. Clear existing trades for this pair from global autopilot_trades and save
     autopilot_trades[:] = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
     save_trades() 
     
@@ -736,6 +722,7 @@ def run_pair_backtest(pair_id, timeframe):
                 print_progress_bar(i + 1, total_candles_in_cumulative, prefix=f'  {pair_id} Analisis', suffix='Lengkap', length=50, fill='=')
                 continue
 
+            load_trades() 
             learning_trades_for_local_ai = [t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'CLOSED'] + temp_backtested_trades_list_in_run
 
             market_state[pair_id] = {"candle_data": current_historical_data_slice, 
