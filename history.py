@@ -45,7 +45,6 @@ def get_key_input(timeout=1.0):
         time.sleep(timeout)
         return None
         
-    # Check if there's data to be read from stdin within the timeout
     rlist, _, _ = select.select([sys.stdin], [], [], timeout)
     
     if rlist:
@@ -54,15 +53,18 @@ def get_key_input(timeout=1.0):
         try:
             tty.setraw(sys.stdin.fileno())
             ch = sys.stdin.read(1)
-            if ch == '\x1b': # ESC, possibly an arrow key
-                # Read the next two characters to get the full sequence
-                ch += sys.stdin.read(2)
+            # Check if it's an escape sequence and read more characters if available
+            if ch == '\x1b':
+                # Peek for more characters without blocking
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    ch += sys.stdin.read(1)
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    ch += sys.stdin.read(1)
             return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return None # Timeout occurred
 
-# MODIFIED: Logic to parse JSON from content string, not file object.
 def load_trades():
     """Loads and returns trades from trades.json."""
     if not os.path.exists(TRADES_FILE):
@@ -72,11 +74,9 @@ def load_trades():
             content = f.read().strip()
             if not content:
                 return []
-            # FIX: Use json.loads(content) to parse the string we already read
-            # not json.load(f) which tries to read from the file object again.
             return json.loads(content) 
     except (json.JSONDecodeError, FileNotFoundError):
-        return [] # Return empty list if file is corrupt or gone
+        return []
 
 def format_trade_block(trade):
     """Formats a single trade object into a readable multi-line string."""
@@ -174,14 +174,19 @@ def run_viewer():
             key = get_key_input(timeout=REFRESH_INTERVAL_SECONDS)
             
             if key:
+                # NEW: DEBUG LINE to show the raw key sequence received
+                print_colored(f"\n[DEBUG] Key received: {repr(key)}", Fore.BLUE)
+                time.sleep(1) # Give time to see the debug message
+
                 if key.lower() == 'q':
                     running = False
-                elif key == '\x1b[A': # Up Arrow
+                elif key == '\x1b[A': # Standard ANSI Up Arrow
                     if current_page > 0:
                         current_page -= 1
-                elif key == '\x1b[B': # Down Arrow
+                elif key == '\x1b[B': # Standard ANSI Down Arrow
                     if current_page < total_pages - 1:
                         current_page += 1
+                # No 'else' here, so if it's an unrecognized key, it will just loop and refresh
         
         except KeyboardInterrupt:
             running = False
