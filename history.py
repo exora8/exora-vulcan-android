@@ -36,15 +36,17 @@ def clear_screen():
     """Membersihkan layar terminal."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
+# MODIFIED: More robust get_key_input
 def get_key_input(timeout=1.0):
     """
     Gets a single key press from the user with a timeout (non-blocking).
-    Returns the key (e.g., 'q', or arrow key sequence) or None on timeout.
+    More robustly captures multi-byte sequences like arrow keys.
     """
     if not IS_UNIX:
         time.sleep(timeout)
         return None
         
+    # Check if there's data to be read from stdin within the timeout
     rlist, _, _ = select.select([sys.stdin], [], [], timeout)
     
     if rlist:
@@ -52,13 +54,12 @@ def get_key_input(timeout=1.0):
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(sys.stdin.fileno())
+            # Read the first character
             ch = sys.stdin.read(1)
-            # Check if it's an escape sequence and read more characters if available
+            # If it's an escape sequence, read subsequent characters if available
             if ch == '\x1b':
-                # Peek for more characters without blocking
-                if select.select([sys.stdin], [], [], 0)[0]:
-                    ch += sys.stdin.read(1)
-                if select.select([sys.stdin], [], [], 0)[0]:
+                # Loop to read the rest of the sequence without blocking
+                while select.select([sys.stdin], [], [], 0)[0]:
                     ch += sys.stdin.read(1)
             return ch
         finally:
@@ -174,10 +175,6 @@ def run_viewer():
             key = get_key_input(timeout=REFRESH_INTERVAL_SECONDS)
             
             if key:
-                # NEW: DEBUG LINE to show the raw key sequence received
-                print_colored(f"\n[DEBUG] Key received: {repr(key)}", Fore.BLUE)
-                time.sleep(1) # Give time to see the debug message
-
                 if key.lower() == 'q':
                     running = False
                 elif key == '\x1b[A': # Standard ANSI Up Arrow
@@ -186,7 +183,10 @@ def run_viewer():
                 elif key == '\x1b[B': # Standard ANSI Down Arrow
                     if current_page < total_pages - 1:
                         current_page += 1
-                # No 'else' here, so if it's an unrecognized key, it will just loop and refresh
+                else:
+                    # NEW: Catch-all DEBUG line to show exactly what key was received.
+                    print_colored(f"\n[DEBUG] Unhandled Key Received: {repr(key)}. Tekan tombol apa saja untuk melanjutkan.", Fore.RED, Style.BRIGHT)
+                    get_key_input(timeout=5) # Wait for another key press or 5 seconds to allow user to read the message.
         
         except KeyboardInterrupt:
             running = False
