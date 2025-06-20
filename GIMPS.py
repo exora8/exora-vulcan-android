@@ -373,15 +373,7 @@ HTML_TEMPLATE = """
     </div>
     <div id="info-content"><p class="placeholder">// AWAITING COMMAND //</p></div>
 </div>
-<button id="ai-button" title="AI Strategic Summary">AI</button>
-<div id="modal-backdrop" class="modal-hidden"></div>
-<div id="ai-modal" class="modal-hidden">
-    <div class="modal-header">
-        <h2 id="ai-title" style="border:none; margin:0; padding:0;">STRATEGIC SUMMARY</h2>
-        <button id="ai-close-btn" style="background:none; border:none; color:var(--accent-color); font-size:28px; cursor:pointer;">×</button>
-    </div>
-    <div id="ai-modal-content"></div>
-</div>
+
 
 <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
 <script src="https://cdn.amcharts.com/lib/5/map.js"></script>
