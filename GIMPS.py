@@ -6,7 +6,7 @@ from threading import Lock
 import feedparser
 
 # =================================================================
-# BAGIAN 1: KONFIGURASI
+# BAGIAN 1: KONFIGURASI DENGAN DAFTAR NEGARA MAKSIMAL
 # =================================================================
 app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
@@ -14,27 +14,46 @@ app_cache = {}
 CACHE_LIFETIME_SECONDS = 1800 
 data_lock = Lock()
 
-# =================================================================
-# BAGIAN 2: LOGIKA BACKEND DENGAN ANALISIS HUBUNGAN BERITA
-# =================================================================
-
+# --- DAFTAR NEGARA YANG DIPERLUAS SECARA MAKSIMAL ---
 FULL_COUNTRY_MAP = {
-    'Argentina': 'AR', 'Australia': 'AU', 'Austria': 'AT', 'Belgium': 'BE', 'Brazil': 'BR', 'Bulgaria': 'BG',
-    'Canada': 'CA', 'China': 'CN', 'Colombia': 'CO', 'Cuba': 'CU', 'Czech Republic': 'CZ', 'Denmark': 'DK',
-    'Egypt': 'EG', 'France': 'FR', 'Germany': 'DE', 'Greece': 'GR', 'Hong Kong': 'HK', 'Hungary': 'HU',
-    'India': 'IN', 'Indonesia': 'ID', 'Ireland': 'IE', 'Israel': 'IL', 'Italy': 'IT', 'Japan': 'JP',
-    'Latvia': 'LV', 'Lithuania': 'LT', 'Malaysia': 'MY', 'Mexico': 'MX', 'Morocco': 'MA', 'Netherlands': 'NL',
-    'New Zealand': 'NZ', 'Nigeria': 'NG', 'Norway': 'NO', 'Philippines': 'PH', 'Poland': 'PL',
-    'Portugal': 'PT', 'Romania': 'RO', 'Russia': 'RU', 'Saudi Arabia': 'SA', 'Serbia': 'RS',
-    'Singapore': 'SG', 'Slovakia': 'SK', 'Slovenia': 'SI', 'South Africa': 'ZA', 'South Korea': 'KR',
-    'Sweden': 'SE', 'Switzerland': 'CH', 'Taiwan': 'TW', 'Thailand': 'TH', 'Türkiye': 'TR', 'Turkey': 'TR',
-    'UAE': 'AE', 'Ukraine': 'UA', 'United Kingdom': 'GB', 'USA': 'US', 'Venezuela': 'VE', 'United States': 'US'
+    # Amerika
+    'Argentina': 'AR', 'Bolivia': 'BO', 'Brazil': 'BR', 'Canada': 'CA', 'Chile': 'CL', 'Colombia': 'CO',
+    'Cuba': 'CU', 'Ecuador': 'EC', 'Mexico': 'MX', 'Panama': 'PA', 'Paraguay': 'PY', 'Peru': 'PE', 
+    'USA': 'US', 'United States': 'US', 'Uruguay': 'UY', 'Venezuela': 'VE',
+    # Eropa
+    'Austria': 'AT', 'Belarus': 'BY', 'Belgium': 'BE', 'Bosnia and Herzegovina': 'BA', 'Bulgaria': 'BG', 'Croatia': 'HR',
+    'Cyprus': 'CY', 'Czech Republic': 'CZ', 'Denmark': 'DK', 'Estonia': 'EE', 'Finland': 'FI', 'France': 'FR',
+    'Germany': 'DE', 'Greece': 'GR', 'Hungary': 'HU', 'Iceland': 'IS', 'Ireland': 'IE', 'Italy': 'IT',
+    'Latvia': 'LV', 'Lithuania': 'LT', 'Luxembourg': 'LU', 'Malta': 'MT', 'Moldova': 'MD', 'Netherlands': 'NL',
+    'North Macedonia': 'MK', 'Norway': 'NO', 'Poland': 'PL', 'Portugal': 'PT', 'Romania': 'RO',
+    'Russia': 'RU', 'Serbia': 'RS', 'Slovakia': 'SK', 'Slovenia': 'SI', 'Spain': 'ES', 'Sweden': 'SE',
+    'Switzerland': 'CH', 'Ukraine': 'UA', 'United Kingdom': 'GB',
+    # Asia & Oseania
+    'Afghanistan': 'AF', 'Australia': 'AU', 'Bangladesh': 'BD', 'Cambodia': 'KH', 'China': 'CN', 'Hong Kong': 'HK',
+    'India': 'IN', 'Indonesia': 'ID', 'Japan': 'JP', 'Kazakhstan': 'KZ', 'Kyrgyzstan': 'KG', 'Malaysia': 'MY',
+    'Mongolia': 'MN', 'Myanmar': 'MM', 'Nepal': 'NP', 'New Zealand': 'NZ', 'North Korea': 'KP', 'Pakistan': 'PK',
+    'Philippines': 'PH', 'Singapore': 'SG', 'South Korea': 'KR', 'Sri Lanka': 'LK', 'Taiwan': 'TW',
+    'Tajikistan': 'TJ', 'Thailand': 'TH', 'Turkmenistan': 'TM', 'Uzbekistan': 'UZ', 'Vietnam': 'VN',
+    # Timur Tengah
+    'Armenia': 'AM', 'Azerbaijan': 'AZ', 'Bahrain': 'BH', 'Egypt': 'EG', 'Georgia': 'GE', 'Iran': 'IR',
+    'Iraq': 'IQ', 'Israel': 'IL', 'Jordan': 'JO', 'Kuwait': 'KW', 'Lebanon': 'LB', 'Oman': 'OM', 'Qatar': 'QA',
+    'Saudi Arabia': 'SA', 'Syria': 'SY', 'Türkiye': 'TR', 'Turkey': 'TR', 'UAE': 'AE', 'Yemen': 'YE',
+    # Afrika
+    'Algeria': 'DZ', 'Angola': 'AO', 'Botswana': 'BW', 'Cameroon': 'CM', 'DR Congo': 'CD', 'Ethiopia': 'ET',
+    'Ghana': 'GH', 'Ivory Coast': 'CI', "Côte d'Ivoire": 'CI', 'Kenya': 'KE', 'Libya': 'LY', 'Madagascar': 'MG',
+    'Mali': 'ML', 'Mauritius': 'MU', 'Morocco': 'MA', 'Mozambique': 'MZ', 'Namibia': 'NA', 'Niger': 'NE',
+    'Nigeria': 'NG', 'Rwanda': 'RW', 'Senegal': 'SN', 'Somalia': 'SO', 'South Africa': 'ZA', 'Sudan': 'SD',
+    'Tanzania': 'TZ', 'Tunisia': 'TN', 'Uganda': 'UG', 'Zambia': 'ZM', 'Zimbabwe': 'ZW'
 }
+
 REVERSE_COUNTRY_MAP = {v: k for k, v in FULL_COUNTRY_MAP.items()}
 COUNTRY_MAP = FULL_COUNTRY_MAP 
-ACTIVE_CONFLICTS = [ ('RU', 'UA'), ('IL', 'PS') ] 
+ACTIVE_CONFLICTS = [ ('RU', 'UA'), ('IL', 'IR'), ('IL', 'SY'), ('YE', 'SA'), ('CN', 'TW') ] 
 TENSION_KEYWORDS = { 'war': 15, 'conflict': 10, 'sanction': 8, 'protest': 5, 'crisis': 7, 'attack': 12, 'dispute': 6, 'tension': 8, 'unrest': 5, 'mobilization': 10 }
 
+# =================================================================
+# BAGIAN 2: LOGIKA BACKEND (TIDAK BERUBAH)
+# =================================================================
 def parse_world_rates(soup):
     data = []
     table = soup.select_one('table#AutoNumber3')
@@ -117,8 +136,7 @@ def get_all_data():
     with data_lock:
         if app_cache and (time.time() - app_cache.get('timestamp', 0)) < CACHE_LIFETIME_SECONDS:
             return app_cache.get('data')
-
-        print(">> RE-CALIBRATING GLOBAL INTEL CACHE... (THIS MAY TAKE A FEW MINUTES)")
+        print(">> INITIALIZING GLOBAL SCAN... THIS WILL TAKE SEVERAL MINUTES.")
         all_data = {}
         cbrates_urls = {'rates': 'https://www.cbrates.com/', 'decisions': 'https://www.cbrates.com/decisions.htm', 'meetings': 'https://www.cbrates.com/meetings.htm'}
         for key, url in cbrates_urls.items():
@@ -134,27 +152,22 @@ def get_all_data():
         all_data['geopolitical'] = {"tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news": {}, "news_links": []}
         news_links_set = set()
         country_codes_to_scan = list(REVERSE_COUNTRY_MAP.keys())
-        
         for i, source_code in enumerate(country_codes_to_scan):
             print(f">> SCANNING: {REVERSE_COUNTRY_MAP.get(source_code, source_code)} ({i+1}/{len(country_codes_to_scan)})")
             news_data = get_news_and_tension_from_rss(source_code)
             all_data['geopolitical']['tension_scores'].append({"id": source_code, "value": news_data["score"]})
             all_data['geopolitical']['news'][source_code] = news_data["headlines"]
-            
-            # Relation Engine: Mencari link antar negara
             for headline in news_data["headlines"]:
                 for target_code, target_name in REVERSE_COUNTRY_MAP.items():
                     if source_code == target_code: continue
-                    if target_name.upper() in headline:
+                    if target_name.upper() in headline or f" {target_code} " in headline:
                         link = tuple(sorted((source_code, target_code)))
                         news_links_set.add(link)
             time.sleep(0.1)
-
         all_data['geopolitical']['news_links'] = [list(link) for link in news_links_set]
-
         app_cache['data'] = all_data
         app_cache['timestamp'] = time.time()
-        print(">> INTEL CACHE UPDATED.")
+        print(">> GLOBAL SCAN COMPLETE. INTEL CACHE UPDATED.")
         return all_data
 
 # =================================================================
@@ -187,7 +200,7 @@ def get_country_data(country_code):
     })
 
 # =================================================================
-# BAGIAN 4: FRONTEND HTML DENGAN VISUALISASI GEOPOLITIK
+# BAGIAN 4: FRONTEND HTML (Tidak Berubah)
 # =================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -405,7 +418,7 @@ HTML_TEMPLATE = """
 # ===============================================
 if __name__ == '__main__':
     print("===============================================================")
-    print(">> G.I.M.P.S (vIntel-Link) :: BOOTING...")
+    print(">> G.I.M.P.S (vGlobal Scope) :: BOOTING...")
     print(">> Menginisialisasi koneksi dan memuat data intelijen global...")
     get_all_data()
     print(">> SISTEM ONLINE. Menunggu perintah di command interface...")
