@@ -3,10 +3,10 @@ from flask import Flask, jsonify, render_template_string
 import cloudscraper
 from bs4 import BeautifulSoup
 from threading import Lock
-import feedparser # Library baru untuk RSS
+import feedparser
 
 # =================================================================
-# BAGIAN 1: KONFIGURASI (TANPA API KEY)
+# BAGIAN 1: KONFIGURASI
 # =================================================================
 app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
@@ -15,7 +15,7 @@ CACHE_LIFETIME_SECONDS = 1800
 data_lock = Lock()
 
 # =================================================================
-# BAGIAN 2: LOGIKA BACKEND DENGAN RSS FEED
+# BAGIAN 2: LOGIKA BACKEND DENGAN ANALISIS HUBUNGAN BERITA
 # =================================================================
 
 FULL_COUNTRY_MAP = {
@@ -35,7 +35,6 @@ COUNTRY_MAP = FULL_COUNTRY_MAP
 ACTIVE_CONFLICTS = [ ('RU', 'UA'), ('IL', 'PS') ] 
 TENSION_KEYWORDS = { 'war': 15, 'conflict': 10, 'sanction': 8, 'protest': 5, 'crisis': 7, 'attack': 12, 'dispute': 6, 'tension': 8, 'unrest': 5, 'mobilization': 10 }
 
-# --- Fungsi-fungsi parsing moneter (tidak berubah) ---
 def parse_world_rates(soup):
     data = []
     table = soup.select_one('table#AutoNumber3')
@@ -76,7 +75,7 @@ def parse_decisions_or_meetings(soup, type):
         except (IndexError, AttributeError): continue
     return data
 
-def generate_analysis(country_code, decision_data): # Teks diubah jadi kapital
+def generate_analysis(country_code, decision_data):
     if not decision_data: return {"title": "ANALYSIS: NO DATA", "summary": "NO RECENT DIRECTIVES FOUND. TERMINATING DATALINK.", "impact": "IMPACT CANNOT BE DETERMINED."}
     latest_decision = decision_data[0]
     action = latest_decision.get("action", "UNKNOWN").lower()
@@ -99,29 +98,21 @@ def generate_analysis(country_code, decision_data): # Teks diubah jadi kapital
     impact_paragraphs.append("<small><i>DISCLAIMER: ANALYSIS IS A PROTOTYPE MODEL. FINANCIAL MARKETS ARE COMPLEX. CONDUCT INDEPENDENT RESEARCH. END TRANSMISSION.</i></small>")
     return {"title": title, "summary": summary, "impact": "<br><br>".join(impact_paragraphs)}
 
-# --- Fungsi Berita Diubah Menggunakan RSS Feed ---
 def get_news_and_tension_from_rss(country_code):
     try:
-        # URL RSS Google News berdasarkan kode negara
         url = f"https://news.google.com/rss?gl={country_code.upper()}&hl=en-US&ceid={country_code.upper()}:en"
         feed = feedparser.parse(url)
-        
-        if feed.bozo: # feedparser menandai error dengan flag 'bozo'
-            raise Exception(feed.bozo_exception)
-
+        if feed.bozo: raise Exception(feed.bozo_exception)
         headlines = [entry.title.upper() for entry in feed.entries]
         score = 0
         for headline in headlines:
             for keyword, weight in TENSION_KEYWORDS.items():
-                if keyword.upper() in headline:
-                    score += weight
-                    
+                if keyword.upper() in headline: score += weight
         return {"headlines": headlines, "score": min(score, 100)}
     except Exception as e:
         print(f"Error fetching RSS for {country_code}: {e}")
         return {"headlines": [f"ERROR FETCHING RSS FEED FOR {country_code.upper()}"], "score": 0}
 
-# --- Fungsi utama yang diperluas ---
 def get_all_data():
     with data_lock:
         if app_cache and (time.time() - app_cache.get('timestamp', 0)) < CACHE_LIFETIME_SECONDS:
@@ -142,24 +133,22 @@ def get_all_data():
         
         all_data['geopolitical'] = {"tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news": {}, "news_links": []}
         news_links_set = set()
-        
         country_codes_to_scan = list(REVERSE_COUNTRY_MAP.keys())
         
         for i, source_code in enumerate(country_codes_to_scan):
             print(f">> SCANNING: {REVERSE_COUNTRY_MAP.get(source_code, source_code)} ({i+1}/{len(country_codes_to_scan)})")
-            # Gunakan fungsi RSS baru
             news_data = get_news_and_tension_from_rss(source_code)
             all_data['geopolitical']['tension_scores'].append({"id": source_code, "value": news_data["score"]})
             all_data['geopolitical']['news'][source_code] = news_data["headlines"]
             
+            # Relation Engine: Mencari link antar negara
             for headline in news_data["headlines"]:
                 for target_code, target_name in REVERSE_COUNTRY_MAP.items():
                     if source_code == target_code: continue
                     if target_name.upper() in headline:
                         link = tuple(sorted((source_code, target_code)))
                         news_links_set.add(link)
-            # Jeda sopan agar tidak membanjiri server Google News
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         all_data['geopolitical']['news_links'] = [list(link) for link in news_links_set]
 
@@ -198,7 +187,7 @@ def get_country_data(country_code):
     })
 
 # =================================================================
-# BAGIAN 4: FRONTEND HTML (Tidak Berubah)
+# BAGIAN 4: FRONTEND HTML DENGAN VISUALISASI GEOPOLITIK
 # =================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
