@@ -62,7 +62,7 @@ global_data = {
     'geopolitical': {
         "tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news_links": []
     },
-    'last_updated_code': None # << PENAMBAHAN UNTUK FITUR FLASH
+    'last_updated_code': None
 }
 MONETARY_UPDATE_INTERVAL_SECONDS = 900
 
@@ -183,7 +183,7 @@ def get_news_from_rss(country_code):
         return []
 
 # =================================================================
-# BAGIAN 4: PROSES BACKGROUND (DIMODIFIKASI)
+# BAGIAN 4: PROSES BACKGROUND (TIDAK BERUBAH DARI SEBELUMNYA)
 # =================================================================
 def background_update_task():
     country_codes = list(REVERSE_COUNTRY_MAP.keys())
@@ -215,12 +215,10 @@ def background_update_task():
             latest_news = get_news_from_rss(country_code)
 
             with data_lock:
-                # Cek jika ada berita baru, jika tidak ada jangan update last_updated_code
                 if latest_news and (country_code not in global_data['all_news'] or global_data['all_news'][country_code] != latest_news):
                     global_data['all_news'][country_code] = latest_news
-                    global_data['last_updated_code'] = country_code # << SIMPAN KODE NEGARA YANG BARU DIUPDATE
+                    global_data['last_updated_code'] = country_code
                 
-                # Kalkulasi ulang tension score
                 tension_scores = collections.defaultdict(int)
                 news_links_set = set()
                 for c1, c2 in ACTIVE_CONFLICTS:
@@ -245,7 +243,7 @@ def background_update_task():
             time.sleep(10)
 
 # =================================================================
-# BAGIAN 5: API ENDPOINTS (DIMODIFIKASI)
+# BAGIAN 5: API ENDPOINTS (TIDAK BERUBAH DARI SEBELUMNYA)
 # =================================================================
 @app.route('/')
 def home(): return render_template_string(HTML_TEMPLATE)
@@ -256,13 +254,11 @@ def stream_updates():
         while True:
             time.sleep(0.5)
             with data_lock:
-                # << BUAT PAKET DATA UNTUK DIKIRIM KE FRONTEND
                 data_to_send = {
                     'geopolitical': global_data['geopolitical'],
                     'updated_country_code': global_data.get('last_updated_code')
                 }
                 yield f"data: {json.dumps(data_to_send)}\n\n"
-                # << RESET KODE NEGARA SETELAH DIKIRIM AGAR TIDAK FLASH TERUS MENERUS
                 if global_data['last_updated_code']:
                     global_data['last_updated_code'] = None
                     
@@ -290,7 +286,7 @@ def get_country_data(country_code):
     })
 
 # =================================================================
-# BAGIAN 6: FRONTEND HTML DENGAN TAMPILAN YANG DIMODIFIKASI
+# BAGIAN 6: FRONTEND HTML DENGAN FITUR NOTIFIKASI
 # =================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -303,7 +299,7 @@ HTML_TEMPLATE = """
         :root {
             --main-bg: #000; --panel-bg: rgba(10, 10, 10, 0.9); --border-color: rgba(255, 255, 255, 0.2);
             --accent-color: #FFF; --text-color: #dcdcdc; --red-alert: #ff4d4d; --blue-link: #64b5f6;
-            --flash-color: #FFFF00; /* Warna kuning untuk flash */
+            --flash-color: #FFFF00;
         }
         @keyframes scanlines { 0% { background-position: 0 0; } 100% { background-position: 0 50px; } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -377,7 +373,27 @@ HTML_TEMPLATE = """
 <script>
     const infoPanel = document.getElementById('infopanel'), infoContent = document.getElementById('info-content'), panelTitle = document.getElementById('panel-title'), closeButton = document.getElementById('close-panel');
 
+    // << FUNGSI BARU UNTUK MENAMPILKAN NOTIFIKASI BROWSER
+    function showNotification(title, body) {
+        // Cek dulu apakah izin sudah diberikan
+        if (Notification.permission === 'granted') {
+            new Notification(title, { body: body, icon: '/favicon.ico' }); // Ganti icon jika punya
+        }
+    }
+
     am5.ready(function() {
+        // << PENAMBAHAN: MEMINTA IZIN NOTIFIKASI SAAT HALAMAN DIBUKA
+        if ('Notification' in window) {
+            if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+                Notification.requestPermission().then(function(permission) {
+                    if (permission === 'granted') {
+                        console.log('Notification permission granted.');
+                        showNotification('G.I.M.P.S.', 'System notifications are now active.');
+                    }
+                });
+            }
+        }
+
         var root = am5.Root.new("chartdiv");
         root.setThemes([am5themes_Animated.new(root)]);
         var chart = root.container.children.push(am5map.MapChart.new(root, { panX: "pan", panY: "pan", projection: am5map.geoEquirectangular(), wheelY: "zoom" }));
@@ -399,7 +415,6 @@ HTML_TEMPLATE = """
         var newsLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {}));
         newsLineSeries.mapLines.template.setAll({ stroke: am5.color(0x64b5f6), strokeOpacity: 0.6, strokeWidth: 1, arc: -0.2 });
         
-        // << FUNGSI UNTUK MENGUPDATE PETA (TETAP SAMA)
         function updateMap(geoData) {
             if (!geoData || !polygonSeries.data.length) return;
             (geoData.tension_scores || []).forEach(score => {
@@ -411,28 +426,23 @@ HTML_TEMPLATE = """
             (geoData.news_links || []).forEach(link => renderLine(link[0], link[1], newsLineSeries, false));
         }
 
-        // << FUNGSI BARU UNTUK FLASH WARNA NEGARA
+        // << MODIFIKASI: DURASI FLASH SESUAI PERMINTAAN
         function flashCountry(countryCode) {
             let polygon = polygonSeries.getPolygonById(countryCode);
             if (polygon) {
-                // Simpan warna asli sebelum diubah
                 const originalColor = polygon.get("fill");
-                const flashColor = am5.color(0xFFFF00); // Warna kuning
-
-                // Animasikan ke warna kuning
+                const flashColor = am5.color(0xFFFF00);
                 let animation = polygon.animate({
                     key: "fill",
                     to: flashColor,
                     duration: 5400
                 });
-
-                // Setelah animasi selesai, animasikan kembali ke warna asli
                 if (animation) {
                     animation.events.on("stopped", function() {
                         polygon.animate({
                             key: "fill",
                             to: originalColor,
-                            duration: 1800 // kembali lebih lambat
+                            duration: 1800
                         });
                     });
                 }
@@ -453,15 +463,18 @@ HTML_TEMPLATE = """
         
         const eventSource = new EventSource("/api/stream-updates");
         eventSource.onmessage = function(event) { 
-            // << MODIFIKASI UNTUK MEMBACA DATA BARU
             const receivedData = JSON.parse(event.data);
-            
-            // Update peta seperti biasa dengan data geopolitik
             updateMap(receivedData.geopolitical); 
             
-            // Jika ada info negara yang diupdate, panggil fungsi flash
+            // << MODIFIKASI: PANGGIL FUNGSI FLASH DAN NOTIFIKASI
             if(receivedData.updated_country_code) {
-                flashCountry(receivedData.updated_country_code);
+                const countryCode = receivedData.updated_country_code;
+                const polygon = polygonSeries.getPolygonById(countryCode);
+                if (polygon) {
+                    const countryName = polygon.dataItem.dataContext.name;
+                    flashCountry(countryCode);
+                    showNotification('G.I.M.P.S. Intel Update', `New headlines detected for ${countryName}.`);
+                }
             }
         };
         eventSource.onerror = function(err) { console.error("EventSource failed:", err); };
@@ -528,7 +541,7 @@ HTML_TEMPLATE = """
 if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
-    print(">> FITUR BARU: Notifikasi berita dengan flash kuning diaktifkan.")
+    print(">> FITUR BARU: Notifikasi browser diaktifkan.")
     print(">> WARNING: Scan delay is set to 0. This will perform requests at maximum speed.")
     print(">> High frequency requests may lead to temporary IP blocking from data sources.")
     print("===============================================================")
