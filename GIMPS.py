@@ -7,6 +7,18 @@ import feedparser
 import collections
 import json
 import random
+import datetime
+import requests
+import openai 
+
+# Coba impor plyer untuk notifikasi desktop
+try:
+    from plyer import notification
+    PLYER_AVAILABLE = True
+except ImportError:
+    PLYER_AVAILABLE = False
+    print("[WARNING] Library 'plyer' tidak ditemukan. Notifikasi desktop tidak akan berfungsi. Install dengan 'pip install plyer'")
+
 
 # =================================================================
 # BAGIAN 1: KONFIGURASI
@@ -14,38 +26,34 @@ import random
 app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
+# --- KONFIGURASI OPENROUTER AI ---
+OPENROUTER_API_KEY = "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"
+OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
+OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
+
+# --- KONFIGURASI NOTIFIKASI GLOBAL ---
+NTFY_TOPIC = "gimps-global-notificationA87X"
+GLOBAL_ALERT_KEYWORDS = [
+    'WAR', 'MILITARY', 'CONFLICT', 'INVASION', 'ATTACK', 'BOMB', 'DRONE', 'MISSILE',
+    'CRISIS', 'RECESSION', 'CRASH', 'DEFAULT', 'COLLAPSE', 'MARKET PANIC',
+    'CENTRAL BANK', 'THE FED', 'ECB', 'INTEREST RATE', 'EMERGENCY MEETING', 'QUANTITATIVE EASING',
+    'PANDEMIC', 'OUTBREAK', 'QUARANTINE', 'LOCKDOWN'
+]
+GLOBAL_ALERT_THRESHOLD = 3
+
 # --- DAFTAR NEGARA ---
 FULL_COUNTRY_MAP = {
     # Amerika
-    'Argentina': 'AR', 'Bolivia': 'BO', 'Brazil': 'BR', 'Canada': 'CA', 'Chile': 'CL', 'Colombia': 'CO',
-    'Cuba': 'CU', 'Ecuador': 'EC', 'Mexico': 'MX', 'Panama': 'PA', 'Paraguay': 'PY', 'Peru': 'PE',
-    'USA': 'US', 'United States': 'US', 'Uruguay': 'UY', 'Venezuela': 'VE',
+    'Argentina': 'AR', 'Bolivia': 'BO', 'Brazil': 'BR', 'Canada': 'CA', 'Chile': 'CL', 'Colombia': 'CO', 'Cuba': 'CU', 'Ecuador': 'EC', 'Mexico': 'MX', 'Panama': 'PA', 'Paraguay': 'PY', 'Peru': 'PE', 'USA': 'US', 'United States': 'US', 'Uruguay': 'UY', 'Venezuela': 'VE',
     # Eropa
-    'Albania': 'AL', 'Austria': 'AT', 'Belarus': 'BY', 'Belgium': 'BE', 'Bosnia and Herzegovina': 'BA', 'Bulgaria': 'BG', 'Croatia': 'HR',
-    'Cyprus': 'CY', 'Czech Republic': 'CZ', 'Denmark': 'DK', 'Estonia': 'EE', 'Finland': 'FI', 'France': 'FR',
-    'Germany': 'DE', 'Greece': 'GR', 'Hungary': 'HU', 'Iceland': 'IS', 'Ireland': 'IE', 'Italy': 'IT',
-    'Latvia': 'LV', 'Lithuania': 'LT', 'Luxembourg': 'LU', 'Malta': 'MT', 'Moldova': 'MD', 'Netherlands': 'NL',
-    'North Macedonia': 'MK', 'Norway': 'NO', 'Poland': 'PL', 'Portugal': 'PT', 'Romania': 'RO',
-    'Russia': 'RU', 'Serbia': 'RS', 'Slovakia': 'SK', 'Slovenia': 'SI', 'Spain': 'ES', 'Sweden': 'SE',
-    'Switzerland': 'CH', 'Ukraine': 'UA', 'United Kingdom': 'GB',
+    'Albania': 'AL', 'Austria': 'AT', 'Belarus': 'BY', 'Belgium': 'BE', 'Bosnia and Herzegovina': 'BA', 'Bulgaria': 'BG', 'Croatia': 'HR', 'Cyprus': 'CY', 'Czech Republic': 'CZ', 'Denmark': 'DK', 'Estonia': 'EE', 'Finland': 'FI', 'France': 'FR', 'Germany': 'DE', 'Greece': 'GR', 'Hungary': 'HU', 'Iceland': 'IS', 'Ireland': 'IE', 'Italy': 'IT', 'Latvia': 'LV', 'Lithuania': 'LT', 'Luxembourg': 'LU', 'Malta': 'MT', 'Moldova': 'MD', 'Netherlands': 'NL', 'North Macedonia': 'MK', 'Norway': 'NO', 'Poland': 'PL', 'Portugal': 'PT', 'Romania': 'RO', 'Russia': 'RU', 'Serbia': 'RS', 'Slovakia': 'SK', 'Slovenia': 'SI', 'Spain': 'ES', 'Sweden': 'SE', 'Switzerland': 'CH', 'Ukraine': 'UA', 'United Kingdom': 'GB',
     # Asia & Oseania
-    'Afghanistan': 'AF', 'Australia': 'AU', 'Bangladesh': 'BD', 'Cambodia': 'KH', 'China': 'CN', 'Hong Kong': 'HK',
-    'India': 'IN', 'Indonesia': 'ID', 'Japan': 'JP', 'Kazakhstan': 'KZ', 'Kyrgyzstan': 'KG', 'Malaysia': 'MY',
-    'Mongolia': 'MN', 'Myanmar': 'MM', 'Nepal': 'NP', 'New Zealand': 'NZ', 'North Korea': 'KP', 'Pakistan': 'PK',
-    'Philippines': 'PH', 'Singapore': 'SG', 'South Korea': 'KR', 'Sri Lanka': 'LK', 'Taiwan': 'TW',
-    'Tajikistan': 'TJ', 'Thailand': 'TH', 'Turkmenistan': 'TM', 'Uzbekistan': 'UZ', 'Vietnam': 'VN',
+    'Afghanistan': 'AF', 'Australia': 'AU', 'Bangladesh': 'BD', 'Cambodia': 'KH', 'China': 'CN', 'Hong Kong': 'HK', 'India': 'IN', 'Indonesia': 'ID', 'Japan': 'JP', 'Kazakhstan': 'KZ', 'Kyrgyzstan': 'KG', 'Malaysia': 'MY', 'Mongolia': 'MN', 'Myanmar': 'MM', 'Nepal': 'NP', 'New Zealand': 'NZ', 'North Korea': 'KP', 'Pakistan': 'PK', 'Philippines': 'PH', 'Singapore': 'SG', 'South Korea': 'KR', 'Sri Lanka': 'LK', 'Taiwan': 'TW', 'Tajikistan': 'TJ', 'Thailand': 'TH', 'Turkmenistan': 'TM', 'Uzbekistan': 'UZ', 'Vietnam': 'VN',
     # Timur Tengah
-    'Armenia': 'AM', 'Azerbaijan': 'AZ', 'Bahrain': 'BH', 'Egypt': 'EG', 'Georgia': 'GE', 'Iran': 'IR',
-    'Iraq': 'IQ', 'Israel': 'IL', 'Jordan': 'JO', 'Kuwait': 'KW', 'Lebanon': 'LB', 'Oman': 'OM', 'Qatar': 'QA',
-    'Saudi Arabia': 'SA', 'Syria': 'SY', 'Türkiye': 'TR', 'Turkey': 'TR', 'UAE': 'AE', 'Yemen': 'YE',
+    'Armenia': 'AM', 'Azerbaijan': 'AZ', 'Bahrain': 'BH', 'Egypt': 'EG', 'Georgia': 'GE', 'Iran': 'IR', 'Iraq': 'IQ', 'Israel': 'IL', 'Jordan': 'JO', 'Kuwait': 'KW', 'Lebanon': 'LB', 'Oman': 'OM', 'Qatar': 'QA', 'Saudi Arabia': 'SA', 'Syria': 'SY', 'Türkiye': 'TR', 'Turkey': 'TR', 'UAE': 'AE', 'Yemen': 'YE',
     # Afrika
-    'Algeria': 'DZ', 'Angola': 'AO', 'Botswana': 'BW', 'Burkina Faso': 'BF', 'Cameroon': 'CM', 'DR Congo': 'CD', 'Ethiopia': 'ET',
-    'Ghana': 'GH', 'Ivory Coast': 'CI', "Côte d'Ivoire": 'CI', 'Kenya': 'KE', 'Libya': 'LY', 'Madagascar': 'MG',
-    'Mali': 'ML', 'Mauritius': 'MU', 'Morocco': 'MA', 'Mozambique': 'MZ', 'Namibia': 'NA', 'Niger': 'NE',
-    'Nigeria': 'NG', 'Rwanda': 'RW', 'Senegal': 'SN', 'Somalia': 'SO', 'South Africa': 'ZA', 'Sudan': 'SD',
-    'Tanzania': 'TZ', 'Tunisia': 'TN', 'Uganda': 'UG', 'Zambia': 'ZM', 'Zimbabwe': 'ZW'
+    'Algeria': 'DZ', 'Angola': 'AO', 'Botswana': 'BW', 'Burkina Faso': 'BF', 'Cameroon': 'CM', 'DR Congo': 'CD', 'Ethiopia': 'ET', 'Ghana': 'GH', 'Ivory Coast': 'CI', "Côte d'Ivoire": 'CI', 'Kenya': 'KE', 'Libya': 'LY', 'Madagascar': 'MG', 'Mali': 'ML', 'Mauritius': 'MU', 'Morocco': 'MA', 'Mozambique': 'MZ', 'Namibia': 'NA', 'Niger': 'NE', 'Nigeria': 'NG', 'Rwanda': 'RW', 'Senegal': 'SN', 'Somalia': 'SO', 'South Africa': 'ZA', 'Sudan': 'SD', 'Tanzania': 'TZ', 'Tunisia': 'TN', 'Uganda': 'UG', 'Zambia': 'ZM', 'Zimbabwe': 'ZW'
 }
-
 REVERSE_COUNTRY_MAP = {v: k for k, v in FULL_COUNTRY_MAP.items()}
 COUNTRY_MAP = FULL_COUNTRY_MAP
 ACTIVE_CONFLICTS = [ ('RU', 'UA'), ('IL', 'IR'), ('IL', 'SY'), ('YE', 'SA'), ('CN', 'TW'), ('IL', 'LB') ]
@@ -59,57 +67,107 @@ data_lock = Lock()
 global_data = {
     'rates': [], 'decisions': [], 'meetings': [],
     'all_news': {code: [] for code in REVERSE_COUNTRY_MAP.keys()},
-    'geopolitical': {
-        "tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news_links": []
-    },
-    'last_updated_code': None
+    'geopolitical': { "tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news_links": [] },
+    'last_updated_code': None,
+    'headline_tracker': collections.defaultdict(lambda: {'countries': set()}),
+    'sent_notifications': set()
 }
 MONETARY_UPDATE_INTERVAL_SECONDS = 900
 
 # =================================================================
-# BAGIAN 2: LOGIKA AI (TIDAK BERUBAH)
+# BAGIAN 2: LOGIKA AI (Disempurnakan)
 # =================================================================
+
+client = openai.OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url=OPENROUTER_SITE_URL,
+)
+
+def call_openrouter_api(system_prompt, user_prompt):
+    """Fungsi pusat untuk memanggil API OpenRouter."""
+    try:
+        response = client.chat.completions.create(
+            model=OPENROUTER_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7,
+            max_tokens=700 
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[!!] OPENROUTER API ERROR: {e}")
+        return None
+
 def generate_ai_summary(all_data):
+    """Menghasilkan ringkasan global menggunakan LLM."""
     geo_data = all_data.get('geopolitical', {})
     all_scores = [s['value'] for s in geo_data.get('tension_scores', [])]
     world_tension = int(sum(all_scores) / len(all_scores)) if all_scores else 30
-    war_probability = int(world_tension * 0.8 + len(geo_data.get('conflicts', [])) * 4)
-    war_probability = min(war_probability, 95)
+    war_probability = min(int(world_tension * 0.8 + len(geo_data.get('conflicts', [])) * 4), 95)
+    
     hike_score, cut_score = 0, 0
     us_headlines = all_data.get('all_news', {}).get('US', [])
     for headline in us_headlines:
         if any(keyword in headline for keyword in FED_HIKE_KEYWORDS): hike_score += 1
         if any(keyword in headline for keyword in FED_CUT_KEYWORDS): cut_score += 1
+    
     monetary_stance = "NEUTRAL"
     if hike_score > cut_score + 1: monetary_stance = "HAWKISH"
     if cut_score > hike_score + 1: monetary_stance = "DOVISH"
-    market_outlook, strategic_posture = "", ""
-    if world_tension > 65:
-        if monetary_stance == "HAWKISH":
-            market_outlook = "SANGAT BEARISH. Kombinasi ketegangan global yang ekstrim dan kebijakan moneter yang ketat menciptakan badai sempurna bagi aset berisiko. Pelarian modal ke aset paling aman sangat mungkin terjadi."
-            strategic_posture = "POSTUR SANGAT DEFensif. Pertimbangkan untuk mengurangi eksposur secara signifikan pada saham dan aset spekulatif. Alihkan ke Dolar AS (tunai), obligasi pemerintah jangka pendek, dan Emas."
-        else:
-            market_outlook = "NETRAL cenderung BEARISH. Kebijakan moneter yang lebih longgar memberikan sedikit bantalan, namun ketegangan geopolitik yang tinggi mendominasi sentimen. Pasar diperkirakan akan sangat volatil dan bergerak sideways."
-            strategic_posture = "POSTUR DEFensif. Fokus pada saham-saham defensif (utilitas, kesehatan) dan Emas sebagai lindung nilai utama terhadap risiko geopolitik. Hindari aset berisiko tinggi."
-    else:
-        if monetary_stance == "HAWKISH":
-            market_outlook = "NETRAL cenderung BEARISH. Lingkungan geopolitik yang tenang diredam oleh kebijakan moneter yang ketat. Pertumbuhan pasar saham kemungkinan akan terbatas."
-            strategic_posture = "POSTUR HATI-HATI. Fokus pada saham berkualitas dengan fundamental kuat. Hindari perusahaan dengan utang tinggi. Pasar dapat mengalami rotasi dari sektor pertumbuhan ke sektor nilai."
-        elif monetary_stance == "DOVISH":
-            market_outlook = "SANGAT BULLISH. Skenario 'Goldilocks' di mana stabilitas geopolitik bertemu dengan kebijakan moneter yang akomodatif. Kondisi ideal untuk kenaikan aset berisiko."
-            strategic_posture = "POSTUR AGRESIF. Ini adalah waktu untuk meningkatkan eksposur ke aset berisiko seperti saham (terutama sektor teknologi dan pertumbuhan) dan aset kripto. Sentimen risk-on mendominasi."
-        else:
-            market_outlook = "BULLISH. Dengan tidak adanya kejutan geopolitik dan kebijakan moneter yang stabil, pasar cenderung untuk melanjutkan tren naiknya secara bertahap."
-            strategic_posture = "POSTUR AGRESIF TERUKUR. Tetap berinvestasi pada aset berisiko, namun tetap waspada terhadap perubahan data ekonomi yang dapat mengubah sikap bank sentral."
+
     active_hotspots = [f"{REVERSE_COUNTRY_MAP.get(c1, c1)} vs {REVERSE_COUNTRY_MAP.get(c2, c2)}" for c1, c2 in geo_data.get('conflicts', [])]
     active_conflict_countries = {code for pair in geo_data.get('conflicts', []) for code in pair}
     sorted_scores = sorted(geo_data.get('tension_scores', []), key=lambda x: x['value'], reverse=True)
     potential_hotspots = [f"{REVERSE_COUNTRY_MAP.get(score['id'], score['id'])} (Skor: {score['value']})" for score in sorted_scores if score['id'] not in active_conflict_countries and len(potential_hotspots) < 5]
-    return { "world_tension": world_tension, "war_probability": war_probability, "market_outlook": market_outlook, "strategic_posture": strategic_posture, "active_hotspots": active_hotspots, "potential_hotspots": potential_hotspots }
+
+    system_prompt = "You are G.I.M.P.S, a global intelligence analysis system. Your task is to provide a concise market analysis based ONLY on the data provided. Do not use external knowledge. Your output MUST be a valid JSON object with two keys: \"market_outlook\" and \"strategic_posture\". The analysis should be sharp, direct, and in English."
+    
+    user_prompt = f"""Analyze the following global intelligence data:\n- Global Tension Score: {world_tension}/100\n- Implied War Probability: {war_probability}%\n- US Monetary Stance (Proxy for Global Markets): {monetary_stance}\n- Active Military Hotspots: {', '.join(active_hotspots) if active_hotspots else 'None'}\n- Potential Escalation Zones (High Tension): {', '.join(potential_hotspots) if potential_hotspots else 'None'}\n\nBased ONLY on this data, generate the JSON output."""
+    
+    ai_response_str = call_openrouter_api(system_prompt, user_prompt)
+    
+    analysis_result = {"market_outlook": "AI analysis failed or is pending.", "strategic_posture": "Could not determine posture due to API error."}
+
+    if ai_response_str:
+        try:
+            json_start = ai_response_str.find('{')
+            json_end = ai_response_str.rfind('}') + 1
+            if json_start != -1 and json_end != -1:
+                clean_json_str = ai_response_str[json_start:json_end]
+                analysis_result = json.loads(clean_json_str)
+            else:
+                raise ValueError("No JSON object found in the AI response.")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[!!] AI-SUMMARY JSON PARSE ERROR: {e}")
+            analysis_result['market_outlook'] = "AI response was not in the correct format."
+
+    return {
+        "world_tension": world_tension,
+        "war_probability": war_probability,
+        "market_outlook": analysis_result.get("market_outlook", "N/A"),
+        "strategic_posture": analysis_result.get("strategic_posture", "N/A"),
+        "active_hotspots": active_hotspots,
+        "potential_hotspots": potential_hotspots
+    }
+
 
 # =================================================================
-# BAGIAN 3: FUNGSI-FUNGSI HELPER (TIDAK BERUBAH)
+# BAGIAN 3: FUNGSI-FUNGSI HELPER
 # =================================================================
+def send_global_alert(headline):
+    print(f"\n[!!!] GLOBAL ALERT TRIGGERED: {headline}\n")
+    if PLYER_AVAILABLE:
+        try:
+            notification.notify(title='G.I.M.P.S. GLOBAL ALERT', message=headline, app_name='G.I.M.P.S.', timeout=20)
+        except Exception as e:
+            print(f"[ERROR] Gagal mengirim notifikasi desktop: {e}")
+    try:
+        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=headline.encode(encoding='utf-8'), headers={"Title": "G.I.M.P.S. Global Alert", "Priority": "high", "Tags": "warning"})
+    except Exception as e:
+        print(f"[ERROR] Gagal mengirim notifikasi ntfy: {e}")
+
 def parse_world_rates(soup):
     data = []
     table = soup.select_one('table#AutoNumber3')
@@ -122,7 +180,8 @@ def parse_world_rates(soup):
             country_name = country_name_raw.replace('The', '').strip()
             if country_name.lower() == 'türkiye': country_name = 'Türkiye'
             data.append({ "country_name": country_name.upper(), "country_code": COUNTRY_MAP.get(country_name, None), "rate": cols[1].get_text(strip=True), "change": cols[2].get_text(strip=True), "date": cols[5].get_text(strip=True), "rate_name": cols[4].get_text(strip=True).replace(country_name_raw, '').lstrip('| ').strip().upper() })
-        except (IndexError, AttributeError): continue
+        except (IndexError, AttributeError):
+            continue
     return data
 
 def parse_decisions_or_meetings(soup, type):
@@ -138,59 +197,98 @@ def parse_decisions_or_meetings(soup, type):
             country_name = "UNKNOWN"
             action = "MEETING"
             for name, code in COUNTRY_MAP.items():
-                if name.lower() in full_text.lower(): country_name = name; break
-            if country_name == "UNKNOWN" and "eurozone" in full_text.lower(): country_name = "Eurozone"
+                if name.lower() in full_text.lower():
+                    country_name = name
+                    break
+            if country_name == "UNKNOWN" and "eurozone" in full_text.lower():
+                country_name = "Eurozone"
             if type == 'decisions':
                 if 'cuts' in full_text.lower() or 'cut' in full_text.lower(): action = "CUT"
                 elif 'raises' in full_text.lower() or 'hikes' in full_text.lower(): action = "HIKE"
                 elif 'unchanged' in full_text.lower() or 'holds' in full_text.lower(): action = "UNCHANGED"
                 else: action = "DECISION"
             data.append({"country_name": country_name.upper(), "country_code": COUNTRY_MAP.get(country_name, None), "date": date_text.upper(), "description": full_text.upper(), "action": action.upper()})
-        except (IndexError, AttributeError): continue
+        except (IndexError, AttributeError):
+            continue
     return data
 
-def generate_analysis(country_code, decision_data):
-    if not decision_data: return {"title": "ANALYSIS: NO DATA", "summary": "NO RECENT DIRECTIVES FOUND. TERMINATING DATALINK.", "impact": "IMPACT CANNOT BE DETERMINED."}
-    latest_decision = decision_data[0]
-    action = latest_decision.get("action", "UNKNOWN").lower()
-    country_name = latest_decision.get("country_name", "Negara")
-    major_economies, emerging_markets = ['US', 'EU', 'JP', 'GB', 'CN'], ['ID', 'BR', 'IN', 'RU', 'TR', 'ZA', 'MX']
-    title = f"ANALYSIS :: {action.upper()} EVENT :: {country_name.upper()}"
-    summary = f"SYSTEM DETECTED MONETARY POLICY: **{action.upper()}**. RAW DATA: {latest_decision['description']}."
-    impact_paragraphs = []
-    if action == 'cut': impact_paragraphs.append(">> GENERAL PROTOCOL: RATE CUT AIMS TO STIMULATE ECONOMY. POTENTIAL DOMESTIC CURRENCY WEAKNESS.")
-    elif action == 'hike': impact_paragraphs.append(">> GENERAL PROTOCOL: RATE HIKE AIMS TO COMBAT INFLATION. POTENTIAL DOMESTIC CURRENCY STRENGTH.")
-    else: impact_paragraphs.append(">> GENERAL PROTOCOL: RATE UNCHANGED INDICATES 'WAIT-AND-SEE' STANCE.")
-    crypto_impact_text = ""
-    if country_code in major_economies:
-        if action == 'cut': crypto_impact_text = f">> CRYPTO SENTIMENT ANALYSIS [TENDENCY: BEARISH]: RATE CUT BY {country_name.upper()} SUGGESTS REDUCED GLOBAL RISK APPETITE."
-        elif action == 'hike': crypto_impact_text = f">> CRYPTO SENTIMENT ANALYSIS [TENDENCY: BULLISH]: TRADITIONAL MARKETS STRESSED. INVESTORS MAY SEEK ALTERNATIVE ASSETS/HEDGES."
-    elif country_code in emerging_markets:
-        if action == 'cut': crypto_impact_text = f">> CRYPTO SENTIMENT ANALYSIS [TENDENCY: BULLISH]: LOWER RATES IN {country_name.upper()} PUSH LOCAL INVESTORS TOWARDS HIGHER-YIELD ASSETS LIKE CRYPTO."
-        elif action == 'hike': crypto_impact_text = f">> CRYPTO SENTIMENT ANALYSIS [TENDENCY: BEARISH]: HIGHER LOCAL YIELDS ON SAFE ASSETS BECOME ATTRACTIVE, REDUCING DEMAND FOR CRYPTO."
-    if crypto_impact_text: impact_paragraphs.append(crypto_impact_text)
-    impact_paragraphs.append("<small><i>DISCLAIMER: PROTOTYPE MODEL. CONDUCT INDEPENDENT RESEARCH. END TRANSMISSION.</i></small>")
-    return {"title": title, "summary": summary, "impact": "<br><br>".join(impact_paragraphs)}
+def generate_analysis(country_code, country_name, decision_data, meetings_data, news_headlines):
+    """MODIFIKASI: Menghasilkan analisis negara yang komprehensif, termasuk prospek masa depan (futures)."""
+    latest_decision = decision_data[0] if decision_data else {"action": "N/A", "description": "No recent directive data."}
+    upcoming_meetings_str = ', '.join([m['description'] for m in meetings_data]) if meetings_data else "No upcoming meetings scheduled."
+    news_headlines_str = ', '.join(news_headlines[:5]) if news_headlines else "No recent headlines available."
 
+    system_prompt = "You are a top-tier geopolitical and financial market strategist. Your task is to provide a sharp, professional analysis based ONLY on the data provided. Your output MUST be a valid JSON object with four string keys: \"title\", \"summary\", \"impact_analysis\", and \"futures_outlook\". Do not use external knowledge. The analysis must be in English."
+
+    user_prompt = f"""
+    Analyze the following intelligence data for {country_name.upper()} ({country_code}):
+    
+    1.  **Latest Central Bank Directive:**
+        - Action: {latest_decision.get('action', 'N/A')}
+        - Description: "{latest_decision.get('description', 'N/A')}"
+
+    2.  **Recent News Headlines (for context):**
+        - {news_headlines_str}
+
+    3.  **Upcoming Transmissions (Scheduled Meetings):**
+        - {upcoming_meetings_str}
+
+    Based ONLY on this data, perform the following analysis and generate the JSON output:
+    - **title:** A concise, impactful title for the analysis.
+    - **summary:** A brief summary of the current situation based on the latest directive and news.
+    - **impact_analysis:** Analyze the immediate impact of the latest directive on the local economy, currency, and potential spillover to global/crypto markets.
+    - **futures_outlook:** This is crucial. Based on the recent news and the upcoming transmissions, forecast the likely market sentiment and potential central bank actions in the near future. What should be watched for during the upcoming meetings?
+    """
+
+    ai_response_str = call_openrouter_api(system_prompt, user_prompt)
+    
+    fallback_analysis = {
+        "title": f"AI ANALYSIS FAILED for {country_name.upper()}",
+        "summary": "Could not generate analysis due to an API or parsing error.",
+        "impact_analysis": f"The raw data indicates a '{latest_decision.get('action', 'N/A')}' action. Please check server logs for API error details.",
+        "futures_outlook": "Forecasting is unavailable due to the analysis failure."
+    }
+
+    if ai_response_str:
+        try:
+            json_start = ai_response_str.find('{')
+            json_end = ai_response_str.rfind('}') + 1
+            if json_start != -1 and json_end != -1:
+                clean_json_str = ai_response_str[json_start:json_end]
+                return json.loads(clean_json_str)
+            else:
+                raise ValueError("No JSON object found in the AI response.")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[!!] AI-ANALYSIS JSON PARSE ERROR: {e}")
+            return fallback_analysis
+    
+    return fallback_analysis
+
+# =================================================================
+# BAGIAN 4: PROSES BACKGROUND
+# =================================================================
 def get_news_from_rss(country_code):
     try:
         url = f"https://news.google.com/rss?gl={country_code.upper()}&hl=en-US&ceid={country_code.upper()}:en"
         feed = feedparser.parse(url)
         if feed.bozo: raise Exception(feed.bozo_exception)
-        return [entry.title.upper() for entry in feed.entries[:20]]
+        processed_news = []
+        date_str = datetime.datetime.now().strftime('%d/%m/%Y')
+        for entry in feed.entries[:20]:
+            core_headline = entry.title.upper().rsplit(' - ', 1)[0].strip()
+            formatted_headline = f"{core_headline} ({date_str})"
+            processed_news.append({"core": core_headline, "formatted": formatted_headline})
+        return processed_news
     except Exception as e:
         print(f"Error fetching RSS for {country_code}: {e}")
         return []
 
-# =================================================================
-# BAGIAN 4: PROSES BACKGROUND (TIDAK BERUBAH DARI SEBELUMNYA)
-# =================================================================
 def background_update_task():
     country_codes = list(REVERSE_COUNTRY_MAP.keys())
     random.shuffle(country_codes)
     country_index = 0
     last_monetary_update_time = 0
-    
+
     while True:
         try:
             current_time = time.time()
@@ -200,30 +298,45 @@ def background_update_task():
                 with data_lock:
                     for key, url in cbrates_urls.items():
                         try:
-                            response = scraper.get(url, timeout=20); response.raise_for_status()
+                            response = scraper.get(url, timeout=20)
+                            response.raise_for_status()
                             soup = BeautifulSoup(response.text, 'html.parser')
                             if key == 'rates': global_data['rates'] = parse_world_rates(soup)
                             elif key == 'decisions': global_data['decisions'] = parse_decisions_or_meetings(soup, 'decisions')
                             elif key == 'meetings': global_data['meetings'] = parse_decisions_or_meetings(soup, 'meetings')
-                        except Exception as e: print(f"!! Failed to fetch monetary data for {key}: {e}")
+                        except Exception as e:
+                            print(f"!! Failed to fetch monetary data for {key}: {e}")
                 last_monetary_update_time = current_time
                 print(">> [TIMER] Monetary scan complete.")
 
             country_code = country_codes[country_index]
             country_name = REVERSE_COUNTRY_MAP.get(country_code, country_code)
             print(f">> MAX SPEED SCAN: [{country_index + 1}/{len(country_codes)}] {country_name}")
-            latest_news = get_news_from_rss(country_code)
+            
+            news_items = get_news_from_rss(country_code)
 
             with data_lock:
-                if latest_news and (country_code not in global_data['all_news'] or global_data['all_news'][country_code] != latest_news):
-                    global_data['all_news'][country_code] = latest_news
+                formatted_headlines = [item['formatted'] for item in news_items]
+                if formatted_headlines and (country_code not in global_data['all_news'] or global_data['all_news'][country_code] != formatted_headlines):
+                    global_data['all_news'][country_code] = formatted_headlines
                     global_data['last_updated_code'] = country_code
-                
+
+                for item in news_items:
+                    core_headline = item['core']
+                    global_data['headline_tracker'][core_headline]['countries'].add(country_code)
+                    count = len(global_data['headline_tracker'][core_headline]['countries'])
+                    is_above_threshold = count >= GLOBAL_ALERT_THRESHOLD
+                    is_not_sent_yet = core_headline not in global_data['sent_notifications']
+                    has_alert_keyword = any(keyword in core_headline for keyword in GLOBAL_ALERT_KEYWORDS)
+                    if is_above_threshold and is_not_sent_yet and has_alert_keyword:
+                        send_global_alert(core_headline)
+                        global_data['sent_notifications'].add(core_headline)
+
                 tension_scores = collections.defaultdict(int)
                 news_links_set = set()
                 for c1, c2 in ACTIVE_CONFLICTS:
-                    tension_scores[c1] += 50; tension_scores[c2] += 50
-                
+                    tension_scores[c1] += 50
+                    tension_scores[c2] += 50
                 for source_code, headlines in global_data['all_news'].items():
                     for headline in headlines:
                         headline_tension_weight = sum(weight for keyword, weight in TENSION_KEYWORDS.items() if keyword.upper() in headline)
@@ -233,20 +346,19 @@ def background_update_task():
                                     tension_scores[source_code] += headline_tension_weight
                                     tension_scores[target_code] += headline_tension_weight
                                     news_links_set.add(tuple(sorted((source_code, target_code))))
-                
                 global_data['geopolitical']['tension_scores'] = [{"id": code, "value": min(score, 100)} for code, score in tension_scores.items()]
                 global_data['geopolitical']['news_links'] = [list(link) for link in news_links_set]
-
             country_index = (country_index + 1) % len(country_codes)
         except Exception as e:
             print(f"!! ERROR in background task: {e}")
             time.sleep(10)
 
 # =================================================================
-# BAGIAN 5: API ENDPOINTS (TIDAK BERUBAH DARI SEBELUMNYA)
+# BAGIAN 5: API ENDPOINTS (Disempurnakan)
 # =================================================================
 @app.route('/')
-def home(): return render_template_string(HTML_TEMPLATE)
+def home():
+    return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/stream-updates')
 def stream_updates():
@@ -261,32 +373,44 @@ def stream_updates():
                 yield f"data: {json.dumps(data_to_send)}\n\n"
                 if global_data['last_updated_code']:
                     global_data['last_updated_code'] = None
-                    
     return Response(event_stream(), mimetype='text/event-stream')
 
 @app.route('/api/ai-summary')
 def get_ai_summary():
-    with data_lock: summary = generate_ai_summary(global_data)
+    with data_lock:
+        summary = generate_ai_summary(global_data)
     return jsonify(summary)
 
 @app.route('/api/country-data/<country_code>')
 def get_country_data(country_code):
-    with data_lock: all_data = dict(global_data)
+    with data_lock:
+        all_data = dict(global_data)
+        country_name = REVERSE_COUNTRY_MAP.get(country_code.upper(), country_code.upper())
+    
     country_code_upper = country_code.upper()
     is_eurozone = country_code_upper == 'EU'
+    
     def filter_by_code(data_list):
         if is_eurozone: return [d for d in data_list if d.get('country_name') == 'EUROZONE']
         return [d for d in data_list if d.get('country_code') == country_code_upper]
+    
     decisions_data = filter_by_code(all_data.get('decisions', []))
+    meetings_data = filter_by_code(all_data.get('meetings', []))
+    news_data_formatted = all_data.get('all_news', {}).get(country_code_upper, [])
+    news_headlines_core = [headline.rsplit(' (', 1)[0] for headline in news_data_formatted]
+
+    analysis = generate_analysis(country_code_upper, country_name, decisions_data, meetings_data, news_headlines_core)
+    
     return jsonify({
-        "rates": filter_by_code(all_data.get('rates', [])), "decisions": decisions_data,
-        "meetings": filter_by_code(all_data.get('meetings', [])),
-        "news": all_data.get('all_news', {}).get(country_code_upper, []),
-        "analysis": generate_analysis(country_code_upper, decisions_data)
+        "rates": filter_by_code(all_data.get('rates', [])),
+        "decisions": decisions_data,
+        "meetings": meetings_data,
+        "news": news_data_formatted,
+        "analysis": analysis
     })
 
 # =================================================================
-# BAGIAN 6: FRONTEND HTML DENGAN FITUR NOTIFIKASI
+# BAGIAN 6: FRONTEND HTML (Layout Disempurnakan)
 # =================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -296,62 +420,37 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>G.I.M.P.S - Global Intelligence Monetary Policy System</title>
     <style>
-        :root {
-            --main-bg: #000; --panel-bg: rgba(10, 10, 10, 0.9); --border-color: rgba(255, 255, 255, 0.2);
-            --accent-color: #FFF; --text-color: #dcdcdc; --red-alert: #ff4d4d; --blue-link: #64b5f6;
-            --flash-color: #FFFF00;
-        }
+        :root { --main-bg: #000; --panel-bg: rgba(10, 10, 10, 0.9); --border-color: rgba(255, 255, 255, 0.2); --accent-color: #FFF; --text-color: #dcdcdc; --red-alert: #ff4d4d; --blue-link: #64b5f6; --flash-color: #FFFF00; }
         @keyframes scanlines { 0% { background-position: 0 0; } 100% { background-position: 0 50px; } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes typing { from { width: 0; } to { width: 100%; } }
         @keyframes blink-caret { from, to { border-color: transparent; } 50% { border-color: var(--accent-color); } }
         @keyframes glitch-text { 2%,64%{ transform: translate(2px,0) skew(0deg); } 4%,60%{ transform: translate(-2px,0) skew(0deg); } 62%{ transform: translate(0,0) skew(5deg); } }
         @keyframes glitch-appear { 0% { clip-path: inset(20% 0 70% 0); } 20% { clip-path: inset(80% 0 10% 0); } 40% { clip-path: inset(40% 0 40% 0); } 60% { clip-path: inset(90% 0 5% 0); } 80% { clip-path: inset(10% 0 85% 0); } 100% { clip-path: inset(0 0 0 0); } }
-
-        body, html { 
-            font-family: 'Courier New', Courier, monospace; 
-            margin: 0; padding: 0; height: 100%; 
-            overflow: hidden; 
-            background-color: var(--main-bg); 
-            color: var(--text-color); 
-        }
-        
-        body::before {
-            content: ''; position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            box-shadow: inset 0 0 150px rgba(0,0,0,0.9);
-            pointer-events: none;
-            z-index: 9999;
-        }
-
-        #chartdiv { 
-            width: 100%; height: 100vh; 
-            background-image: linear-gradient(rgba(0,0,0,0.95), rgba(0,0,0,0.95)), linear-gradient(0deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px); 
-            background-size: 100%, 3px 3px; 
-            position: relative; 
-            transform: scale(1.05);
-            border-radius: 40px; 
-        }
-
+        body, html { font-family: 'Courier New', Courier, monospace; margin: 0; padding: 0; height: 100%; overflow: hidden; background-color: var(--main-bg); color: var(--text-color); }
+        body::before { content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%; box-shadow: inset 0 0 150px rgba(0,0,0,0.9); pointer-events: none; z-index: 9999; }
+        #chartdiv { width: 100%; height: 100vh; background-image: linear-gradient(rgba(0,0,0,0.95), rgba(0,0,0,0.95)), linear-gradient(0deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px); background-size: 100%, 3px 3px; position: relative; transform: scale(1.05); border-radius: 40px; }
         #chartdiv::after { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(0deg, rgba(0, 0, 0, 0) 50%, rgba(255, 255, 255, 0.05) 50%); background-size: 100% 4px; animation: scanlines 0.2s linear infinite; pointer-events: none; }
-        #infopanel { position: fixed; bottom: 0; left: 0; width: 100%; height: 50vh; background-color: var(--panel-bg); border-top: 1px solid var(--border-color); box-shadow: 0 -2px 10px rgba(0,0,0,0.5); visibility: hidden; opacity: 0; z-index: 1000; display: flex; flex-direction: column; backdrop-filter: blur(5px); }
+        #infopanel { position: fixed; bottom: 0; left: 0; width: 100%; height: 60vh; background-color: var(--panel-bg); border-top: 1px solid var(--border-color); box-shadow: 0 -2px 10px rgba(0,0,0,0.5); visibility: hidden; opacity: 0; z-index: 1000; display: flex; flex-direction: column; backdrop-filter: blur(5px); }
         #infopanel.visible { visibility: visible; opacity: 1; animation: glitch-appear 0.2s steps(8, end) forwards; }
         #panel-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background-color: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border-color); }
         .glitch { position: relative; animation: glitch-text 2s infinite; }
         #close-panel { background: none; border: none; color: var(--accent-color); font-size: 28px; cursor: pointer; transition: transform 0.2s; }
         #close-panel:hover { transform: scale(1.5); }
-        #info-content { padding: 20px; overflow-y: auto; flex-grow: 1; animation: fadeIn 1s; }
-        .info-container { display: flex; gap: 20px; }
-        .data-column, .analysis-column, .news-column { flex: 1; }
-        .analysis-column, .news-column { border-left: 1px solid var(--border-color); padding-left: 20px; }
-        h2, h3 { color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-top: 0; }
-        h3 { font-size: 1.1em; border: none; padding-bottom: 5px; text-transform: uppercase; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 0.9em; }
+        #info-content { padding: 20px; overflow-y: hidden; flex-grow: 1; animation: fadeIn 1s; }
+        .info-grid { display: grid; grid-template-columns: 3fr 2fr; gap: 20px; height: 100%; }
+        .data-container, .analysis-container { overflow-y: auto; padding-right: 10px;}
+        .analysis-container { border-left: 1px solid var(--border-color); padding-left: 20px; }
+        h3 { color: var(--accent-color); border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin-top: 0; margin-bottom: 15px; font-size: 1.2em; text-transform: uppercase;}
+        h4 { color: var(--accent-color); margin-top: 0; margin-bottom: 5px; font-size: 1.1em; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 0.9em; }
         th, td { border: 1px solid var(--border-color); padding: 8px; text-align: left; }
         th { background-color: rgba(255, 255, 255, 0.05); }
-        ul#news-list, ul.hotspot-list { list-style-type: '>> '; padding-left: 20px; margin: 0; font-size: 0.85em; max-height: 40vh; overflow-y: auto; }
-        ul#news-list li, ul.hotspot-list li { margin-bottom: 8px; }
+        #news-list { list-style-type: '>> '; padding-left: 20px; margin: 0; font-size: 0.85em; }
+        #news-list li { margin-bottom: 8px; }
         .placeholder { color: var(--accent-color); text-align: center; padding-top: 40px; font-size: 1.2em; overflow: hidden; white-space: nowrap; margin: 0 auto; letter-spacing: .15em; animation: typing 2.5s steps(30, end), blink-caret .75s step-end infinite; }
+        .analysis-content p { margin-top: 0; margin-bottom: 1.2em; white-space: pre-wrap; line-height: 1.5; }
+        .analysis-content strong { color: var(--blue-link); }
         ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: #111; } ::-webkit-scrollbar-thumb { background: #555; }
     </style>
 </head>
@@ -372,164 +471,62 @@ HTML_TEMPLATE = """
 
 <script>
     const infoPanel = document.getElementById('infopanel'), infoContent = document.getElementById('info-content'), panelTitle = document.getElementById('panel-title'), closeButton = document.getElementById('close-panel');
-
-    // << FUNGSI BARU UNTUK MENAMPILKAN NOTIFIKASI BROWSER
-    function showNotification(title, body) {
-        // Cek dulu apakah izin sudah diberikan
-        if (Notification.permission === 'granted') {
-            new Notification(title, { body: body, icon: '/favicon.ico' }); // Ganti icon jika punya
-        }
-    }
-
+    function showNotification(title, body) { if (Notification.permission === 'granted') { new Notification(title, { body: body, icon: '/favicon.ico' }); } }
     am5.ready(function() {
-        // << PENAMBAHAN: MEMINTA IZIN NOTIFIKASI SAAT HALAMAN DIBUKA
-        if ('Notification' in window) {
-            if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-                Notification.requestPermission().then(function(permission) {
-                    if (permission === 'granted') {
-                        console.log('Notification permission granted.');
-                        showNotification('G.I.M.P.S.', 'System notifications are now active.');
-                    }
-                });
-            }
-        }
-
-        var root = am5.Root.new("chartdiv");
-        root.setThemes([am5themes_Animated.new(root)]);
-        var chart = root.container.children.push(am5map.MapChart.new(root, { panX: "pan", panY: "pan", projection: am5map.geoEquirectangular(), wheelY: "zoom" }));
-        
-        chart.chartContainer.set("background", am5.Rectangle.new(root, { fill: am5.color(0x000000), fillOpacity: 1 }));
-
+        if ('Notification' in window) { if (Notification.permission !== 'granted' && Notification.permission !== 'denied') { Notification.requestPermission().then(function(permission) { if (permission === 'granted') { console.log('Notification permission granted.'); showNotification('G.I.M.P.S.', 'System notifications are now active.'); } }); } }
+        var root = am5.Root.new("chartdiv"); root.setThemes([am5themes_Animated.new(root)]); var chart = root.container.children.push(am5map.MapChart.new(root, { panX: "pan", panY: "pan", projection: am5map.geoEquirectangular(), wheelY: "zoom" })); chart.chartContainer.set("background", am5.Rectangle.new(root, { fill: am5.color(0x000000), fillOpacity: 1 }));
         var polygonSeries = chart.series.push(am5map.MapPolygonSeries.new(root, { geoJSON: am5geodata_worldLow, exclude: ["AQ"], valueField: "value", calculateAggregates: true }));
-        
         polygonSeries.mapPolygons.template.setAll({ interactive: true, fill: am5.color(0x550000), stroke: am5.color(0x444444), strokeWidth: 0.5, transitionDuration: 500 });
-        polygonSeries.mapPolygons.template.adapters.add("tooltipText", function(text, target) {
-          if (target.dataItem.get("value") == null || target.dataItem.get("value") === 0) { return "{name}: Tension Unknown / Stable"; }
-          return "{name}: TENSION SCORE {value}";
-        });
-        polygonSeries.mapPolygons.template.states.create("hover", { fill: am5.color(0x64b5f6) });
-        polygonSeries.set("heatRules", [{ target: polygonSeries.mapPolygons.template, dataField: "value", min: am5.color(0x000000), max: am5.color(0xff0000), key: "fill", logarithmic: true }]);
-
-        var conflictLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {}));
-        conflictLineSeries.mapLines.template.setAll({ stroke: am5.color(0xff0000), strokeOpacity: 0.6, strokeWidth: 2, strokeDasharray: [4,2] });
-        var newsLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {}));
-        newsLineSeries.mapLines.template.setAll({ stroke: am5.color(0x64b5f6), strokeOpacity: 0.6, strokeWidth: 1, arc: -0.2 });
-        
-        function updateMap(geoData) {
-            if (!geoData || !polygonSeries.data.length) return;
-            (geoData.tension_scores || []).forEach(score => {
-                const dataItem = polygonSeries.getDataItemById(score.id);
-                if (dataItem) { dataItem.set("value", score.value); }
-            });
-            conflictLineSeries.data.clear(); newsLineSeries.data.clear();
-            (geoData.conflicts || []).forEach(conflict => renderLine(conflict[0], conflict[1], conflictLineSeries, true));
-            (geoData.news_links || []).forEach(link => renderLine(link[0], link[1], newsLineSeries, false));
-        }
-
-        // << MODIFIKASI: DURASI FLASH SESUAI PERMINTAAN
-        function flashCountry(countryCode) {
-            let polygon = polygonSeries.getPolygonById(countryCode);
-            if (polygon) {
-                const originalColor = polygon.get("fill");
-                const flashColor = am5.color(0xFFFF00);
-                let animation = polygon.animate({
-                    key: "fill",
-                    to: flashColor,
-                    duration: 5400
-                });
-                if (animation) {
-                    animation.events.on("stopped", function() {
-                        polygon.animate({
-                            key: "fill",
-                            to: originalColor,
-                            duration: 1800
-                        });
-                    });
-                }
-            }
-        }
-        
-        function renderLine(code1, code2, series, isConflict) {
-            let p1 = polygonSeries.getPolygonById(code1); let p2 = polygonSeries.getPolygonById(code2);
-            if(p1 && p2) {
-                let lineDataItem = series.pushDataItem({ geometry: { type: "LineString", coordinates: [[p1.visualCentroid.longitude, p1.visualCentroid.latitude], [p2.visualCentroid.longitude, p2.visualCentroid.latitude]] } });
-                if (isConflict) {
-                     let bullet = am5.Bullet.new(root, { sprite: am5.Circle.new(root, { radius: 3, fill: am5.color(0xff0000) }) });
-                     bullet.animate({ key: "location", from: 0, to: 1, duration: 2000, loops: Infinity });
-                     lineDataItem.bullets.push(bullet);
-                }
-            }
-        }
-        
+        polygonSeries.mapPolygons.template.adapters.add("tooltipText", function(text, target) { if (target.dataItem.get("value") == null || target.dataItem.get("value") === 0) { return "{name}: Tension Unknown / Stable"; } return "{name}: TENSION SCORE {value}"; });
+        polygonSeries.mapPolygons.template.states.create("hover", { fill: am5.color(0x64b5f6) }); polygonSeries.set("heatRules", [{ target: polygonSeries.mapPolygons.template, dataField: "value", min: am5.color(0x000000), max: am5.color(0xff0000), key: "fill", logarithmic: true }]);
+        var conflictLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {})); conflictLineSeries.mapLines.template.setAll({ stroke: am5.color(0xff0000), strokeOpacity: 0.6, strokeWidth: 2, strokeDasharray: [4,2] });
+        var newsLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {})); newsLineSeries.mapLines.template.setAll({ stroke: am5.color(0x64b5f6), strokeOpacity: 0.6, strokeWidth: 1, arc: -0.2 });
+        function updateMap(geoData) { if (!geoData || !polygonSeries.data.length) return; (geoData.tension_scores || []).forEach(score => { const dataItem = polygonSeries.getDataItemById(score.id); if (dataItem) { dataItem.set("value", score.value); } }); conflictLineSeries.data.clear(); newsLineSeries.data.clear(); (geoData.conflicts || []).forEach(conflict => renderLine(conflict[0], conflict[1], conflictLineSeries, true)); (geoData.news_links || []).forEach(link => renderLine(link[0], link[1], newsLineSeries, false)); }
+        function flashCountry(countryCode) { let polygon = polygonSeries.getPolygonById(countryCode); if (polygon) { const originalColor = polygon.get("fill"); const flashColor = am5.color(0xFFFF00); let animation = polygon.animate({ key: "fill", to: flashColor, duration: 5400 }); if (animation) { animation.events.on("stopped", function() { polygon.animate({ key: "fill", to: originalColor, duration: 1800 }); }); } } }
+        function renderLine(code1, code2, series, isConflict) { let p1 = polygonSeries.getPolygonById(code1); let p2 = polygonSeries.getPolygonById(code2); if(p1 && p2) { let lineDataItem = series.pushDataItem({ geometry: { type: "LineString", coordinates: [[p1.visualCentroid.longitude, p1.visualCentroid.latitude], [p2.visualCentroid.longitude, p2.visualCentroid.latitude]] } }); if (isConflict) { let bullet = am5.Bullet.new(root, { sprite: am5.Circle.new(root, { radius: 3, fill: am5.color(0xff0000) }) }); bullet.animate({ key: "location", from: 0, to: 1, duration: 2000, loops: Infinity }); lineDataItem.bullets.push(bullet); } } }
         const eventSource = new EventSource("/api/stream-updates");
-        eventSource.onmessage = function(event) { 
-            const receivedData = JSON.parse(event.data);
-            updateMap(receivedData.geopolitical); 
-            
-            // << MODIFIKASI: PANGGIL FUNGSI FLASH DAN NOTIFIKASI
-            if(receivedData.updated_country_code) {
-                const countryCode = receivedData.updated_country_code;
-                const polygon = polygonSeries.getPolygonById(countryCode);
-                if (polygon) {
-                    const countryName = polygon.dataItem.dataContext.name;
-                    flashCountry(countryCode);
-                    showNotification('G.I.M.P.S. Intel Update', `New headlines detected for ${countryName}.`);
-                }
-            }
-        };
+        eventSource.onmessage = function(event) { const receivedData = JSON.parse(event.data); updateMap(receivedData.geopolitical); if(receivedData.updated_country_code) { const countryCode = receivedData.updated_country_code; const polygon = polygonSeries.getPolygonById(countryCode); if (polygon) { const countryName = polygon.dataItem.dataContext.name; flashCountry(countryCode); showNotification('G.I.M.P.S. Intel Update', `New headlines detected for ${countryName}.`); } } };
         eventSource.onerror = function(err) { console.error("EventSource failed:", err); };
-
-        polygonSeries.mapPolygons.template.events.on("click", function(ev) {
-            if (ev.target.dataItem.get("value") != null) { fetchCountryData(ev.target.dataItem.dataContext.id, ev.target.dataItem.dataContext.name); }
-        });
+        polygonSeries.mapPolygons.template.events.on("click", function(ev) { if (ev.target.dataItem.get("value") != null) { fetchCountryData(ev.target.dataItem.dataContext.id, ev.target.dataItem.dataContext.name); } });
         chart.chartContainer.get("background").events.on("click", () => closeInfoPanel());
     });
-    
     closeButton.addEventListener('click', closeInfoPanel);
-    
     function showInfoPanel() { infopanel.classList.add('visible'); }
     function closeInfoPanel() { infoPanel.classList.remove('visible'); }
-    
     async function fetchCountryData(countryCode, countryName) {
-        infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}...</p>`;
-        panelTitle.innerText = countryName.toUpperCase();
-        showInfoPanel();
+        infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}... AI ANALYSIS IN PROGRESS...</p>`; panelTitle.innerText = countryName.toUpperCase(); showInfoPanel();
         try {
-            const response = await fetch(`/api/country-data/${countryCode}`);
-            if (!response.ok) throw new Error('CONNECTION FAILED.');
-            const data = await response.json();
-            displayCountryData(data, countryName);
+            const response = await fetch(`/api/country-data/${countryCode}`); if (!response.ok) throw new Error('CONNECTION FAILED.'); const data = await response.json(); displayCountryData(data, countryName);
         } catch (error) { infoContent.innerHTML = `<p class="placeholder" style="color: var(--red-alert);">${error.message}</p>`; }
     }
-
     function displayCountryData(data, countryName) {
         const ratesHtml = data.rates && data.rates.length > 0 ? createTable(data.rates, ['Rate', 'Change', 'Date', 'Rate Name']) : '<p>// NO MONETARY RATE DATA //</p>';
         const decisionsHtml = data.decisions && data.decisions.length > 0 ? createTable(data.decisions, ['Date', 'Description', 'Action']) : '<p>// NO RECENT DIRECTIVE DATA //</p>';
         const meetingsHtml = data.meetings && data.meetings.length > 0 ? createTable(data.meetings, ['Date', 'Description']) : '<p>// NO UPCOMING TRANSMISSIONS DATA //</p>';
-        let newsHtml = '<p>// NO INTEL FEED //</p>';
-        if(data.news && data.news.length > 0) {
-            newsHtml = '<ul id="news-list">'; data.news.slice(0, 15).forEach(headline => newsHtml += `<li>${headline}</li>`); newsHtml += '</ul>';
-        }
-        panelTitle.innerText = countryName.toUpperCase();
-        panelTitle.classList.add('glitch');
-        setTimeout(() => { panelTitle.classList.remove('glitch'); }, 2000);
+        let newsHtml = '<p>// NO INTEL FEED //</p>'; if(data.news && data.news.length > 0) { newsHtml = '<ul id="news-list">'; data.news.slice(0, 15).forEach(headline => newsHtml += `<li>${headline}</li>`); newsHtml += '</ul>'; }
+        panelTitle.innerText = countryName.toUpperCase(); panelTitle.classList.add('glitch'); setTimeout(() => { panelTitle.classList.remove('glitch'); }, 2000);
+        
         infoContent.innerHTML = `
-            <div class="info-container">
-                <div class="data-column"><h3>// MONETARY DATA</h3>${ratesHtml}<h3>// RECENT DIRECTIVES</h3>${decisionsHtml}<h3>// UPCOMING TRANSMISSIONS</h3>${meetingsHtml}</div>
-                <div class="news-column"><h3>// RECENT INTEL</h3>${newsHtml}</div>
-                <div class="analysis-column"><h3>${data.analysis.title}</h3><p><b>SUMMARY:</b> ${data.analysis.summary.replace(/\\*\\*(.*?)\\*\\*/g, '<span>$1</span>')}</p><br><p><b>IMPACT ANALYSIS:</b><br>${data.analysis.impact.replace(/\\*\\*(.*?)\\*\\*/g, '<span>$1</span>')}</p></div>
+            <div class="info-grid">
+                <div class="data-container">
+                    <h3>Raw Data Feed</h3>
+                    <h4>Monetary Rates</h4>${ratesHtml}
+                    <h4>Recent Directives</h4>${decisionsHtml}
+                    <h4>Upcoming Transmissions</h4>${meetingsHtml}
+                    <h4>Recent Intel</h4>${newsHtml}
+                </div>
+                <div class="analysis-container">
+                    <h3>AI Strategic Analysis</h3>
+                    <div class="analysis-content">
+                        <h4>${data.analysis.title || 'ANALYSIS PENDING'}</h4>
+                        <p><strong>Summary:</strong><br>${data.analysis.summary || 'N/A'}</p>
+                        <p><strong>Impact Analysis:</strong><br>${data.analysis.impact_analysis || 'N/A'}</p>
+                        <p><strong>Futures Outlook:</strong><br>${data.analysis.futures_outlook || 'N/A'}</p>
+                    </div>
+                </div>
             </div>`;
     }
-
-    function createTable(data, headers) {
-        let table = '<table><thead><tr>'; headers.forEach(h => table += `<th>${h.toUpperCase()}</th>`); table += '</tr></thead><tbody>';
-        data.forEach(row => {
-            table += '<tr>';
-            headers.forEach(h => { table += `<td>${row[h.toLowerCase().replace(/ /g, '_')] || 'N/A'}</td>`; });
-            table += '</tr>';
-        });
-        return table + '</tbody></table>';
-    }
+    function createTable(data, headers) { let table = '<table><thead><tr>'; headers.forEach(h => table += `<th>${h.toUpperCase()}</th>`); table += '</tr></thead><tbody>'; data.forEach(row => { table += '<tr>'; headers.forEach(h => { table += `<td>${row[h.toLowerCase().replace(/ /g, '_')] || 'N/A'}</td>`; }); table += '</tr>'; }); return table + '</tbody></table>'; }
 </script>
 </body>
 </html>
@@ -541,9 +538,10 @@ HTML_TEMPLATE = """
 if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
-    print(">> FITUR BARU: Notifikasi browser diaktifkan.")
-    print(">> WARNING: Scan delay is set to 0. This will perform requests at maximum speed.")
-    print(">> High frequency requests may lead to temporary IP blocking from data sources.")
+    print(">> FITUR BARU: Layout & Analisis AI yang disempurnakan (Termasuk Futures Outlook).")
+    print(f">> Model AI yang digunakan: {OPENROUTER_MODEL_NAME}")
+    print(">> PERINGATAN: API Key yang digunakan adalah kunci publik gratis. Performa bisa tidak stabil.")
+    print(f">> Notifikasi Ponsel DIKONFIGURASI untuk topik: '{NTFY_TOPIC}'")
     print("===============================================================")
     update_thread = Thread(target=background_update_task, daemon=True)
     update_thread.start()
@@ -551,4 +549,4 @@ if __name__ == '__main__':
     print(">> Open your browser and access the following address:")
     print(">> http://127.0.0.1:5001")
     print("===============================================================")
-    app.run(host='0.0.0.0', port=5001, debug=False) 
+    app.run(host='0.0.0.0', port=5001, debug=False)
