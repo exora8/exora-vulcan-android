@@ -160,11 +160,11 @@ def send_global_alert(headline):
     print(f"\n[!!!] GLOBAL ALERT TRIGGERED: {headline}\n")
     if PLYER_AVAILABLE:
         try:
-            notification.notify(title='G.I.M.P.S. GLOBAL ALERT', message=headline, app_name='G.I.M.P.S.', timeout=20)
+            notification.notify(title='Global Intelligence Monetary Policy System', message=headline, app_name='G.I.M.P.S', timeout=20)
         except Exception as e:
             print(f"[ERROR] Gagal mengirim notifikasi desktop: {e}")
     try:
-        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=headline.encode(encoding='utf-8'), headers={"Title": "G.I.M.P.S. Global Alert", "Priority": "high", "Tags": "warning"})
+        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=headline.encode(encoding='utf-8'), headers={"Title": "Global Intelligence Monetary Policy System", "Priority": "high", "Tags": "warning"})
     except Exception as e:
         print(f"[ERROR] Gagal mengirim notifikasi ntfy: {e}")
 
