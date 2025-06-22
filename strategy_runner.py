@@ -58,7 +58,7 @@ def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
-    print_colored("PERBAIKAN: Perhitungan PnL & Logika Belajar AI dari Funding.", Fore.GREEN)
+    print_colored("PERBAIKAN: Dialog AI/Bot & Peringatan Loss yang Ditingkatkan.", Fore.GREEN)
     if IS_TERMUX: print_colored("Notifikasi Termux diaktifkan.", Fore.GREEN)
     print_colored("Gunakan '!start' untuk masuk ke Live Dashboard.", Fore.YELLOW)
     print_colored("Ketik '!help' untuk daftar perintah.", Fore.YELLOW)
@@ -66,7 +66,6 @@ def display_welcome_message():
 
 def display_help():
     print_colored("\n--- Daftar Perintah (Command Mode) ---", Fore.CYAN, Style.BRIGHT)
-    # ... (Help text remains the same)
     print_colored("!start                - Masuk ke Live Dashboard & aktifkan Autopilot", Fore.GREEN)
     print_colored("!watch <PAIR> [TF]    - Tambah pair ke watchlist (e.g., BTC-USDT)", Fore.GREEN)
     print_colored("!unwatch <PAIR>       - Hapus pair dari watchlist", Fore.GREEN)
@@ -76,6 +75,34 @@ def display_help():
     print_colored("!set <key> <value>    - Ubah pengaturan (key: sl, fee, delay, tp_act, tp_gap, caution, winrate, cc_key, fr_max)", Fore.GREEN)
     print_colored("!exit                 - Keluar dari aplikasi", Fore.GREEN)
     print()
+
+def format_snapshot_details(snapshot):
+    """(BARU) Mengubah dictionary snapshot teknikal menjadi string yang mudah dibaca."""
+    if not snapshot:
+        return "Tidak ada detail teknikal."
+    
+    bias = snapshot.get('bias', 'N/A')
+    bias_color = Fore.GREEN if bias == 'BULLISH' else Fore.RED if bias == 'BEARISH' else Fore.YELLOW
+    
+    details = []
+    details.append(f"  - Bias Pasar: {bias_color}{bias}{Style.RESET_ALL}")
+    
+    ema9 = snapshot.get('ema9_current', 0)
+    ema50 = snapshot.get('ema50', 0)
+    ema100 = snapshot.get('ema100', 0)
+    details.append(f"  - Posisi EMA: EMA9({ema9:.2f}), EMA50({ema50:.2f}), EMA100({ema100:.2f})")
+
+    solidity = snapshot.get('pre_entry_candle_solidity', [])
+    direction = snapshot.get('pre_entry_candle_direction', [])
+    avg_solidity = (sum(solidity) / len(solidity)) * 100 if solidity else 0
+    details.append(f"  - Soliditas 3 Candle Terakhir: {avg_solidity:.1f}%")
+    details.append(f"  - Arah 3 Candle Terakhir: {' '.join(direction)}")
+
+    fr = snapshot.get('funding_rate', 0.0)
+    fr_color = Fore.RED if fr > 0.01 else Fore.GREEN if fr < -0.01 else Fore.WHITE
+    details.append(f"  - Funding Rate saat Entry: {fr_color}{fr:.4f}%{Style.RESET_ALL}")
+
+    return "\n".join(details)
 
 
 # --- MANAJEMEN DATA & PENGATURAN ---
@@ -92,7 +119,6 @@ def load_settings():
         try:
             with open(SETTINGS_FILE, 'r') as f:
                 loaded_settings = json.load(f)
-                # Pastikan semua kunci default ada
                 for key, value in default_settings.items():
                     if key not in loaded_settings:
                         loaded_settings[key] = value
@@ -106,18 +132,15 @@ def load_settings():
 def save_settings():
     try:
         with open(SETTINGS_FILE, 'w') as f: json.dump(current_settings, f, indent=4)
-    except IOError as e:
-        print_colored(f"Error saving settings: {e}", Fore.RED)
+    except IOError as e: print_colored(f"Error saving settings: {e}", Fore.RED)
 
 def load_trades():
     global autopilot_trades
     if os.path.exists(TRADES_FILE):
         try:
             with open(TRADES_FILE, 'r') as f: autopilot_trades = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            autopilot_trades = []
-    else:
-        autopilot_trades = []
+        except (json.JSONDecodeError, IOError): autopilot_trades = []
+    else: autopilot_trades = []
     for trade in autopilot_trades:
         if 'current_tp_checkpoint_level' not in trade:
             trade['current_tp_checkpoint_level'] = 0.0
@@ -131,17 +154,14 @@ def save_trades():
         print_colored(f"Riwayat trade dibatasi. {num_to_trim} trade tertua telah dihapus.", Fore.YELLOW)
     try:
         with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
-    except IOError as e:
-        print_colored(f"Error saving trades: {e}", Fore.RED)
+    except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
 
 def display_history():
-    # ... (Fungsi ini sudah benar, tidak perlu diubah)
     if not autopilot_trades: print_colored("Belum ada riwayat trade.", Fore.YELLOW); return
     fee_pct = current_settings.get('fee_pct', 0.1)
     for trade in sorted(autopilot_trades, key=lambda x: x['entryTimestamp'], reverse=True):
         entry_time_str = trade['entryTimestamp'].replace('Z', '')
         exit_time_str = trade.get('exitTimestamp', '').replace('Z', '')
-
         entry_time = datetime.fromisoformat(entry_time_str).strftime('%Y-%m-%d %H:%M')
         status_color = Fore.YELLOW if trade['status'] == 'OPEN' else Fore.WHITE
         trade_type = trade.get('type', 'LONG'); type_color = Fore.GREEN if trade_type == 'LONG' else Fore.RED
@@ -157,25 +177,18 @@ def display_history():
             print_colored(f"  Exit: {exit_time} @ {trade['exitPrice']:.4f}", Fore.WHITE)
             print_colored(f"  P/L (Net): {pl_percent_net:.2f}%", pl_color, Style.BRIGHT)
 
-# --- FUNGSI API (Tidak ada perubahan) ---
+# --- FUNGSI API ---
 def fetch_funding_rate(instId):
-    # ... (Sama seperti sebelumnya)
     bybit_symbol = instId.replace('-', '')
     try:
         url = f"{BYBIT_API_URL}/tickers?category=linear&symbol={bybit_symbol}"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        response = requests.get(url, timeout=10); response.raise_for_status(); data = response.json()
         if data.get("retCode") == 0 and 'list' in data.get('result', {}) and data['result']['list']:
-            funding_rate_str = data['result']['list'][0].get('fundingRate', '0')
-            return float(funding_rate_str) * 100
-        else:
-            return None
-    except (requests.exceptions.RequestException, ValueError, KeyError):
+            return float(data['result']['list'][0].get('fundingRate', '0')) * 100
         return None
+    except (requests.exceptions.RequestException, ValueError, KeyError): return None
 
 def fetch_recent_candles(instId, timeframe, limit=300):
-    # ... (Sama seperti sebelumnya)
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
     try:
@@ -185,12 +198,10 @@ def fetch_recent_candles(instId, timeframe, limit=300):
             candle_list = data['result']['list']
             if len(candle_list) < 100 + 3: return None
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
-        else: return None
-    except requests.exceptions.RequestException: return None
-    except Exception: return None
+        return None
+    except (requests.exceptions.RequestException, Exception): return None
 
 def fetch_historical_candles_backward_from_ts(instId, timeframe, to_ts_seconds, limit_per_request):
-    # ... (Sama seperti sebelumnya)
     timeframe_map = {'1m': 'histominute', '1H': 'histohour', '1D': 'histoday'}
     cc_endpoint = timeframe_map.get(timeframe)
     if not cc_endpoint: return [], 0
@@ -206,10 +217,10 @@ def fetch_historical_candles_backward_from_ts(instId, timeframe, to_ts_seconds, 
             if not candles_batch_raw: return [], 0
             formatted_batch = [{"time": c['time'] * 1000, "open": c['open'], "high": c['high'], "low": c['low'], "close": c['close'], "volume": c['volumefrom']} for c in candles_batch_raw]
             return formatted_batch, candles_batch_raw[0]['time']
-        else: return [], 0
+        return [], 0
     except (requests.exceptions.RequestException, Exception): return [], 0
 
-# --- FUNGSI KALKULASI PNL (Tidak ada perubahan, logika UTC sudah benar) ---
+# --- FUNGSI KALKULASI PNL ---
 def calculate_pnl(entry_price, current_price, trade_type):
     if entry_price == 0: return 0.0
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
@@ -236,12 +247,11 @@ def calculate_todays_pnl(all_trades):
 def calculate_this_weeks_pnl(all_trades):
     today_utc = datetime.utcnow().date()
     start_of_week_utc = today_utc - timedelta(days=today_utc.weekday())
-    end_of_week_utc = start_of_week_utc + timedelta(days=6)
     total_pnl = 0.0; fee_pct = current_settings.get('fee_pct', 0.1)
     for trade in all_trades:
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade:
             try:
-                if start_of_week_utc <= datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() <= end_of_week_utc:
+                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() >= start_of_week_utc:
                     total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
             except ValueError: continue
     return total_pnl
@@ -267,7 +277,6 @@ class LocalAI:
         self.past_trades = past_trades_for_pair
 
     def calculate_ema(self, data, period):
-        # ... (Sama seperti sebelumnya)
         if len(data) < period: return []
         closes = [d['close'] for d in data]
         ema_values = [sum(closes[:period]) / period]
@@ -278,13 +287,11 @@ class LocalAI:
         return ema_values
 
     def analyze_candle_solidity(self, candle):
-        # ... (Sama seperti sebelumnya)
         body = abs(candle['close'] - candle['open'])
         full_range = candle['high'] - candle['low']
         return body / full_range if full_range > 0 else 1.0
 
     def get_market_analysis(self, candle_data):
-        # ... (Sama seperti sebelumnya)
         if len(candle_data) < 100 + 3: return None
         ema9 = self.calculate_ema(candle_data, 9)
         ema50 = self.calculate_ema(candle_data, 50)
@@ -303,28 +310,27 @@ class LocalAI:
         return analysis
 
     def check_for_repeated_mistake(self, current_analysis, funding_rate):
-        # DIPERBAIKI: Menambahkan perbandingan funding rate
+        """(DIPERBARUI) Mengembalikan objek loss untuk detail yang lebih kaya."""
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) < 0]
-        if not losing_trades: return False
+        if not losing_trades: return None
 
         for loss in losing_trades:
             past_snapshot = loss.get("entry_snapshot")
             if not past_snapshot or past_snapshot.get('bias') != current_analysis['bias']:
                 continue
 
-            # Periksa kemiripan funding rate (jika ada di snapshot lama)
             past_funding_rate = past_snapshot.get("funding_rate")
+            is_fr_similar = False
             if past_funding_rate is not None:
-                # Anggap mirip jika selisihnya kurang dari 0.02%
-                if abs(funding_rate - past_funding_rate) < 0.02:
-                    # Di sini, tambahkan perbandingan teknikal yang lebih detail
-                    # Jika teknikal juga mirip, maka itu adalah pengulangan kesalahan
-                    print_colored(f"AI Menghindari Trade: Kondisi mirip dengan loss sebelumnya (ID: {loss['id']})", Fore.MAGENTA)
-                    return True
-        return False
+                if abs(funding_rate - past_funding_rate) < 0.02: # Anggap mirip jika selisih < 0.02%
+                    is_fr_similar = True
+            
+            # Jika bias pasar & funding rate mirip, anggap ini adalah potensi pengulangan kesalahan
+            if is_fr_similar:
+                return loss # Kembalikan objek trade yang rugi
+        return None
 
     def get_decision(self, candle_data, open_position, instrument_id, funding_rate=0.0):
-        # ... (Logika tidak berubah, tapi pemanggilan check_for_repeated_mistake diperbarui)
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Memantau posisi."}
@@ -343,8 +349,16 @@ class LocalAI:
             if potential_trade_type == 'SHORT' and funding_rate < -max_funding_rate:
                 return {"action": "HOLD", "reason": f"HOLD SHORT: Funding {funding_rate:.4f}% < {-max_funding_rate}%"}
 
-            if self.check_for_repeated_mistake(analysis, funding_rate): # Passing funding rate
-                return {"action": "HOLD", "reason": f"Menghindari pengulangan kesalahan."}
+            # --- (DIPERBARUI) Logika Peringatan Loss yang Lebih Detail ---
+            similar_loss = self.check_for_repeated_mistake(analysis, funding_rate)
+            if similar_loss:
+                loss_id = similar_loss['id']
+                loss_pnl = similar_loss.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)
+                reason_text = (f"PERINGATAN: Setup ini mirip dengan trade {loss_id} "
+                               f"yang mengalami loss ({loss_pnl:.2f}%). Entry dibatalkan.")
+                print_colored(f"\n{reason_text}", Fore.MAGENTA, Style.BRIGHT)
+                return {"action": "HOLD", "reason": "Menghindari pengulangan loss."}
+            # --- Akhir Logika Baru ---
 
             reason = "BULLISH: Retrace & close di atas EMA9." if potential_trade_type == 'LONG' else "BEARISH: Retrace & close di bawah EMA9."
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": reason, "snapshot": analysis}
@@ -353,10 +367,7 @@ class LocalAI:
 
 # --- LOGIKA TRADING UTAMA ---
 async def analyze_and_close_trade(trade, exit_price, reason, is_backtest=False, exit_timestamp_ms=None):
-    # DIPERBAIKI: Menerima timestamp exit untuk backtest
     pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
-    
-    # Gunakan timestamp yang diberikan jika ada (untuk backtest), jika tidak, gunakan waktu sekarang (untuk live)
     exit_dt = datetime.fromtimestamp(exit_timestamp_ms / 1000) if exit_timestamp_ms else datetime.utcnow()
     
     trade.update({
@@ -391,10 +402,10 @@ async def run_autopilot_analysis(instrument_id):
             pair_state["candle_data"], open_pos, instrument_id, funding_rate
         )
 
+        # --- (DIPERBARUI) Logika Notifikasi yang Diperkaya ---
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             snapshot = decision.get("snapshot", {})
-            # BARU: Tambahkan funding rate ke snapshot
-            snapshot["funding_rate"] = funding_rate
+            snapshot["funding_rate"] = funding_rate # Tambahkan funding rate ke snapshot
             
             new_trade = {
                 "id": int(time.time()), "instrumentId": instrument_id,
@@ -405,9 +416,21 @@ async def run_autopilot_analysis(instrument_id):
             }
             autopilot_trades.append(new_trade)
             save_trades()
+
+            # "AI" memberikan alasan utama
+            ai_reason = f"Alasan AI: {new_trade['entryReason']}"
+            # "Bot" menambahkan detail teknikal
+            bot_details = format_snapshot_details(snapshot)
+            
             notif_title = f"🟢 Posisi {new_trade['type']} Dibuka: {instrument_id}"
-            notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | {new_trade['entryReason']}"
-            send_termux_notification(notif_title, notif_content)
+            # Gabungkan keduanya untuk notifikasi yang kaya
+            notif_content_console = f"Entry @ {new_trade['entryPrice']:.4f}\n{ai_reason}\n{Style.BRIGHT}Kondisi Teknikal:{Style.NORMAL}\n{bot_details}"
+            notif_content_termux = f"Entry @ {new_trade['entryPrice']:.4f} | {new_trade['entryReason']}" # Versi singkat untuk notif
+            
+            print_colored(f"\n{notif_title}", Fore.GREEN, Style.BRIGHT)
+            print_colored(notif_content_console, Fore.GREEN)
+            send_termux_notification(notif_title, notif_content_termux)
+
     except Exception as e:
         print_colored(f"Error dalam autopilot analysis: {e}", Fore.RED)
     finally:
@@ -415,7 +438,6 @@ async def run_autopilot_analysis(instrument_id):
 
 # --- THREAD WORKERS ---
 def autopilot_worker():
-    # ... (Tidak ada perubahan)
     while not stop_event.is_set():
         if is_autopilot_running:
             for pair_id in list(current_settings.get("watched_pairs", {})):
@@ -426,7 +448,7 @@ def autopilot_worker():
 
 async def check_realtime_position_management(trade_obj, current_candle_data, is_backtest=False):
     if not trade_obj: return
-    # ... (Logika run-up dan drawdown)
+    # Logika run-up dan drawdown
     if trade_obj['type'] == 'LONG':
         pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG')
         pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'LONG')
@@ -438,7 +460,7 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
         if pnl_at_low > trade_obj.get('run_up_percent', 0.0): trade_obj['run_up_percent'] = pnl_at_low
         if pnl_at_high < trade_obj.get('max_drawdown_percent', 0.0): trade_obj['max_drawdown_percent'] = pnl_at_high
 
-    # ... (Logika SL)
+    # Logika SL
     sl_pct = current_settings.get('stop_loss_pct')
     sl_price = trade_obj['entryPrice'] * (1 - abs(sl_pct) / 100) if trade_obj['type'] == 'LONG' else trade_obj['entryPrice'] * (1 + abs(sl_pct) / 100)
     if (trade_obj['type'] == 'LONG' and current_candle_data['low'] <= sl_price) or \
@@ -446,7 +468,7 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
         await analyze_and_close_trade(trade_obj, sl_price, f"Stop Loss @ {-abs(sl_pct):.2f}%", is_backtest, current_candle_data['time'])
         return
 
-    # ... (Logika Trailing TP)
+    # Logika Trailing TP
     activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     if trade_obj.get("current_tp_checkpoint_level", 0.0) > 0.0:
         ts_price = trade_obj.get('trailing_stop_price')
@@ -455,7 +477,6 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
             await analyze_and_close_trade(trade_obj, ts_price, f"Trailing TP", is_backtest, current_candle_data['time'])
             return
     
-    # ... (Update Trailing TP)
     pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj['type'] == 'LONG' else 'low'], trade_obj['type'])
     if pnl_now >= activation_pct:
         current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
@@ -472,7 +493,6 @@ async def check_realtime_position_management(trade_obj, current_candle_data, is_
         save_trades()
 
 def data_refresh_worker():
-    # ... (Tidak ada perubahan)
     while not stop_event.is_set():
         for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
             if pair_id not in market_state: market_state[pair_id] = {}
@@ -488,19 +508,17 @@ def data_refresh_worker():
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
 def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
-    # ... (Tidak ada perubahan)
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
     print_colored(f'\r{prefix} |{bar}| {percent}% {suffix}', end=print_end)
-    if iteration == total:
-        print()
+    if iteration == total: print()
 
 def run_pair_backtest(pair_id, timeframe):
     global autopilot_trades
     print_colored(f"\n🚀 Memulai Backtest untuk {pair_id} ({timeframe})...", Fore.CYAN, Style.BRIGHT)
     autopilot_trades[:] = [t for t in autopilot_trades if t['instrumentId'] != pair_id]
-    save_trades() # Simpan state yang bersih
+    save_trades()
     cumulative_historical_candles = []
     current_to_ts_for_fetch = int(datetime.utcnow().timestamp())
     target_winrate = current_settings.get("target_winrate_pct", 85.0)
@@ -531,29 +549,27 @@ def run_pair_backtest(pair_id, timeframe):
             
             if not temp_open_trades:
                 ai_brain = LocalAI(current_settings, backtested_trades)
-                decision = ai_brain.get_decision(data_slice, None, pair_id, 0.0) # Funding rate diset 0 untuk backtest
+                decision = ai_brain.get_decision(data_slice, None, pair_id, 0.0)
                 if decision.get('action') in ["BUY", "SELL"]:
                     snapshot = decision.get("snapshot", {})
-                    snapshot["funding_rate"] = 0.0 # Simpan funding rate 0.0 untuk backtest
+                    snapshot["funding_rate"] = 0.0
                     new_trade = {
                         "id": int(current_candle['time'] / 1000), "instrumentId": pair_id,
                         "type": "LONG" if decision['action'] == "BUY" else "SHORT",
                         "entryTimestamp": datetime.fromtimestamp(current_candle['time'] / 1000).isoformat() + 'Z',
                         "entryPrice": current_candle['close'], "entryReason": decision.get("reason"),
-                        "status": 'OPEN', "entry_snapshot": snapshot,
-                        "run_up_percent": 0.0, "max_drawdown_percent": 0.0,
-                        "trailing_stop_price": None, "current_tp_checkpoint_level": 0.0
+                        "status": 'OPEN', "entry_snapshot": snapshot, "run_up_percent": 0.0,
+                        "max_drawdown_percent": 0.0, "trailing_stop_price": None, "current_tp_checkpoint_level": 0.0
                     }
                     temp_open_trades.append(new_trade)
             print_progress_bar(i + 1, total_candles, prefix=f'  {pair_id} Analisis', suffix='Lengkap')
 
         for trade in temp_open_trades:
-            # DIPERBAIKI: Gunakan timestamp candle terakhir untuk exit
             asyncio.run(analyze_and_close_trade(trade, cumulative_historical_candles[-1]['close'], "Backtest End", True, cumulative_historical_candles[-1]['time']))
             backtested_trades.append(trade)
         
         autopilot_trades.extend(backtested_trades)
-        save_trades() # Simpan hasil backtest setelah setiap chunk
+        save_trades()
         
         winrate = calculate_winrate(backtested_trades, current_settings.get('fee_pct', 0.1))
         if len(backtested_trades) > 0:
@@ -563,7 +579,6 @@ def run_pair_backtest(pair_id, timeframe):
     print_colored(f"✅ Backtest untuk {pair_id} selesai.", Fore.GREEN)
 
 def check_and_run_backtests():
-    # ... (Tidak ada perubahan)
     watched_pairs = current_settings.get("watched_pairs", {})
     pairs_to_backtest = [ (p, t) for p, t in watched_pairs.items() if not any(tr for tr in autopilot_trades if tr['instrumentId'] == p)]
     if pairs_to_backtest:
@@ -577,7 +592,6 @@ def check_and_run_backtests():
         print_colored(f"\nTidak ada Backtest yang diperlukan.", Fore.GREEN)
 
 def handle_settings_command(parts):
-    # ... (Tidak ada perubahan)
     setting_map = {
         'sl': ('stop_loss_pct', '%'), 'fee': ('fee_pct', '%'), 'delay': ('analysis_interval_sec', 's'),
         'tp_act': ('trailing_tp_activation_pct', '%'), 'tp_gap': ('trailing_tp_gap_pct', '%'),
@@ -608,7 +622,6 @@ def run_dashboard_mode():
             print("\033[H\033[J", end="")
             print_colored("--- VULCAN'S EDITION LIVE DASHBOARD ---", Fore.CYAN, Style.BRIGHT)
             
-            # DIPERBAIKI: Semua fungsi PnL dipanggil lagi
             todays_pnl = calculate_todays_pnl(autopilot_trades)
             this_weeks_pnl = calculate_this_weeks_pnl(autopilot_trades)
             last_weeks_pnl = calculate_last_weeks_pnl(autopilot_trades)
@@ -626,7 +639,6 @@ def run_dashboard_mode():
                 print_colored("\nWatchlist kosong. Tekan Ctrl+C dan gunakan '!watch <PAIR>'.", Fore.YELLOW)
             for pair_id, timeframe in current_settings.get("watched_pairs", {}).items():
                 print_colored(f"\n⦿ {pair_id} ({timeframe})", Fore.WHITE, Style.BRIGHT)
-                # ... (Sisa dashboard tidak berubah)
                 open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
                 pair_state = market_state.get(pair_id, {})
                 if open_pos:
@@ -681,7 +693,7 @@ def main():
                     tf = parts[2] if len(parts) > 2 else '1H'
                     current_settings['watched_pairs'][pair_id] = tf
                     save_settings()
-                    print_colored(f"{pair_id} ({tf}) ditambahkan. Jalankan ulang bot untuk memulai backtest.", Fore.GREEN)
+                    print_colored(f"{pair_id} ({tf}) ditambahkan. Jalankan ulang bot untuk memulai backtest jika ini pair baru.", Fore.GREEN)
                 else: print_colored("Format: !watch <PAIR> [TIMEFRAME]", Fore.RED)
             elif cmd == '!unwatch':
                 if len(parts) == 2:
