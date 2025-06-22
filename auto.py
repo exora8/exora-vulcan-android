@@ -11,7 +11,7 @@ import time
 # Ambil konfigurasi dari environment variables untuk keamanan
 # Pastikan kamu sudah mengatur environment variable ini sebelum menjalankan skrip
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "gimps-global-notificationA87X")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("7590245062:AAH2sLwsDvukOrVPUF7-iXU45fnfd20UV2M")
 
 # GANTI DENGAN ID CHANNEL PRIVAT KAMU (berupa angka, bukan string)
 TELEGRAM_CHAT_ID = -1002705544292 # <--- UBAH BAGIAN INI DENGAN ID ASLI
