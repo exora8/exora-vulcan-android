@@ -8,18 +8,13 @@ import collections
 import json
 import random
 
-# <<< BARU: Import library untuk data penerbangan
-from FlightRadar24.api import FlightRadar24API
-
 # =================================================================
 # BAGIAN 1: KONFIGURASI
 # =================================================================
 app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
-fr_api = FlightRadar24API() # <<< BARU: Inisialisasi API FlightRadar
 
 # --- DAFTAR NEGARA ---
-# ... (Bagian ini tidak diubah, jadi saya singkat untuk keringkasan)
 FULL_COUNTRY_MAP = {
     # Amerika
     'Argentina': 'AR', 'Bolivia': 'BO', 'Brazil': 'BR', 'Canada': 'CA', 'Chile': 'CL', 'Colombia': 'CO',
@@ -50,6 +45,7 @@ FULL_COUNTRY_MAP = {
     'Nigeria': 'NG', 'Rwanda': 'RW', 'Senegal': 'SN', 'Somalia': 'SO', 'South Africa': 'ZA', 'Sudan': 'SD',
     'Tanzania': 'TZ', 'Tunisia': 'TN', 'Uganda': 'UG', 'Zambia': 'ZM', 'Zimbabwe': 'ZW'
 }
+
 REVERSE_COUNTRY_MAP = {v: k for k, v in FULL_COUNTRY_MAP.items()}
 COUNTRY_MAP = FULL_COUNTRY_MAP
 ACTIVE_CONFLICTS = [ ('RU', 'UA'), ('IL', 'IR'), ('IL', 'SY'), ('YE', 'SA'), ('CN', 'TW'), ('IL', 'LB') ]
@@ -66,17 +62,14 @@ global_data = {
     'geopolitical': {
         "tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news_links": []
     },
-    'flights': [], # <<< BARU: Menambahkan list untuk data penerbangan
     'last_updated_code': None
 }
 MONETARY_UPDATE_INTERVAL_SECONDS = 900
-FLIGHT_UPDATE_INTERVAL_SECONDS = 90 # <<< BARU: Interval update data penerbangan (90 detik)
 
 # =================================================================
 # BAGIAN 2: LOGIKA AI (TIDAK BERUBAH)
 # =================================================================
 def generate_ai_summary(all_data):
-    # ... (Fungsi ini tidak diubah)
     geo_data = all_data.get('geopolitical', {})
     all_scores = [s['value'] for s in geo_data.get('tension_scores', [])]
     world_tension = int(sum(all_scores) / len(all_scores)) if all_scores else 30
@@ -111,14 +104,12 @@ def generate_ai_summary(all_data):
     active_hotspots = [f"{REVERSE_COUNTRY_MAP.get(c1, c1)} vs {REVERSE_COUNTRY_MAP.get(c2, c2)}" for c1, c2 in geo_data.get('conflicts', [])]
     active_conflict_countries = {code for pair in geo_data.get('conflicts', []) for code in pair}
     sorted_scores = sorted(geo_data.get('tension_scores', []), key=lambda x: x['value'], reverse=True)
-    potential_hotspots = [f"{REVERSE_COUNTRY_MAP.get(score['id'], score['id'])} (Skor: {score['value']})" for score in sorted_scores if score['id'] not in active_conflict_countries]
-    potential_hotspots = potential_hotspots[:5]
+    potential_hotspots = [f"{REVERSE_COUNTRY_MAP.get(score['id'], score['id'])} (Skor: {score['value']})" for score in sorted_scores if score['id'] not in active_conflict_countries and len(potential_hotspots) < 5]
     return { "world_tension": world_tension, "war_probability": war_probability, "market_outlook": market_outlook, "strategic_posture": strategic_posture, "active_hotspots": active_hotspots, "potential_hotspots": potential_hotspots }
 
 # =================================================================
 # BAGIAN 3: FUNGSI-FUNGSI HELPER (TIDAK BERUBAH)
 # =================================================================
-# ... (Semua fungsi di bagian ini tidak diubah, jadi saya singkat)
 def parse_world_rates(soup):
     data = []
     table = soup.select_one('table#AutoNumber3')
@@ -192,46 +183,17 @@ def get_news_from_rss(country_code):
         return []
 
 # =================================================================
-# BAGIAN 4: PROSES BACKGROUND (DIMODIFIKASI)
+# BAGIAN 4: PROSES BACKGROUND (TIDAK BERUBAH DARI SEBELUMNYA)
 # =================================================================
 def background_update_task():
     country_codes = list(REVERSE_COUNTRY_MAP.keys())
     random.shuffle(country_codes)
     country_index = 0
     last_monetary_update_time = 0
-    last_flight_update_time = 0 # <<< BARU: Timer untuk data penerbangan
     
     while True:
         try:
             current_time = time.time()
-
-            # <<< BARU: Blok untuk mengambil data penerbangan
-            if (current_time - last_flight_update_time) > FLIGHT_UPDATE_INTERVAL_SECONDS:
-                print(">> [TIMER] Performing flight data scan...")
-                try:
-                    # Ambil semua flight yang terlihat di view default (worldwide)
-                    flights = fr_api.get_flights()
-                    processed_flights = []
-                    for f in flights:
-                        # Kita hanya proses pesawat yang punya data lengkap
-                        if f.latitude and f.longitude and f.callsign and f.origin_airport_iata and f.destination_airport_iata:
-                            processed_flights.append({
-                                "id": f.id,
-                                "callsign": f.callsign,
-                                "origin": f.origin_airport_iata,
-                                "destination": f.destination_airport_iata,
-                                "latitude": f.latitude,
-                                "longitude": f.longitude,
-                                "heading": f.heading
-                            })
-                    with data_lock:
-                        global_data['flights'] = processed_flights
-                    print(f">> [TIMER] Flight scan complete. {len(processed_flights)} flights tracked.")
-                    last_flight_update_time = current_time
-                except Exception as e:
-                    print(f"!! Failed to fetch flight data: {e}")
-            
-            # Bagian untuk data moneter (tidak diubah)
             if (current_time - last_monetary_update_time) > MONETARY_UPDATE_INTERVAL_SECONDS:
                 print(">> [TIMER] Performing periodic monetary data scan...")
                 cbrates_urls = {'rates': 'https://www.cbrates.com/', 'decisions': 'https://www.cbrates.com/decisions.htm', 'meetings': 'https://www.cbrates.com/meetings.htm'}
@@ -247,7 +209,6 @@ def background_update_task():
                 last_monetary_update_time = current_time
                 print(">> [TIMER] Monetary scan complete.")
 
-            # Bagian untuk data berita (tidak diubah)
             country_code = country_codes[country_index]
             country_name = REVERSE_COUNTRY_MAP.get(country_code, country_code)
             print(f">> MAX SPEED SCAN: [{country_index + 1}/{len(country_codes)}] {country_name}")
@@ -282,7 +243,7 @@ def background_update_task():
             time.sleep(10)
 
 # =================================================================
-# BAGIAN 5: API ENDPOINTS (DIMODIFIKASI)
+# BAGIAN 5: API ENDPOINTS (TIDAK BERUBAH DARI SEBELUMNYA)
 # =================================================================
 @app.route('/')
 def home(): return render_template_string(HTML_TEMPLATE)
@@ -295,7 +256,6 @@ def stream_updates():
             with data_lock:
                 data_to_send = {
                     'geopolitical': global_data['geopolitical'],
-                    'flights': global_data.get('flights', []), # <<< BARU: Menambahkan data penerbangan ke stream
                     'updated_country_code': global_data.get('last_updated_code')
                 }
                 yield f"data: {json.dumps(data_to_send)}\n\n"
@@ -304,7 +264,6 @@ def stream_updates():
                     
     return Response(event_stream(), mimetype='text/event-stream')
 
-# ... (Endpoint lain tidak berubah)
 @app.route('/api/ai-summary')
 def get_ai_summary():
     with data_lock: summary = generate_ai_summary(global_data)
@@ -327,7 +286,7 @@ def get_country_data(country_code):
     })
 
 # =================================================================
-# BAGIAN 6: FRONTEND HTML (DIMODIFIKASI)
+# BAGIAN 6: FRONTEND HTML DENGAN FITUR NOTIFIKASI
 # =================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -409,18 +368,21 @@ HTML_TEMPLATE = """
 <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
 <script src="https://cdn.amcharts.com/lib/5/map.js"></script>
 <script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script>
-<script src="https://cdn.amcharts.com/lib/5/themes/Animated.new.js"></script>
+<script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
 
 <script>
     const infoPanel = document.getElementById('infopanel'), infoContent = document.getElementById('info-content'), panelTitle = document.getElementById('panel-title'), closeButton = document.getElementById('close-panel');
 
+    // << FUNGSI BARU UNTUK MENAMPILKAN NOTIFIKASI BROWSER
     function showNotification(title, body) {
+        // Cek dulu apakah izin sudah diberikan
         if (Notification.permission === 'granted') {
-            new Notification(title, { body: body, icon: '/favicon.ico' });
+            new Notification(title, { body: body, icon: '/favicon.ico' }); // Ganti icon jika punya
         }
     }
 
     am5.ready(function() {
+        // << PENAMBAHAN: MEMINTA IZIN NOTIFIKASI SAAT HALAMAN DIBUKA
         if ('Notification' in window) {
             if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
                 Notification.requestPermission().then(function(permission) {
@@ -439,6 +401,7 @@ HTML_TEMPLATE = """
         chart.chartContainer.set("background", am5.Rectangle.new(root, { fill: am5.color(0x000000), fillOpacity: 1 }));
 
         var polygonSeries = chart.series.push(am5map.MapPolygonSeries.new(root, { geoJSON: am5geodata_worldLow, exclude: ["AQ"], valueField: "value", calculateAggregates: true }));
+        
         polygonSeries.mapPolygons.template.setAll({ interactive: true, fill: am5.color(0x550000), stroke: am5.color(0x444444), strokeWidth: 0.5, transitionDuration: 500 });
         polygonSeries.mapPolygons.template.adapters.add("tooltipText", function(text, target) {
           if (target.dataItem.get("value") == null || target.dataItem.get("value") === 0) { return "{name}: Tension Unknown / Stable"; }
@@ -452,43 +415,7 @@ HTML_TEMPLATE = """
         var newsLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {}));
         newsLineSeries.mapLines.template.setAll({ stroke: am5.color(0x64b5f6), strokeOpacity: 0.6, strokeWidth: 1, arc: -0.2 });
         
-        // <<< BARU: Series untuk Radar Pesawat
-        var planeSeries = chart.series.push(am5map.MapPointSeries.new(root, {
-            latitudeField: "latitude",
-            longitudeField: "longitude"
-        }));
-
-        // <<< BARU: Ikon dan tooltip untuk pesawat
-        const planeSvg = "m2,106h28l24,30h72l-44,-133h35l80,132h98c21,0 21,34 0,34l-98,0 -80,134h-35l43,-133h-71l-24,30h-28l15,-47";
-        planeSeries.bullets.push(function() {
-            var container = am5.Container.new(root, {});
-            var circle = container.children.push(am5.Graphics.new(root, {
-                svgPath: planeSvg,
-                scale: 0.04,
-                centerX: am5.p50,
-                centerY: am5.p50,
-                fill: am5.color(0xffffff),
-                stroke: am5.color(0x000000),
-                strokeWidth: 0.5
-            }));
-            return am5.Bullet.new(root, {
-                sprite: container
-            });
-        });
-
-        planeSeries.mapPoints.template.setAll({
-            toggleTooltip: true,
-            interactive: true
-        });
-
-        planeSeries.mapPoints.template.set("tooltipText", "Callsign: {callsign}\\nTake Off: {origin}\\nLanding: {destination}");
-        
-        // <<< BARU: Rotasi ikon pesawat sesuai arah terbang
-        planeSeries.mapPoints.template.adapters.add("rotation", function(rotation, target) {
-          return target.dataItem.get("dataContext").heading;
-        });
-
-        function updateMap(geoData, flightData) {
+        function updateMap(geoData) {
             if (!geoData || !polygonSeries.data.length) return;
             (geoData.tension_scores || []).forEach(score => {
                 const dataItem = polygonSeries.getDataItemById(score.id);
@@ -497,15 +424,10 @@ HTML_TEMPLATE = """
             conflictLineSeries.data.clear(); newsLineSeries.data.clear();
             (geoData.conflicts || []).forEach(conflict => renderLine(conflict[0], conflict[1], conflictLineSeries, true));
             (geoData.news_links || []).forEach(link => renderLine(link[0], link[1], newsLineSeries, false));
-            
-            // <<< BARU: Update data pesawat di peta
-            if (flightData) {
-                planeSeries.data.setAll(flightData);
-            }
         }
 
+        // << MODIFIKASI: DURASI FLASH SESUAI PERMINTAAN
         function flashCountry(countryCode) {
-            // ... (Fungsi ini tidak diubah)
             let polygon = polygonSeries.getPolygonById(countryCode);
             if (polygon) {
                 const originalColor = polygon.get("fill");
@@ -528,7 +450,6 @@ HTML_TEMPLATE = """
         }
         
         function renderLine(code1, code2, series, isConflict) {
-            // ... (Fungsi ini tidak diubah)
             let p1 = polygonSeries.getPolygonById(code1); let p2 = polygonSeries.getPolygonById(code2);
             if(p1 && p2) {
                 let lineDataItem = series.pushDataItem({ geometry: { type: "LineString", coordinates: [[p1.visualCentroid.longitude, p1.visualCentroid.latitude], [p2.visualCentroid.longitude, p2.visualCentroid.latitude]] } });
@@ -543,9 +464,9 @@ HTML_TEMPLATE = """
         const eventSource = new EventSource("/api/stream-updates");
         eventSource.onmessage = function(event) { 
             const receivedData = JSON.parse(event.data);
-            // <<< MODIFIKASI: Kirim data geopolitik dan penerbangan ke fungsi update
-            updateMap(receivedData.geopolitical, receivedData.flights); 
+            updateMap(receivedData.geopolitical); 
             
+            // << MODIFIKASI: PANGGIL FUNGSI FLASH DAN NOTIFIKASI
             if(receivedData.updated_country_code) {
                 const countryCode = receivedData.updated_country_code;
                 const polygon = polygonSeries.getPolygonById(countryCode);
@@ -570,7 +491,6 @@ HTML_TEMPLATE = """
     function closeInfoPanel() { infoPanel.classList.remove('visible'); }
     
     async function fetchCountryData(countryCode, countryName) {
-        // ... (Fungsi ini tidak diubah)
         infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}...</p>`;
         panelTitle.innerText = countryName.toUpperCase();
         showInfoPanel();
@@ -583,7 +503,6 @@ HTML_TEMPLATE = """
     }
 
     function displayCountryData(data, countryName) {
-        // ... (Fungsi ini tidak diubah)
         const ratesHtml = data.rates && data.rates.length > 0 ? createTable(data.rates, ['Rate', 'Change', 'Date', 'Rate Name']) : '<p>// NO MONETARY RATE DATA //</p>';
         const decisionsHtml = data.decisions && data.decisions.length > 0 ? createTable(data.decisions, ['Date', 'Description', 'Action']) : '<p>// NO RECENT DIRECTIVE DATA //</p>';
         const meetingsHtml = data.meetings && data.meetings.length > 0 ? createTable(data.meetings, ['Date', 'Description']) : '<p>// NO UPCOMING TRANSMISSIONS DATA //</p>';
@@ -603,7 +522,6 @@ HTML_TEMPLATE = """
     }
 
     function createTable(data, headers) {
-        // ... (Fungsi ini tidak diubah)
         let table = '<table><thead><tr>'; headers.forEach(h => table += `<th>${h.toUpperCase()}</th>`); table += '</tr></thead><tbody>';
         data.forEach(row => {
             table += '<tr>';
@@ -624,7 +542,6 @@ if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
     print(">> FITUR BARU: Notifikasi browser diaktifkan.")
-    print(">> FITUR BARU: Real-time Flight Radar diaktifkan.") # <<< BARU
     print(">> WARNING: Scan delay is set to 0. This will perform requests at maximum speed.")
     print(">> High frequency requests may lead to temporary IP blocking from data sources.")
     print("===============================================================")
@@ -634,4 +551,4 @@ if __name__ == '__main__':
     print(">> Open your browser and access the following address:")
     print(">> http://127.0.0.1:5001")
     print("===============================================================")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    app.run(host='0.0.0.0', port=5001, debug=False) 
