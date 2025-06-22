@@ -9,7 +9,7 @@ import json
 import random
 import datetime
 import requests
-import openai 
+# --- MODIFIKASI TERMUX ---: Library 'openai' sudah tidak digunakan lagi.
 
 # Coba impor plyer untuk notifikasi desktop
 try:
@@ -27,7 +27,7 @@ app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
 # --- KONFIGURASI OPENROUTER AI ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
 
@@ -68,36 +68,45 @@ global_data = { 'rates': [], 'decisions': [], 'meetings': [], 'all_news': {code:
 MONETARY_UPDATE_INTERVAL_SECONDS = 900
 
 # =================================================================
-# BAGIAN 2: LOGIKA AI (Perbaikan Otentikasi)
+# BAGIAN 2: LOGIKA AI (TANPA LIBRARY OPENAI)
 # =================================================================
 
-# MODIFIKASI: Inisialisasi klien dengan header eksplisit untuk otentikasi yang lebih andal.
-client = openai.OpenAI(
-    base_url=OPENROUTER_SITE_URL,
-    api_key=OPENROUTER_API_KEY,
-    default_headers={
-        "HTTP-Referer": "http://localhost", # Bisa diisi apa saja, praktik yang baik
-        "X-Title": "GIMPS AI System", # Nama aplikasi Anda
-    },
-)
-
 def call_openrouter_api(system_prompt, user_prompt):
-    """Fungsi pusat untuk memanggil API OpenRouter."""
+    """
+    --- MODIFIKASI TERMUX ---
+    Fungsi pusat untuk memanggil API OpenRouter menggunakan library 'requests'.
+    Ini menggantikan kebutuhan akan library 'openai' dan lebih portabel.
+    """
+    api_url = f"{OPENROUTER_SITE_URL}/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost",  # Bisa diisi apa saja, praktik yang baik
+        "X-Title": "GIMPS AI System"       # Nama aplikasi Anda
+    }
+    
+    payload = {
+        "model": OPENROUTER_MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 700
+    }
+    
     try:
-        # Panggilan API sekarang menggunakan klien yang sudah dikonfigurasi dengan benar
-        response = client.chat.completions.create(
-            model=OPENROUTER_MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.7,
-            max_tokens=700 
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"[!!] OPENROUTER API ERROR: {e}")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=25)
+        response.raise_for_status()  # Akan melempar error untuk status 4xx/5xx
+        return response.json()['choices'][0]['message']['content']
+    except requests.exceptions.RequestException as e:
+        print(f"[!!] OPENROUTER API NETWORK ERROR: {e}")
         return None
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        print(f"[!!] OPENROUTER API RESPONSE PARSE ERROR: {e}")
+        return None
+
 
 def generate_ai_summary(all_data):
     """Menghasilkan ringkasan global menggunakan LLM."""
@@ -179,7 +188,6 @@ def parse_decisions_or_meetings(soup, type):
     return data
 
 def generate_analysis(country_code, country_name, decision_data, meetings_data, news_headlines):
-    """MODIFIKASI: Menghasilkan analisis negara yang komprehensif, termasuk prospek masa depan (futures)."""
     latest_decision = decision_data[0] if decision_data else {"action": "N/A", "description": "No recent directive data."}
     upcoming_meetings_str = ', '.join([m['description'] for m in meetings_data]) if meetings_data else "No upcoming meetings scheduled."
     news_headlines_str = ', '.join(news_headlines[:5]) if news_headlines else "No recent headlines available."
@@ -239,7 +247,6 @@ def background_update_task():
     while True:
         try:
             current_time = time.time()
-            # Bagian untuk update data moneter (cbrates)
             if (current_time - last_monetary_update_time) > MONETARY_UPDATE_INTERVAL_SECONDS:
                 print(">> [TIMER] Performing periodic monetary data scan..."); cbrates_urls = {'rates': 'https://www.cbrates.com/', 'decisions': 'https://www.cbrates.com/decisions.htm', 'meetings': 'https://www.cbrates.com/meetings.htm'}
                 with data_lock:
@@ -252,59 +259,42 @@ def background_update_task():
                         except Exception as e: print(f"!! Failed to fetch monetary data for {key}: {e}")
                 last_monetary_update_time = current_time; print(">> [TIMER] Monetary scan complete.")
 
-            # Bagian untuk update berita negara per negara
             country_code = country_codes[country_index]; country_name = REVERSE_COUNTRY_MAP.get(country_code, country_code); print(f">> MAX SPEED SCAN: [{country_index + 1}/{len(country_codes)}] {country_name}")
             news_items = get_news_from_rss(country_code)
             
             with data_lock:
-                # Update berita untuk negara yang sedang di-scan
                 formatted_headlines = [item['formatted'] for item in news_items]
                 if formatted_headlines and (country_code not in global_data['all_news'] or global_data['all_news'][country_code] != formatted_headlines):
                     global_data['all_news'][country_code] = formatted_headlines; global_data['last_updated_code'] = country_code
                 
-                # Cek untuk notifikasi global
                 for item in news_items:
                     core_headline = item['core']; global_data['headline_tracker'][core_headline]['countries'].add(country_code); count = len(global_data['headline_tracker'][core_headline]['countries'])
                     is_above_threshold = count >= GLOBAL_ALERT_THRESHOLD; is_not_sent_yet = core_headline not in global_data['sent_notifications']; has_alert_keyword = any(keyword in core_headline for keyword in GLOBAL_ALERT_KEYWORDS)
                     if is_above_threshold and is_not_sent_yet and has_alert_keyword:
                         send_global_alert(core_headline); global_data['sent_notifications'].add(core_headline)
 
-                # --- MODIFIKASI PERBAIKAN HEATMAP ---
-                # Kalkulasi ulang semua skor tensi setiap kali ada berita baru.
                 tension_scores = collections.defaultdict(int)
                 news_links_set = set()
                 
-                # Inisialisasi skor untuk konflik aktif yang sudah diketahui
                 for c1, c2 in ACTIVE_CONFLICTS: 
                     tension_scores[c1] += 50
                     tension_scores[c2] += 50
                 
-                # Iterasi melalui SEMUA berita yang tersimpan untuk menghitung skor tensi
                 for source_code, headlines_list in global_data['all_news'].items():
                     for headline_text in headlines_list:
-                        # Dapatkan teks inti berita tanpa tanggal
                         core_headline = headline_text.rsplit(' (', 1)[0]
-                        
-                        # Hitung bobot tensi dari kata kunci dalam berita
                         headline_tension_weight = sum(weight for keyword, weight in TENSION_KEYWORDS.items() if keyword.upper() in core_headline)
 
                         if headline_tension_weight > 0:
-                            # **PERBAIKAN UTAMA**: Tambahkan skor tensi ke negara SUMBER berita itu sendiri.
-                            # Ini menyelesaikan masalah negara yang tidak "memanas" karena isu internal.
                             tension_scores[source_code] += headline_tension_weight
-
-                            # **LOGIKA LAMA (dipertahankan)**: Cek jika berita ini menyebut negara LAIN.
-                            # Jika iya, tambahkan skor tensi ke negara target dan buat garis penghubung.
                             for target_code, target_name in REVERSE_COUNTRY_MAP.items():
                                 if source_code != target_code and target_name.upper() in core_headline:
                                     tension_scores[target_code] += headline_tension_weight
                                     news_links_set.add(tuple(sorted((source_code, target_code))))
                 
-                # Simpan hasil kalkulasi skor dan link berita ke data global
                 global_data['geopolitical']['tension_scores'] = [{"id": code, "value": min(score, 100)} for code, score in tension_scores.items()]
                 global_data['geopolitical']['news_links'] = [list(link) for link in news_links_set]
 
-            # Pindah ke negara berikutnya dalam daftar
             country_index = (country_index + 1) % len(country_codes)
             
         except Exception as e:
@@ -572,7 +562,7 @@ HTML_TEMPLATE = """
 if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
-    print(">> FITUR BARU: Logika Heatmap diperbaiki untuk tensi internal & eksternal.")
+    print(">> MODIFIKASI: Library 'openai' dihapus, diganti 'requests' untuk kompatibilitas Termux.")
     print(f">> Model AI yang digunakan: {OPENROUTER_MODEL_NAME}")
     print(">> PERINGATAN: API Key yang digunakan adalah kunci publik gratis. Performa bisa tidak stabil.")
     print(f">> Notifikasi Ponsel DIKONFIGURASI untuk topik: '{NTFY_TOPIC}'")
