@@ -27,7 +27,7 @@ app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
 # --- KONFIGURASI OPENROUTER AI ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
 
@@ -64,28 +64,27 @@ FED_CUT_KEYWORDS = ['RECESSION', 'SLOWING', 'INFLATION EASING', 'WEAKNESS', 'UNE
 
 # --- Variabel Global & Konfigurasi Real-time ---
 data_lock = Lock()
-global_data = {
-    'rates': [], 'decisions': [], 'meetings': [],
-    'all_news': {code: [] for code in REVERSE_COUNTRY_MAP.keys()},
-    'geopolitical': { "tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news_links": [] },
-    'last_updated_code': None,
-    'headline_tracker': collections.defaultdict(lambda: {'countries': set()}),
-    'sent_notifications': set()
-}
+global_data = { 'rates': [], 'decisions': [], 'meetings': [], 'all_news': {code: [] for code in REVERSE_COUNTRY_MAP.keys()}, 'geopolitical': { "tension_scores": [], "conflicts": ACTIVE_CONFLICTS, "news_links": [] }, 'last_updated_code': None, 'headline_tracker': collections.defaultdict(lambda: {'countries': set()}), 'sent_notifications': set() }
 MONETARY_UPDATE_INTERVAL_SECONDS = 900
 
 # =================================================================
-# BAGIAN 2: LOGIKA AI (Disempurnakan)
+# BAGIAN 2: LOGIKA AI (Perbaikan Otentikasi)
 # =================================================================
 
+# MODIFIKASI: Inisialisasi klien dengan header eksplisit untuk otentikasi yang lebih andal.
 client = openai.OpenAI(
-    api_key=OPENROUTER_API_KEY,
     base_url=OPENROUTER_SITE_URL,
+    api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": "http://localhost", # Bisa diisi apa saja, praktik yang baik
+        "X-Title": "GIMPS AI System", # Nama aplikasi Anda
+    },
 )
 
 def call_openrouter_api(system_prompt, user_prompt):
     """Fungsi pusat untuk memanggil API OpenRouter."""
     try:
+        # Panggilan API sekarang menggunakan klien yang sudah dikonfigurasi dengan benar
         response = client.chat.completions.create(
             model=OPENROUTER_MODEL_NAME,
             messages=[
@@ -106,52 +105,32 @@ def generate_ai_summary(all_data):
     all_scores = [s['value'] for s in geo_data.get('tension_scores', [])]
     world_tension = int(sum(all_scores) / len(all_scores)) if all_scores else 30
     war_probability = min(int(world_tension * 0.8 + len(geo_data.get('conflicts', [])) * 4), 95)
-    
     hike_score, cut_score = 0, 0
     us_headlines = all_data.get('all_news', {}).get('US', [])
     for headline in us_headlines:
         if any(keyword in headline for keyword in FED_HIKE_KEYWORDS): hike_score += 1
         if any(keyword in headline for keyword in FED_CUT_KEYWORDS): cut_score += 1
-    
     monetary_stance = "NEUTRAL"
     if hike_score > cut_score + 1: monetary_stance = "HAWKISH"
     if cut_score > hike_score + 1: monetary_stance = "DOVISH"
-
     active_hotspots = [f"{REVERSE_COUNTRY_MAP.get(c1, c1)} vs {REVERSE_COUNTRY_MAP.get(c2, c2)}" for c1, c2 in geo_data.get('conflicts', [])]
     active_conflict_countries = {code for pair in geo_data.get('conflicts', []) for code in pair}
     sorted_scores = sorted(geo_data.get('tension_scores', []), key=lambda x: x['value'], reverse=True)
     potential_hotspots = [f"{REVERSE_COUNTRY_MAP.get(score['id'], score['id'])} (Skor: {score['value']})" for score in sorted_scores if score['id'] not in active_conflict_countries and len(potential_hotspots) < 5]
-
     system_prompt = "You are G.I.M.P.S, a global intelligence analysis system. Your task is to provide a concise market analysis based ONLY on the data provided. Do not use external knowledge. Your output MUST be a valid JSON object with two keys: \"market_outlook\" and \"strategic_posture\". The analysis should be sharp, direct, and in English."
-    
     user_prompt = f"""Analyze the following global intelligence data:\n- Global Tension Score: {world_tension}/100\n- Implied War Probability: {war_probability}%\n- US Monetary Stance (Proxy for Global Markets): {monetary_stance}\n- Active Military Hotspots: {', '.join(active_hotspots) if active_hotspots else 'None'}\n- Potential Escalation Zones (High Tension): {', '.join(potential_hotspots) if potential_hotspots else 'None'}\n\nBased ONLY on this data, generate the JSON output."""
-    
     ai_response_str = call_openrouter_api(system_prompt, user_prompt)
-    
     analysis_result = {"market_outlook": "AI analysis failed or is pending.", "strategic_posture": "Could not determine posture due to API error."}
-
     if ai_response_str:
         try:
-            json_start = ai_response_str.find('{')
-            json_end = ai_response_str.rfind('}') + 1
+            json_start = ai_response_str.find('{'); json_end = ai_response_str.rfind('}') + 1
             if json_start != -1 and json_end != -1:
                 clean_json_str = ai_response_str[json_start:json_end]
                 analysis_result = json.loads(clean_json_str)
-            else:
-                raise ValueError("No JSON object found in the AI response.")
+            else: raise ValueError("No JSON object found in the AI response.")
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"[!!] AI-SUMMARY JSON PARSE ERROR: {e}")
-            analysis_result['market_outlook'] = "AI response was not in the correct format."
-
-    return {
-        "world_tension": world_tension,
-        "war_probability": war_probability,
-        "market_outlook": analysis_result.get("market_outlook", "N/A"),
-        "strategic_posture": analysis_result.get("strategic_posture", "N/A"),
-        "active_hotspots": active_hotspots,
-        "potential_hotspots": potential_hotspots
-    }
-
+            print(f"[!!] AI-SUMMARY JSON PARSE ERROR: {e}"); analysis_result['market_outlook'] = "AI response was not in the correct format."
+    return {"world_tension": world_tension, "war_probability": war_probability, "market_outlook": analysis_result.get("market_outlook", "N/A"), "strategic_posture": analysis_result.get("strategic_posture", "N/A"), "active_hotspots": active_hotspots, "potential_hotspots": potential_hotspots}
 
 # =================================================================
 # BAGIAN 3: FUNGSI-FUNGSI HELPER
@@ -160,56 +139,43 @@ def send_global_alert(headline):
     print(f"\n[!!!] GLOBAL ALERT TRIGGERED: {headline}\n")
     if PLYER_AVAILABLE:
         try:
-            notification.notify(title='Global Intelligence Monetary Policy System', message=headline, app_name='G.I.M.P.S', timeout=20)
-        except Exception as e:
-            print(f"[ERROR] Gagal mengirim notifikasi desktop: {e}")
+            notification.notify(title='G.I.M.P.S. GLOBAL ALERT', message=headline, app_name='G.I.M.P.S.', timeout=20)
+        except Exception as e: print(f"[ERROR] Gagal mengirim notifikasi desktop: {e}")
     try:
-        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=headline.encode(encoding='utf-8'), headers={"Title": "Global Intelligence Monetary Policy System", "Priority": "high", "Tags": "warning"})
-    except Exception as e:
-        print(f"[ERROR] Gagal mengirim notifikasi ntfy: {e}")
+        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=headline.encode(encoding='utf-8'), headers={"Title": "G.I.M.P.S. Global Alert", "Priority": "high", "Tags": "warning"})
+    except Exception as e: print(f"[ERROR] Gagal mengirim notifikasi ntfy: {e}")
 
 def parse_world_rates(soup):
-    data = []
-    table = soup.select_one('table#AutoNumber3')
+    data = []; table = soup.select_one('table#AutoNumber3')
     if not table: return []
     for row in table.find_all('tr'):
-        cols = row.find_all('td')
+        cols = row.find_all('td');
         if len(cols) < 7: continue
         try:
-            country_name_raw = cols[4].get_text(strip=True).split('|')[0].strip()
-            country_name = country_name_raw.replace('The', '').strip()
+            country_name_raw = cols[4].get_text(strip=True).split('|')[0].strip(); country_name = country_name_raw.replace('The', '').strip()
             if country_name.lower() == 'türkiye': country_name = 'Türkiye'
             data.append({ "country_name": country_name.upper(), "country_code": COUNTRY_MAP.get(country_name, None), "rate": cols[1].get_text(strip=True), "change": cols[2].get_text(strip=True), "date": cols[5].get_text(strip=True), "rate_name": cols[4].get_text(strip=True).replace(country_name_raw, '').lstrip('| ').strip().upper() })
-        except (IndexError, AttributeError):
-            continue
+        except (IndexError, AttributeError): continue
     return data
 
 def parse_decisions_or_meetings(soup, type):
-    data = []
-    table = soup.select_one('table#AutoNumber3')
+    data = []; table = soup.select_one('table#AutoNumber3')
     if not table: return []
     for row in table.find_all('tr'):
         cols = row.find_all('td')
         if len(cols) < 4: continue
         try:
-            date_text = cols[1].get_text(strip=True)
-            full_text = cols[2].get_text(strip=True)
-            country_name = "UNKNOWN"
-            action = "MEETING"
+            date_text = cols[1].get_text(strip=True); full_text = cols[2].get_text(strip=True); country_name = "UNKNOWN"; action = "MEETING"
             for name, code in COUNTRY_MAP.items():
-                if name.lower() in full_text.lower():
-                    country_name = name
-                    break
-            if country_name == "UNKNOWN" and "eurozone" in full_text.lower():
-                country_name = "Eurozone"
+                if name.lower() in full_text.lower(): country_name = name; break
+            if country_name == "UNKNOWN" and "eurozone" in full_text.lower(): country_name = "Eurozone"
             if type == 'decisions':
                 if 'cuts' in full_text.lower() or 'cut' in full_text.lower(): action = "CUT"
                 elif 'raises' in full_text.lower() or 'hikes' in full_text.lower(): action = "HIKE"
                 elif 'unchanged' in full_text.lower() or 'holds' in full_text.lower(): action = "UNCHANGED"
                 else: action = "DECISION"
             data.append({"country_name": country_name.upper(), "country_code": COUNTRY_MAP.get(country_name, None), "date": date_text.upper(), "description": full_text.upper(), "action": action.upper()})
-        except (IndexError, AttributeError):
-            continue
+        except (IndexError, AttributeError): continue
     return data
 
 def generate_analysis(country_code, country_name, decision_data, meetings_data, news_headlines):
@@ -217,9 +183,7 @@ def generate_analysis(country_code, country_name, decision_data, meetings_data, 
     latest_decision = decision_data[0] if decision_data else {"action": "N/A", "description": "No recent directive data."}
     upcoming_meetings_str = ', '.join([m['description'] for m in meetings_data]) if meetings_data else "No upcoming meetings scheduled."
     news_headlines_str = ', '.join(news_headlines[:5]) if news_headlines else "No recent headlines available."
-
     system_prompt = "You are a top-tier geopolitical and financial market strategist. Your task is to provide a sharp, professional analysis based ONLY on the data provided. Your output MUST be a valid JSON object with four string keys: \"title\", \"summary\", \"impact_analysis\", and \"futures_outlook\". Do not use external knowledge. The analysis must be in English."
-
     user_prompt = f"""
     Analyze the following intelligence data for {country_name.upper()} ({country_code}):
     
@@ -239,29 +203,18 @@ def generate_analysis(country_code, country_name, decision_data, meetings_data, 
     - **impact_analysis:** Analyze the immediate impact of the latest directive on the local economy, currency, and potential spillover to global/crypto markets.
     - **futures_outlook:** This is crucial. Based on the recent news and the upcoming transmissions, forecast the likely market sentiment and potential central bank actions in the near future. What should be watched for during the upcoming meetings?
     """
-
     ai_response_str = call_openrouter_api(system_prompt, user_prompt)
-    
-    fallback_analysis = {
-        "title": f"AI ANALYSIS FAILED for {country_name.upper()}",
-        "summary": "Could not generate analysis due to an API or parsing error.",
-        "impact_analysis": f"The raw data indicates a '{latest_decision.get('action', 'N/A')}' action. Please check server logs for API error details.",
-        "futures_outlook": "Forecasting is unavailable due to the analysis failure."
-    }
-
+    fallback_analysis = { "title": f"AI ANALYSIS FAILED for {country_name.upper()}", "summary": "Could not generate analysis due to an API or parsing error.", "impact_analysis": f"The raw data indicates a '{latest_decision.get('action', 'N/A')}' action. Please check server logs for API error details.", "futures_outlook": "Forecasting is unavailable due to the analysis failure." }
     if ai_response_str:
         try:
-            json_start = ai_response_str.find('{')
-            json_end = ai_response_str.rfind('}') + 1
+            json_start = ai_response_str.find('{'); json_end = ai_response_str.rfind('}') + 1
             if json_start != -1 and json_end != -1:
                 clean_json_str = ai_response_str[json_start:json_end]
                 return json.loads(clean_json_str)
-            else:
-                raise ValueError("No JSON object found in the AI response.")
+            else: raise ValueError("No JSON object found in the AI response.")
         except (json.JSONDecodeError, ValueError) as e:
             print(f"[!!] AI-ANALYSIS JSON PARSE ERROR: {e}")
             return fallback_analysis
-    
     return fallback_analysis
 
 # =================================================================
@@ -272,93 +225,96 @@ def get_news_from_rss(country_code):
         url = f"https://news.google.com/rss?gl={country_code.upper()}&hl=en-US&ceid={country_code.upper()}:en"
         feed = feedparser.parse(url)
         if feed.bozo: raise Exception(feed.bozo_exception)
-        processed_news = []
-        date_str = datetime.datetime.now().strftime('%d/%m/%Y')
+        processed_news = []; date_str = datetime.datetime.now().strftime('%d/%m/%Y')
         for entry in feed.entries[:20]:
             core_headline = entry.title.upper().rsplit(' - ', 1)[0].strip()
             formatted_headline = f"{core_headline} ({date_str})"
             processed_news.append({"core": core_headline, "formatted": formatted_headline})
         return processed_news
     except Exception as e:
-        print(f"Error fetching RSS for {country_code}: {e}")
-        return []
+        print(f"Error fetching RSS for {country_code}: {e}"); return []
 
 def background_update_task():
-    country_codes = list(REVERSE_COUNTRY_MAP.keys())
-    random.shuffle(country_codes)
-    country_index = 0
-    last_monetary_update_time = 0
-
+    country_codes = list(REVERSE_COUNTRY_MAP.keys()); random.shuffle(country_codes); country_index = 0; last_monetary_update_time = 0
     while True:
         try:
             current_time = time.time()
+            # Bagian untuk update data moneter (cbrates)
             if (current_time - last_monetary_update_time) > MONETARY_UPDATE_INTERVAL_SECONDS:
-                print(">> [TIMER] Performing periodic monetary data scan...")
-                cbrates_urls = {'rates': 'https://www.cbrates.com/', 'decisions': 'https://www.cbrates.com/decisions.htm', 'meetings': 'https://www.cbrates.com/meetings.htm'}
+                print(">> [TIMER] Performing periodic monetary data scan..."); cbrates_urls = {'rates': 'https://www.cbrates.com/', 'decisions': 'https://www.cbrates.com/decisions.htm', 'meetings': 'https://www.cbrates.com/meetings.htm'}
                 with data_lock:
                     for key, url in cbrates_urls.items():
                         try:
-                            response = scraper.get(url, timeout=20)
-                            response.raise_for_status()
-                            soup = BeautifulSoup(response.text, 'html.parser')
+                            response = scraper.get(url, timeout=20); response.raise_for_status(); soup = BeautifulSoup(response.text, 'html.parser')
                             if key == 'rates': global_data['rates'] = parse_world_rates(soup)
                             elif key == 'decisions': global_data['decisions'] = parse_decisions_or_meetings(soup, 'decisions')
                             elif key == 'meetings': global_data['meetings'] = parse_decisions_or_meetings(soup, 'meetings')
-                        except Exception as e:
-                            print(f"!! Failed to fetch monetary data for {key}: {e}")
-                last_monetary_update_time = current_time
-                print(">> [TIMER] Monetary scan complete.")
+                        except Exception as e: print(f"!! Failed to fetch monetary data for {key}: {e}")
+                last_monetary_update_time = current_time; print(">> [TIMER] Monetary scan complete.")
 
-            country_code = country_codes[country_index]
-            country_name = REVERSE_COUNTRY_MAP.get(country_code, country_code)
-            print(f">> MAX SPEED SCAN: [{country_index + 1}/{len(country_codes)}] {country_name}")
-            
+            # Bagian untuk update berita negara per negara
+            country_code = country_codes[country_index]; country_name = REVERSE_COUNTRY_MAP.get(country_code, country_code); print(f">> MAX SPEED SCAN: [{country_index + 1}/{len(country_codes)}] {country_name}")
             news_items = get_news_from_rss(country_code)
-
+            
             with data_lock:
+                # Update berita untuk negara yang sedang di-scan
                 formatted_headlines = [item['formatted'] for item in news_items]
                 if formatted_headlines and (country_code not in global_data['all_news'] or global_data['all_news'][country_code] != formatted_headlines):
-                    global_data['all_news'][country_code] = formatted_headlines
-                    global_data['last_updated_code'] = country_code
-
+                    global_data['all_news'][country_code] = formatted_headlines; global_data['last_updated_code'] = country_code
+                
+                # Cek untuk notifikasi global
                 for item in news_items:
-                    core_headline = item['core']
-                    global_data['headline_tracker'][core_headline]['countries'].add(country_code)
-                    count = len(global_data['headline_tracker'][core_headline]['countries'])
-                    is_above_threshold = count >= GLOBAL_ALERT_THRESHOLD
-                    is_not_sent_yet = core_headline not in global_data['sent_notifications']
-                    has_alert_keyword = any(keyword in core_headline for keyword in GLOBAL_ALERT_KEYWORDS)
+                    core_headline = item['core']; global_data['headline_tracker'][core_headline]['countries'].add(country_code); count = len(global_data['headline_tracker'][core_headline]['countries'])
+                    is_above_threshold = count >= GLOBAL_ALERT_THRESHOLD; is_not_sent_yet = core_headline not in global_data['sent_notifications']; has_alert_keyword = any(keyword in core_headline for keyword in GLOBAL_ALERT_KEYWORDS)
                     if is_above_threshold and is_not_sent_yet and has_alert_keyword:
-                        send_global_alert(core_headline)
-                        global_data['sent_notifications'].add(core_headline)
+                        send_global_alert(core_headline); global_data['sent_notifications'].add(core_headline)
 
+                # --- MODIFIKASI PERBAIKAN HEATMAP ---
+                # Kalkulasi ulang semua skor tensi setiap kali ada berita baru.
                 tension_scores = collections.defaultdict(int)
                 news_links_set = set()
-                for c1, c2 in ACTIVE_CONFLICTS:
+                
+                # Inisialisasi skor untuk konflik aktif yang sudah diketahui
+                for c1, c2 in ACTIVE_CONFLICTS: 
                     tension_scores[c1] += 50
                     tension_scores[c2] += 50
-                for source_code, headlines in global_data['all_news'].items():
-                    for headline in headlines:
-                        headline_tension_weight = sum(weight for keyword, weight in TENSION_KEYWORDS.items() if keyword.upper() in headline)
+                
+                # Iterasi melalui SEMUA berita yang tersimpan untuk menghitung skor tensi
+                for source_code, headlines_list in global_data['all_news'].items():
+                    for headline_text in headlines_list:
+                        # Dapatkan teks inti berita tanpa tanggal
+                        core_headline = headline_text.rsplit(' (', 1)[0]
+                        
+                        # Hitung bobot tensi dari kata kunci dalam berita
+                        headline_tension_weight = sum(weight for keyword, weight in TENSION_KEYWORDS.items() if keyword.upper() in core_headline)
+
                         if headline_tension_weight > 0:
+                            # **PERBAIKAN UTAMA**: Tambahkan skor tensi ke negara SUMBER berita itu sendiri.
+                            # Ini menyelesaikan masalah negara yang tidak "memanas" karena isu internal.
+                            tension_scores[source_code] += headline_tension_weight
+
+                            # **LOGIKA LAMA (dipertahankan)**: Cek jika berita ini menyebut negara LAIN.
+                            # Jika iya, tambahkan skor tensi ke negara target dan buat garis penghubung.
                             for target_code, target_name in REVERSE_COUNTRY_MAP.items():
-                                if source_code != target_code and target_name.upper() in headline:
-                                    tension_scores[source_code] += headline_tension_weight
+                                if source_code != target_code and target_name.upper() in core_headline:
                                     tension_scores[target_code] += headline_tension_weight
                                     news_links_set.add(tuple(sorted((source_code, target_code))))
+                
+                # Simpan hasil kalkulasi skor dan link berita ke data global
                 global_data['geopolitical']['tension_scores'] = [{"id": code, "value": min(score, 100)} for code, score in tension_scores.items()]
                 global_data['geopolitical']['news_links'] = [list(link) for link in news_links_set]
+
+            # Pindah ke negara berikutnya dalam daftar
             country_index = (country_index + 1) % len(country_codes)
+            
         except Exception as e:
-            print(f"!! ERROR in background task: {e}")
-            time.sleep(10)
+            print(f"!! ERROR in background task: {e}"); time.sleep(10)
 
 # =================================================================
-# BAGIAN 5: API ENDPOINTS (Disempurnakan)
+# BAGIAN 5: API ENDPOINTS
 # =================================================================
 @app.route('/')
-def home():
-    return render_template_string(HTML_TEMPLATE)
+def home(): return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/stream-updates')
 def stream_updates():
@@ -366,51 +322,33 @@ def stream_updates():
         while True:
             time.sleep(0.5)
             with data_lock:
-                data_to_send = {
-                    'geopolitical': global_data['geopolitical'],
-                    'updated_country_code': global_data.get('last_updated_code')
-                }
+                data_to_send = {'geopolitical': global_data['geopolitical'], 'updated_country_code': global_data.get('last_updated_code')}
                 yield f"data: {json.dumps(data_to_send)}\n\n"
-                if global_data['last_updated_code']:
-                    global_data['last_updated_code'] = None
+                if global_data['last_updated_code']: global_data['last_updated_code'] = None
     return Response(event_stream(), mimetype='text/event-stream')
 
 @app.route('/api/ai-summary')
 def get_ai_summary():
-    with data_lock:
-        summary = generate_ai_summary(global_data)
+    with data_lock: summary = generate_ai_summary(global_data)
     return jsonify(summary)
 
 @app.route('/api/country-data/<country_code>')
 def get_country_data(country_code):
     with data_lock:
-        all_data = dict(global_data)
-        country_name = REVERSE_COUNTRY_MAP.get(country_code.upper(), country_code.upper())
-    
-    country_code_upper = country_code.upper()
-    is_eurozone = country_code_upper == 'EU'
-    
+        all_data = dict(global_data); country_name = REVERSE_COUNTRY_MAP.get(country_code.upper(), country_code.upper())
+    country_code_upper = country_code.upper(); is_eurozone = country_code_upper == 'EU'
     def filter_by_code(data_list):
         if is_eurozone: return [d for d in data_list if d.get('country_name') == 'EUROZONE']
         return [d for d in data_list if d.get('country_code') == country_code_upper]
-    
     decisions_data = filter_by_code(all_data.get('decisions', []))
     meetings_data = filter_by_code(all_data.get('meetings', []))
     news_data_formatted = all_data.get('all_news', {}).get(country_code_upper, [])
     news_headlines_core = [headline.rsplit(' (', 1)[0] for headline in news_data_formatted]
-
     analysis = generate_analysis(country_code_upper, country_name, decisions_data, meetings_data, news_headlines_core)
-    
-    return jsonify({
-        "rates": filter_by_code(all_data.get('rates', [])),
-        "decisions": decisions_data,
-        "meetings": meetings_data,
-        "news": news_data_formatted,
-        "analysis": analysis
-    })
+    return jsonify({"rates": filter_by_code(all_data.get('rates', [])), "decisions": decisions_data, "meetings": meetings_data, "news": news_data_formatted, "analysis": analysis})
 
 # =================================================================
-# BAGIAN 6: FRONTEND HTML (Layout Disempurnakan)
+# BAGIAN 6: FRONTEND HTML
 # =================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -434,9 +372,11 @@ HTML_TEMPLATE = """
         #infopanel { position: fixed; bottom: 0; left: 0; width: 100%; height: 60vh; background-color: var(--panel-bg); border-top: 1px solid var(--border-color); box-shadow: 0 -2px 10px rgba(0,0,0,0.5); visibility: hidden; opacity: 0; z-index: 1000; display: flex; flex-direction: column; backdrop-filter: blur(5px); }
         #infopanel.visible { visibility: visible; opacity: 1; animation: glitch-appear 0.2s steps(8, end) forwards; }
         #panel-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background-color: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border-color); }
+        #panel-title-container { display: flex; align-items: center; gap: 15px; }
         .glitch { position: relative; animation: glitch-text 2s infinite; }
-        #close-panel { background: none; border: none; color: var(--accent-color); font-size: 28px; cursor: pointer; transition: transform 0.2s; }
-        #close-panel:hover { transform: scale(1.5); }
+        #close-panel, #export-pdf-btn { background: none; border: none; color: var(--accent-color); font-size: 28px; cursor: pointer; transition: transform 0.2s; }
+        #close-panel:hover, #export-pdf-btn:hover { transform: scale(1.5); }
+        #export-pdf-btn { font-size: 22px; display: none; }
         #info-content { padding: 20px; overflow-y: hidden; flex-grow: 1; animation: fadeIn 1s; }
         .info-grid { display: grid; grid-template-columns: 3fr 2fr; gap: 20px; height: 100%; }
         .data-container, .analysis-container { overflow-y: auto; padding-right: 10px;}
@@ -458,19 +398,24 @@ HTML_TEMPLATE = """
 <div id="chartdiv"></div>
 <div id="infopanel">
     <div id="panel-header">
-        <h2 id="panel-title" style="border:none; margin:0; padding:0;">// SYSTEM STANDBY //</h2>
+        <div id="panel-title-container">
+            <h2 id="panel-title" style="border:none; margin:0; padding:0;">// SYSTEM STANDBY //</h2>
+            <button id="export-pdf-btn" title="Export Briefing to PDF">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            </button>
+        </div>
         <button id="close-panel" title="TERMINATE CONNECTION">×</button>
     </div>
-    <div id="info-content"><p class="placeholder">// AWAITING COMMAND //</p></div>
+    <div id="info-content">
+        <p class="placeholder">// AWAITING COMMAND //</p>
+    </div>
 </div>
-
-<script src="https://cdn.amcharts.com/lib/5/index.js"></script>
-<script src="https://cdn.amcharts.com/lib/5/map.js"></script>
-<script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script>
-<script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
-
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.amcharts.com/lib/5/index.js"></script><script src="https://cdn.amcharts.com/lib/5/map.js"></script><script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
 <script>
     const infoPanel = document.getElementById('infopanel'), infoContent = document.getElementById('info-content'), panelTitle = document.getElementById('panel-title'), closeButton = document.getElementById('close-panel');
+    const exportPdfBtn = document.getElementById('export-pdf-btn');
+
     function showNotification(title, body) { if (Notification.permission === 'granted') { new Notification(title, { body: body, icon: '/favicon.ico' }); } }
     am5.ready(function() {
         if ('Notification' in window) { if (Notification.permission !== 'granted' && Notification.permission !== 'denied') { Notification.requestPermission().then(function(permission) { if (permission === 'granted') { console.log('Notification permission granted.'); showNotification('G.I.M.P.S.', 'System notifications are now active.'); } }); } }
@@ -493,12 +438,15 @@ HTML_TEMPLATE = """
     closeButton.addEventListener('click', closeInfoPanel);
     function showInfoPanel() { infopanel.classList.add('visible'); }
     function closeInfoPanel() { infoPanel.classList.remove('visible'); }
+    
     async function fetchCountryData(countryCode, countryName) {
-        infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}... AI ANALYSIS IN PROGRESS...</p>`; panelTitle.innerText = countryName.toUpperCase(); showInfoPanel();
+        infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}... AI ANALYSIS IN PROGRESS...</p>`; panelTitle.innerText = countryName.toUpperCase(); exportPdfBtn.style.display = 'none';
+        showInfoPanel();
         try {
             const response = await fetch(`/api/country-data/${countryCode}`); if (!response.ok) throw new Error('CONNECTION FAILED.'); const data = await response.json(); displayCountryData(data, countryName);
         } catch (error) { infoContent.innerHTML = `<p class="placeholder" style="color: var(--red-alert);">${error.message}</p>`; }
     }
+    
     function displayCountryData(data, countryName) {
         const ratesHtml = data.rates && data.rates.length > 0 ? createTable(data.rates, ['Rate', 'Change', 'Date', 'Rate Name']) : '<p>// NO MONETARY RATE DATA //</p>';
         const decisionsHtml = data.decisions && data.decisions.length > 0 ? createTable(data.decisions, ['Date', 'Description', 'Action']) : '<p>// NO RECENT DIRECTIVE DATA //</p>';
@@ -525,7 +473,93 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             </div>`;
+            
+        exportPdfBtn.style.display = 'block';
+        exportPdfBtn.onclick = () => exportDataToPdf(data, countryName);
     }
+    
+    function exportDataToPdf(data, countryName) {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        const currentDate = new Date().toISOString().slice(0, 10);
+        let y = 15;
+        const leftMargin = 15;
+        const rightMargin = 195;
+        
+        doc.setFont("courier", "bold");
+        doc.setFontSize(14);
+        doc.text("G.I.M.P.S. STRATEGIC BRIEFING", doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
+        y += 5;
+        doc.setLineWidth(0.5);
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 10;
+        
+        doc.setFont("courier", "normal");
+        doc.setFontSize(12);
+        doc.text(`SUBJECT: ${countryName.toUpperCase()}`, leftMargin, y);
+        y += 7;
+        doc.text(`DATE: ${currentDate}`, leftMargin, y);
+        y += 10;
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 10;
+        
+        const addSection = (title, content) => {
+            if (y > 260) { doc.addPage(); y = 20; }
+            doc.setFont("courier", "bold");
+            doc.setFontSize(11);
+            doc.text(title, leftMargin, y);
+            y += 6;
+            doc.setFont("courier", "normal");
+            doc.setFontSize(10);
+            
+            const splitContent = doc.splitTextToSize(content.replace(/\\n/g, '\\n'), rightMargin - leftMargin);
+            doc.text(splitContent, leftMargin, y);
+            y += (splitContent.length * 4) + 8;
+        };
+        
+        doc.setFont("courier", "bold");
+        doc.setFontSize(12);
+        doc.text("I. RAW DATA FEED", leftMargin, y);
+        y += 8;
+
+        let ratesText = "No data available.";
+        if (data.rates && data.rates.length > 0) { ratesText = data.rates.map(r => `- ${r.rate_name}: ${r.rate} (Change: ${r.change || 'N/A'}, Date: ${r.date})`).join('\\n'); }
+        addSection("Monetary Rates:", ratesText);
+        
+        let decisionsText = "No data available.";
+        if (data.decisions && data.decisions.length > 0) { decisionsText = data.decisions.map(d => `- [${d.date}] ${d.description}`).join('\\n'); }
+        addSection("Recent Directives:", decisionsText);
+
+        let meetingsText = "No data available.";
+        if (data.meetings && data.meetings.length > 0) { meetingsText = data.meetings.map(m => `- [${m.date}] ${m.description}`).join('\\n'); }
+        addSection("Upcoming Transmissions:", meetingsText);
+        
+        y+= 5;
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 10;
+        
+        doc.setFont("courier", "bold");
+        doc.setFontSize(12);
+        doc.text("II. STRATEGIC AI ANALYSIS", leftMargin, y);
+        y += 8;
+        
+        addSection(data.analysis.title || 'ANALYSIS PENDING', "");
+        y -= 8;
+        addSection("Summary:", data.analysis.summary || 'N/A');
+        addSection("Impact Analysis:", data.analysis.impact_analysis || 'N/A');
+        addSection("Futures Outlook:", data.analysis.futures_outlook || 'N/A');
+        
+        const pageCount = doc.internal.getNumberOfPages();
+        for(let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() / 2, 287, { align: 'center' });
+            doc.text('//CONFIDENTIAL//GENERATED_BY_GIMPS//', leftMargin, 287);
+        }
+
+        doc.save(`GIMPS_Briefing_${countryName.replace(/ /g, "_")}_${currentDate}.pdf`);
+    }
+
     function createTable(data, headers) { let table = '<table><thead><tr>'; headers.forEach(h => table += `<th>${h.toUpperCase()}</th>`); table += '</tr></thead><tbody>'; data.forEach(row => { table += '<tr>'; headers.forEach(h => { table += `<td>${row[h.toLowerCase().replace(/ /g, '_')] || 'N/A'}</td>`; }); table += '</tr>'; }); return table + '</tbody></table>'; }
 </script>
 </body>
@@ -538,7 +572,7 @@ HTML_TEMPLATE = """
 if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
-    print(">> FITUR BARU: Layout & Analisis AI yang disempurnakan (Termasuk Futures Outlook).")
+    print(">> FITUR BARU: Logika Heatmap diperbaiki untuk tensi internal & eksternal.")
     print(f">> Model AI yang digunakan: {OPENROUTER_MODEL_NAME}")
     print(">> PERINGATAN: API Key yang digunakan adalah kunci publik gratis. Performa bisa tidak stabil.")
     print(f">> Notifikasi Ponsel DIKONFIGURASI untuk topik: '{NTFY_TOPIC}'")
