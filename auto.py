@@ -6,7 +6,7 @@ import json
 import time
 
 # --- KONFIGURASI FINAL ---
-NTFY_TOPIC = "gimps-global-notificationA87XY" # Pastikan ini sama persis dengan topik di skrip GIMPS
+NTFY_TOPIC = "gimps-global-notificationA87X" # Pastikan ini sama persis dengan topik di skrip GIMPS
 TELEGRAM_BOT_TOKEN = "7590245062:AAH2sLwsDvukOrVPUF7-iXU45fnfd20UV2M"
 # --- PERUBAHAN DI SINI ---
 # Ganti dengan ID numerik channel private Anda (diawali dengan tanda minus).
