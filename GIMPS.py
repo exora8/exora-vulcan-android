@@ -27,7 +27,7 @@ app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
 # --- KONFIGURASI OPENROUTER AI ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
 
@@ -46,7 +46,7 @@ FULL_COUNTRY_MAP = {
     # Amerika
     'Argentina': 'AR', 'Bolivia': 'BO', 'Brazil': 'BR', 'Canada': 'CA', 'Chile': 'CL', 'Colombia': 'CO', 'Cuba': 'CU', 'Ecuador': 'EC', 'Mexico': 'MX', 'Panama': 'PA', 'Paraguay': 'PY', 'Peru': 'PE', 'USA': 'US', 'United States': 'US', 'Uruguay': 'UY', 'Venezuela': 'VE',
     # Eropa
-    'Albania': 'AL', 'Austria': 'AT', 'Belarus': 'BY', 'Belgium': 'BE', 'Bosnia and Herzegovina': 'BA', 'Bulgaria': 'BG', 'Croatia': 'HR', 'Cyprus': 'CY', 'Czech Republic': 'CZ', 'Denmark': 'DK', 'Estonia': 'EE', 'Finland': 'FI', 'France': 'FR', 'Germany': 'DE', 'Greece': 'GR', 'Hungary': 'HU', 'Iceland': 'IS', 'Ireland': 'IE', 'Italy': 'IT', 'Latvia': 'LV', 'Lithuania': 'LT', 'Luxembourg': 'LU', 'Malta': 'MT', 'Moldova': 'MD', 'Netherlands': 'NL', 'North Macedonia': 'MK', 'Norway': 'NO', 'Poland': 'PL', 'Portugal': 'PT', 'Romania': 'RO', 'Russia': 'RU', 'Serbia': 'RS', 'Slovakia': 'SK', 'Slovenia': 'SI', 'Spain': 'ES', 'Sweden': 'SE', 'Switzerland': 'CH', 'Ukraine': 'UA', 'United Kingdom': 'GB',
+    'Albania': 'AL', 'Austria': 'AT', 'Belarus': 'BY', 'Belgium': 'BE', 'Bosnia and Herzegovina': 'BA', 'Bulgaria': 'BG', 'Croatia': 'HR', 'Cyprus': 'CY', 'Czech Republic': 'CZ', 'Denmark': 'DK', 'Estonia': 'EE', 'Finland': 'FI', 'France': 'FR', 'Germany': 'DE', 'Greece': 'GR', 'Hungary': 'HU', 'Iceland': 'IS', 'Ireland': 'IE', 'Italy': 'IT', 'Latvia': 'LV', 'Lithuania': 'LT', 'Luxembourg': 'LU', 'Malta': 'MT', 'Moldova': 'MD', 'Netherlands': 'NL', 'North Macedonia': 'MK', 'Norway': 'NO', 'Poland': 'PL', 'Portugal': 'PT', 'Romania': 'RO', 'Russia': 'RU', 'Serbia': 'RS', 'Slovakia': 'SK', 'Slovenia': 'SI', 'Spain': 'ES', 'Sweden': 'SE', 'Switzerland': 'CH', 'Ukraine': 'UA', 'United Kingdom': 'GB', 'Eurozone': 'EU',
     # Asia & Oseania
     'Afghanistan': 'AF', 'Australia': 'AU', 'Bangladesh': 'BD', 'Cambodia': 'KH', 'China': 'CN', 'Hong Kong': 'HK', 'India': 'IN', 'Indonesia': 'ID', 'Japan': 'JP', 'Kazakhstan': 'KZ', 'Kyrgyzstan': 'KG', 'Malaysia': 'MY', 'Mongolia': 'MN', 'Myanmar': 'MM', 'Nepal': 'NP', 'New Zealand': 'NZ', 'North Korea': 'KP', 'Pakistan': 'PK', 'Philippines': 'PH', 'Singapore': 'SG', 'South Korea': 'KR', 'Sri Lanka': 'LK', 'Taiwan': 'TW', 'Tajikistan': 'TJ', 'Thailand': 'TH', 'Turkmenistan': 'TM', 'Uzbekistan': 'UZ', 'Vietnam': 'VN',
     # Timur Tengah
@@ -58,7 +58,7 @@ REVERSE_COUNTRY_MAP = {v: k for k, v in FULL_COUNTRY_MAP.items()}
 COUNTRY_MAP = FULL_COUNTRY_MAP
 ACTIVE_CONFLICTS = [ ('RU', 'UA'), ('IL', 'IR'), ('IL', 'SY'), ('YE', 'SA'), ('CN', 'TW'), ('IL', 'LB') ]
 TENSION_KEYWORDS = { 'war': 15, 'conflict': 10, 'sanction': 8, 'protest': 3, 'crisis': 7, 'attack': 12, 'dispute': 6, 'tension': 8, 'unrest': 4, 'mobilization': 10, 'threat': 9, 'retaliate': 11 }
-G20_CODES = ['AR', 'AU', 'BR', 'CA', 'CN', 'FR', 'DE', 'IN', 'ID', 'IT', 'JP', 'KR', 'MX', 'RU', 'SA', 'ZA', 'TR', 'GB', 'US']
+G20_CODES = ['AR', 'AU', 'BR', 'CA', 'CN', 'FR', 'DE', 'IN', 'ID', 'IT', 'JP', 'KR', 'MX', 'RU', 'SA', 'ZA', 'TR', 'GB', 'US', 'EU']
 FED_HIKE_KEYWORDS = ['INFLATION HIGH', 'STRONG ECONOMY', 'ROBUST GROWTH', 'WAGE GROWTH', 'OVERHEATING']
 FED_CUT_KEYWORDS = ['RECESSION', 'SLOWING', 'INFLATION EASING', 'WEAKNESS', 'UNEMPLOYMENT', 'DOWNTURN']
 
@@ -93,20 +93,19 @@ def call_openrouter_api(system_prompt, user_prompt):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.7,
-        "max_tokens": 700
+        "max_tokens": 1024 # Increased for more detailed analysis
     }
     
     try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=25)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=45) # Increased timeout
         response.raise_for_status()  # Akan melempar error untuk status 4xx/5xx
         return response.json()['choices'][0]['message']['content']
     except requests.exceptions.RequestException as e:
         print(f"[!!] OPENROUTER API NETWORK ERROR: {e}")
-        return None
+        return f'{{"error": "API Network Error: {e}"}}'
     except (KeyError, IndexError, json.JSONDecodeError) as e:
         print(f"[!!] OPENROUTER API RESPONSE PARSE ERROR: {e}")
-        return None
-
+        return f'{{"error": "API Response Parse Error: {e}"}}'
 
 def generate_ai_summary(all_data):
     """Menghasilkan ringkasan global menggunakan LLM."""
@@ -124,8 +123,14 @@ def generate_ai_summary(all_data):
     if cut_score > hike_score + 1: monetary_stance = "DOVISH"
     active_hotspots = [f"{REVERSE_COUNTRY_MAP.get(c1, c1)} vs {REVERSE_COUNTRY_MAP.get(c2, c2)}" for c1, c2 in geo_data.get('conflicts', [])]
     active_conflict_countries = {code for pair in geo_data.get('conflicts', []) for code in pair}
+    
+    # Corrected list comprehension for potential_hotspots
+    potential_hotspots = []
     sorted_scores = sorted(geo_data.get('tension_scores', []), key=lambda x: x['value'], reverse=True)
-    potential_hotspots = [f"{REVERSE_COUNTRY_MAP.get(score['id'], score['id'])} (Skor: {score['value']})" for score in sorted_scores if score['id'] not in active_conflict_countries and len(potential_hotspots) < 5]
+    for score in sorted_scores:
+        if score['id'] not in active_conflict_countries and len(potential_hotspots) < 5:
+            potential_hotspots.append(f"{REVERSE_COUNTRY_MAP.get(score['id'], score['id'])} (Skor: {score['value']})")
+
     system_prompt = "You are G.I.M.P.S, a global intelligence analysis system. Your task is to provide a concise market analysis based ONLY on the data provided. Do not use external knowledge. Your output MUST be a valid JSON object with two keys: \"market_outlook\" and \"strategic_posture\". The analysis should be sharp, direct, and in English."
     user_prompt = f"""Analyze the following global intelligence data:\n- Global Tension Score: {world_tension}/100\n- Implied War Probability: {war_probability}%\n- US Monetary Stance (Proxy for Global Markets): {monetary_stance}\n- Active Military Hotspots: {', '.join(active_hotspots) if active_hotspots else 'None'}\n- Potential Escalation Zones (High Tension): {', '.join(potential_hotspots) if potential_hotspots else 'None'}\n\nBased ONLY on this data, generate the JSON output."""
     ai_response_str = call_openrouter_api(system_prompt, user_prompt)
@@ -218,7 +223,12 @@ def generate_analysis(country_code, country_name, decision_data, meetings_data, 
             json_start = ai_response_str.find('{'); json_end = ai_response_str.rfind('}') + 1
             if json_start != -1 and json_end != -1:
                 clean_json_str = ai_response_str[json_start:json_end]
-                return json.loads(clean_json_str)
+                # --- MODIFIKASI BARU --- Check if the response is an error JSON from our wrapper
+                parsed_json = json.loads(clean_json_str)
+                if 'error' in parsed_json:
+                    fallback_analysis['summary'] = parsed_json['error']
+                    return fallback_analysis
+                return parsed_json
             else: raise ValueError("No JSON object found in the AI response.")
         except (json.JSONDecodeError, ValueError) as e:
             print(f"[!!] AI-ANALYSIS JSON PARSE ERROR: {e}")
@@ -230,12 +240,19 @@ def generate_analysis(country_code, country_name, decision_data, meetings_data, 
 # =================================================================
 def get_news_from_rss(country_code):
     try:
-        url = f"https://news.google.com/rss?gl={country_code.upper()}&hl=en-US&ceid={country_code.upper()}:en"
+        # Use a more generic RSS feed for global news
+        if country_code == 'GLOBAL':
+             url = "https://feeds.bbci.co.uk/news/world/rss.xml"
+        else:
+             url = f"https://news.google.com/rss?gl={country_code.upper()}&hl=en-US&ceid={country_code.upper()}:en"
+        
         feed = feedparser.parse(url)
         if feed.bozo: raise Exception(feed.bozo_exception)
         processed_news = []; date_str = datetime.datetime.now().strftime('%d/%m/%Y')
         for entry in feed.entries[:20]:
             core_headline = entry.title.upper().rsplit(' - ', 1)[0].strip()
+            # --- MODIFIKASI BARU --- Handle potential empty headlines
+            if not core_headline: continue
             formatted_headline = f"{core_headline} ({date_str})"
             processed_news.append({"core": core_headline, "formatted": formatted_headline})
         return processed_news
@@ -282,6 +299,8 @@ def background_update_task():
                 
                 for source_code, headlines_list in global_data['all_news'].items():
                     for headline_text in headlines_list:
+                        # --- MODIFIKASI BARU --- Added a check for valid headline_text
+                        if not headline_text or not isinstance(headline_text, str): continue
                         core_headline = headline_text.rsplit(' (', 1)[0]
                         headline_tension_weight = sum(weight for keyword, weight in TENSION_KEYWORDS.items() if keyword.upper() in core_headline)
 
@@ -312,15 +331,98 @@ def stream_updates():
         while True:
             time.sleep(0.5)
             with data_lock:
-                data_to_send = {'geopolitical': global_data['geopolitical'], 'updated_country_code': global_data.get('last_updated_code')}
+                # --- MODIFIKASI BARU --- Ensure deepcopy to prevent modification during iteration
+                data_to_send = {'geopolitical': json.loads(json.dumps(global_data['geopolitical'])), 'updated_country_code': global_data.get('last_updated_code')}
                 yield f"data: {json.dumps(data_to_send)}\n\n"
                 if global_data['last_updated_code']: global_data['last_updated_code'] = None
     return Response(event_stream(), mimetype='text/event-stream')
 
-@app.route('/api/ai-summary')
-def get_ai_summary():
+# --- MODIFIKASI BARU --- Endpoint lama diganti nama, sekarang hanya untuk penggunaan internal jika diperlukan
+@app.route('/api/internal-ai-summary')
+def get_internal_ai_summary():
     with data_lock: summary = generate_ai_summary(global_data)
     return jsonify(summary)
+
+# --- MODIFIKASI BARU --- Endpoint baru untuk analisis strategis global
+@app.route('/api/global-strategic-analysis')
+def get_global_strategic_analysis():
+    with data_lock:
+        all_data = dict(global_data)
+    
+    # Kumpulkan data yang relevan untuk prompt
+    geo_data = all_data.get('geopolitical', {})
+    all_scores = [s['value'] for s in geo_data.get('tension_scores', [])]
+    world_tension = int(sum(all_scores) / len(all_scores)) if all_scores else 30
+    
+    # Ambil berita dari negara-negara penting (G20)
+    important_news = []
+    for code in G20_CODES:
+        country_news = all_data.get('all_news', {}).get(code, [])
+        if country_news:
+            important_news.extend([f"[{code}] {news.rsplit(' (',1)[0]}" for news in country_news[:3]]) # Ambil 3 berita teratas dari setiap negara G20
+    
+    # Ambil keputusan moneter terakhir
+    latest_decisions = [f"[{d.get('country_code', 'N/A')}] {d.get('description', 'N/A')}" for d in all_data.get('decisions', [])[:10]]
+
+    # Buat prompt yang sangat spesifik
+    system_prompt = """You are G.I.M.P.S., a top-tier global financial and geopolitical strategist. Your sole purpose is to provide actionable intelligence for market participants based ONLY on the data provided. Your analysis must be sharp, concise, and conclusive. Your output MUST be a single, valid JSON object with the following keys: "title", "executive_summary", "risk_sentiment", "investor_guidance", "trader_guidance", "asset_outlook". Do not use any external knowledge or information not present in the user prompt."""
+    
+    user_prompt = f"""
+    **Current Global State Analysis:**
+
+    1.  **Geopolitical Tension Data:**
+        - World Tension Score (calculated average): {world_tension}/100
+        - Active Military Conflicts: {', '.join([f"{REVERSE_COUNTRY_MAP.get(c1, c1)}-{REVERSE_COUNTRY_MAP.get(c2, c2)}" for c1, c2 in geo_data.get('conflicts', [])])}
+        - High Tension Zones (by score): {', '.join([f"{REVERSE_COUNTRY_MAP.get(s['id'], s['id'])} ({s['value']})" for s in sorted(geo_data.get('tension_scores', []), key=lambda x: x['value'], reverse=True)[:5]])}
+
+    2.  **Key Financial & Political News Headlines (G20 focus):**
+        - {'; '.join(random.sample(important_news, min(len(important_news), 20)))}
+
+    3.  **Recent Central Bank Directives (Global):**
+        - {'; '.join(latest_decisions)}
+
+    **Your Task:**
+    Based *strictly* on the data above, generate the JSON output. Provide direct, actionable advice.
+
+    - **title**: A powerful title for this global briefing.
+    - **executive_summary**: A 2-3 sentence summary of the current global situation.
+    - **risk_sentiment**: Must be one of three values: "RISK-ON", "RISK-OFF", or "NEUTRAL/CAUTIOUS".
+    - **investor_guidance**: What should a long-term investor do *right now*? (e.g., rebalance portfolio, hold cash, seek defensive assets).
+    - **trader_guidance**: What should a short-term trader do *right now*? (e.g., focus on volatility, watch key indicators, short specific sectors).
+    - **asset_outlook**: A JSON object with your brief outlook (UP, DOWN, SIDEWAYS/VOLATILE) for the following assets: "oil", "btc", "usd", "sp500".
+    """
+    
+    ai_response_str = call_openrouter_api(system_prompt, user_prompt)
+
+    fallback_analysis = {
+        "title": "GLOBAL ANALYSIS FAILED",
+        "executive_summary": "Could not generate analysis due to an API or parsing error. Please check server logs.",
+        "risk_sentiment": "UNKNOWN",
+        "investor_guidance": "N/A",
+        "trader_guidance": "N/A",
+        "asset_outlook": {"oil": "N/A", "btc": "N/A", "usd": "N/A", "sp500": "N/A"}
+    }
+    
+    try:
+        json_start = ai_response_str.find('{'); json_end = ai_response_str.rfind('}') + 1
+        if json_start != -1 and json_end != -1:
+            clean_json_str = ai_response_str[json_start:json_end]
+            parsed_json = json.loads(clean_json_str)
+            if 'error' in parsed_json:
+                fallback_analysis['executive_summary'] = parsed_json['error']
+                return jsonify(fallback_analysis)
+            # Ensure all keys are present
+            for key in fallback_analysis:
+                if key not in parsed_json:
+                    parsed_json[key] = fallback_analysis[key]
+            if not isinstance(parsed_json.get('asset_outlook'), dict):
+                parsed_json['asset_outlook'] = fallback_analysis['asset_outlook']
+            return jsonify(parsed_json)
+        else:
+            raise ValueError("No JSON object found in the AI response.")
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[!!] GLOBAL-ANALYSIS JSON PARSE ERROR: {e}")
+        return jsonify(fallback_analysis)
 
 @app.route('/api/country-data/<country_code>')
 def get_country_data(country_code):
@@ -382,10 +484,49 @@ HTML_TEMPLATE = """
         .analysis-content p { margin-top: 0; margin-bottom: 1.2em; white-space: pre-wrap; line-height: 1.5; }
         .analysis-content strong { color: var(--blue-link); }
         ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: #111; } ::-webkit-scrollbar-thumb { background: #555; }
+        
+        /* --- MODIFIKASI BARU --- */
+        #global-ai-btn {
+            position: fixed;
+            bottom: 25px;
+            right: 25px;
+            background-color: rgba(128, 128, 128, 0.2);
+            border: 1px solid rgba(128, 128, 128, 0.5);
+            color: #b0b0b0;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 16px;
+            padding: 10px 15px;
+            cursor: pointer;
+            z-index: 1001;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(3px);
+            border-radius: 4px;
+        }
+        #global-ai-btn:hover {
+            background-color: rgba(128, 128, 128, 0.4);
+            color: #ffffff;
+            border-color: #ffffff;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+        }
+        #global-analysis-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            height: 100%;
+        }
+        .global-column {
+            overflow-y: auto;
+            padding-right: 15px;
+        }
     </style>
 </head>
 <body>
 <div id="chartdiv"></div>
+
+<!-- --- MODIFIKASI BARU --- Tombol baru ditambahkan di sini -->
+<button id="global-ai-btn" title="Request Global Strategic Analysis">// AI GLOBAL ANALYSIS</button>
+
 <div id="infopanel">
     <div id="panel-header">
         <div id="panel-title-container">
@@ -401,10 +542,13 @@ HTML_TEMPLATE = """
     </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script> <!-- Required for better PDF export -->
 <script src="https://cdn.amcharts.com/lib/5/index.js"></script><script src="https://cdn.amcharts.com/lib/5/map.js"></script><script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
 <script>
     const infoPanel = document.getElementById('infopanel'), infoContent = document.getElementById('info-content'), panelTitle = document.getElementById('panel-title'), closeButton = document.getElementById('close-panel');
     const exportPdfBtn = document.getElementById('export-pdf-btn');
+    // --- MODIFIKASI BARU ---
+    const globalAnalysisBtn = document.getElementById('global-ai-btn');
 
     function showNotification(title, body) { if (Notification.permission === 'granted') { new Notification(title, { body: body, icon: '/favicon.ico' }); } }
     am5.ready(function() {
@@ -417,23 +561,26 @@ HTML_TEMPLATE = """
         var conflictLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {})); conflictLineSeries.mapLines.template.setAll({ stroke: am5.color(0xff0000), strokeOpacity: 0.6, strokeWidth: 2, strokeDasharray: [4,2] });
         var newsLineSeries = chart.series.push(am5map.MapLineSeries.new(root, {})); newsLineSeries.mapLines.template.setAll({ stroke: am5.color(0x64b5f6), strokeOpacity: 0.6, strokeWidth: 1, arc: -0.2 });
         function updateMap(geoData) { if (!geoData || !polygonSeries.data.length) return; (geoData.tension_scores || []).forEach(score => { const dataItem = polygonSeries.getDataItemById(score.id); if (dataItem) { dataItem.set("value", score.value); } }); conflictLineSeries.data.clear(); newsLineSeries.data.clear(); (geoData.conflicts || []).forEach(conflict => renderLine(conflict[0], conflict[1], conflictLineSeries, true)); (geoData.news_links || []).forEach(link => renderLine(link[0], link[1], newsLineSeries, false)); }
-        function flashCountry(countryCode) { let polygon = polygonSeries.getPolygonById(countryCode); if (polygon) { const originalColor = polygon.get("fill"); const flashColor = am5.color(0xFFFF00); let animation = polygon.animate({ key: "fill", to: flashColor, duration: 5400 }); if (animation) { animation.events.on("stopped", function() { polygon.animate({ key: "fill", to: originalColor, duration: 1800 }); }); } } }
+        function flashCountry(countryCode) { let polygon = polygonSeries.getPolygonById(countryCode); if (polygon) { const originalColor = polygon.get("fill"); const flashColor = am5.color(0xFFFF00); let animation = polygon.animate({ key: "fill", to: flashColor, duration: 2400 }); if (animation) { animation.events.on("stopped", function() { polygon.animate({ key: "fill", to: originalColor, duration: 800 }); }); } } }
         function renderLine(code1, code2, series, isConflict) { let p1 = polygonSeries.getPolygonById(code1); let p2 = polygonSeries.getPolygonById(code2); if(p1 && p2) { let lineDataItem = series.pushDataItem({ geometry: { type: "LineString", coordinates: [[p1.visualCentroid.longitude, p1.visualCentroid.latitude], [p2.visualCentroid.longitude, p2.visualCentroid.latitude]] } }); if (isConflict) { let bullet = am5.Bullet.new(root, { sprite: am5.Circle.new(root, { radius: 3, fill: am5.color(0xff0000) }) }); bullet.animate({ key: "location", from: 0, to: 1, duration: 2000, loops: Infinity }); lineDataItem.bullets.push(bullet); } } }
         const eventSource = new EventSource("/api/stream-updates");
         eventSource.onmessage = function(event) { const receivedData = JSON.parse(event.data); updateMap(receivedData.geopolitical); if(receivedData.updated_country_code) { const countryCode = receivedData.updated_country_code; const polygon = polygonSeries.getPolygonById(countryCode); if (polygon) { const countryName = polygon.dataItem.dataContext.name; flashCountry(countryCode); showNotification('G.I.M.P.S. Intel Update', `New headlines detected for ${countryName}.`); } } };
-        eventSource.onerror = function(err) { console.error("EventSource failed:", err); };
-        polygonSeries.mapPolygons.template.events.on("click", function(ev) { if (ev.target.dataItem.get("value") != null) { fetchCountryData(ev.target.dataItem.dataContext.id, ev.target.dataItem.dataContext.name); } });
+        eventSource.onerror = function(err) { console.error("EventSource failed:", err); eventSource.close(); setTimeout(() => { window.location.reload() }, 5000); };
+        polygonSeries.mapPolygons.template.events.on("click", function(ev) { if (ev.target.dataItem.get("value") != null) { fetchCountryData(ev.target.dataItem.dataContext.id, ev.target.dataItem.dataContext.name); } else { fetchCountryData(ev.target.dataItem.dataContext.id, ev.target.dataItem.dataContext.name); } });
         chart.chartContainer.get("background").events.on("click", () => closeInfoPanel());
     });
+    
     closeButton.addEventListener('click', closeInfoPanel);
+    globalAnalysisBtn.addEventListener('click', fetchGlobalAnalysis); // --- MODIFIKASI BARU ---
+
     function showInfoPanel() { infopanel.classList.add('visible'); }
     function closeInfoPanel() { infoPanel.classList.remove('visible'); }
     
     async function fetchCountryData(countryCode, countryName) {
-        infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}... AI ANALYSIS IN PROGRESS...</p>`; panelTitle.innerText = countryName.toUpperCase(); exportPdfBtn.style.display = 'none';
+        infoContent.innerHTML = `<p class="placeholder">ESTABLISHING DATALINK: ${countryName.toUpperCase()}... AI ANALYSIS IN PROGRESS...</p>`; panelTitle.innerText = `//ANALYSIS// ${countryName.toUpperCase()}`; exportPdfBtn.style.display = 'none';
         showInfoPanel();
         try {
-            const response = await fetch(`/api/country-data/${countryCode}`); if (!response.ok) throw new Error('CONNECTION FAILED.'); const data = await response.json(); displayCountryData(data, countryName);
+            const response = await fetch(`/api/country-data/${countryCode}`); if (!response.ok) throw new Error('CONNECTION FAILED: STATUS ' + response.status); const data = await response.json(); displayCountryData(data, countryName);
         } catch (error) { infoContent.innerHTML = `<p class="placeholder" style="color: var(--red-alert);">${error.message}</p>`; }
     }
     
@@ -442,7 +589,9 @@ HTML_TEMPLATE = """
         const decisionsHtml = data.decisions && data.decisions.length > 0 ? createTable(data.decisions, ['Date', 'Description', 'Action']) : '<p>// NO RECENT DIRECTIVE DATA //</p>';
         const meetingsHtml = data.meetings && data.meetings.length > 0 ? createTable(data.meetings, ['Date', 'Description']) : '<p>// NO UPCOMING TRANSMISSIONS DATA //</p>';
         let newsHtml = '<p>// NO INTEL FEED //</p>'; if(data.news && data.news.length > 0) { newsHtml = '<ul id="news-list">'; data.news.slice(0, 15).forEach(headline => newsHtml += `<li>${headline}</li>`); newsHtml += '</ul>'; }
-        panelTitle.innerText = countryName.toUpperCase(); panelTitle.classList.add('glitch'); setTimeout(() => { panelTitle.classList.remove('glitch'); }, 2000);
+        
+        panelTitle.innerText = `//ANALYSIS// ${countryName.toUpperCase()}`;
+        panelTitle.classList.add('glitch'); setTimeout(() => { panelTitle.classList.remove('glitch'); }, 2000);
         
         infoContent.innerHTML = `
             <div class="info-grid">
@@ -465,10 +614,148 @@ HTML_TEMPLATE = """
             </div>`;
             
         exportPdfBtn.style.display = 'block';
-        exportPdfBtn.onclick = () => exportDataToPdf(data, countryName);
+        exportPdfBtn.onclick = () => exportCountryDataToPdf(data, countryName); // --- MODIFIKASI BARU --- Diberi nama yang lebih spesifik
+    }
+
+    // --- MODIFIKASI BARU --- Fungsi-fungsi baru untuk analisis global
+    async function fetchGlobalAnalysis() {
+        infoContent.innerHTML = `<p class="placeholder">REQUESTING GLOBAL STRATEGIC ANALYSIS... THIS MAY TAKE A MOMENT...</p>`;
+        panelTitle.innerText = `// GLOBAL STRATEGIC ANALYSIS //`;
+        exportPdfBtn.style.display = 'none';
+        showInfoPanel();
+        try {
+            const response = await fetch(`/api/global-strategic-analysis`);
+            if (!response.ok) throw new Error('CONNECTION TO AI STRATEGIST FAILED: STATUS ' + response.status);
+            const data = await response.json();
+            displayGlobalAnalysis(data);
+        } catch (error) {
+            infoContent.innerHTML = `<p class="placeholder" style="color: var(--red-alert);">${error.message}</p>`;
+        }
     }
     
-    function exportDataToPdf(data, countryName) {
+    function displayGlobalAnalysis(data) {
+        panelTitle.innerText = data.title || '// GLOBAL STRATEGIC ANALYSIS //';
+        panelTitle.classList.add('glitch');
+        setTimeout(() => { panelTitle.classList.remove('glitch'); }, 2000);
+
+        const outlook = data.asset_outlook || {};
+        const assetTable = `
+            <table>
+                <thead><tr><th>ASSET</th><th>OUTLOOK</th></tr></thead>
+                <tbody>
+                    <tr><td>OIL</td><td>${outlook.oil || 'N/A'}</td></tr>
+                    <tr><td>BTC</td><td>${outlook.btc || 'N/A'}</td></tr>
+                    <tr><td>USD</td><td>${outlook.usd || 'N/A'}</td></tr>
+                    <tr><td>S&P 500</td><td>${outlook.sp500 || 'N/A'}</td></tr>
+                </tbody>
+            </table>`;
+
+        infoContent.innerHTML = `
+            <div id="global-analysis-grid">
+                <div class="global-column">
+                    <h3>Executive Summary</h3>
+                    <div class="analysis-content">
+                        <p>${data.executive_summary || 'No summary available.'}</p>
+                    </div>
+                    <h3>Risk Sentiment</h3>
+                    <div class="analysis-content">
+                        <p style="font-size: 1.5em; color: var(--blue-link); font-weight: bold;">${data.risk_sentiment || 'UNKNOWN'}</p>
+                    </div>
+                    <h3>Asset Outlook</h3>
+                    ${assetTable}
+                </div>
+                <div class="global-column" style="border-left: 1px solid var(--border-color); padding-left: 20px;">
+                    <h3>Actionable Guidance</h3>
+                    <div class="analysis-content">
+                        <h4>Investor Guidance (Long-Term)</h4>
+                        <p>${data.investor_guidance || 'No guidance available.'}</p>
+                        <h4>Trader Guidance (Short-Term)</h4>
+                        <p>${data.trader_guidance || 'No guidance available.'}</p>
+                    </div>
+                </div>
+            </div>`;
+        
+        exportPdfBtn.style.display = 'block';
+        exportPdfBtn.onclick = () => exportGlobalAnalysisToPdf(data);
+    }
+
+    function exportGlobalAnalysisToPdf(data) {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        const currentDate = new Date().toISOString().slice(0, 10);
+        let y = 15;
+        const leftMargin = 15;
+        const rightMargin = 195;
+        const writeText = (text, y_pos) => doc.splitTextToSize(text, rightMargin - leftMargin - 5);
+        
+        // Header
+        doc.setFont("courier", "bold");
+        doc.setFontSize(16);
+        doc.text("G.I.M.P.S. - GLOBAL STRATEGIC BRIEFING", doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
+        y += 8;
+        doc.setFontSize(11);
+        doc.text(data.title || 'Global Analysis', doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
+        y += 5;
+        doc.setFont("courier", "normal");
+        doc.text(`DATE: ${currentDate}`, doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
+        y += 8;
+        doc.setLineWidth(0.5);
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 10;
+
+        const addSection = (title, content, options = {}) => {
+            if (y > 250) { doc.addPage(); y = 20; }
+            doc.setFont("courier", "bold");
+            doc.setFontSize(12);
+            doc.text(title, leftMargin, y);
+            y += 7;
+            doc.setFont("courier", "normal");
+            doc.setFontSize(10);
+            if (options.isBold) doc.setFont("courier", "bold");
+            const splitContent = writeText(content || 'N/A', y);
+            doc.text(splitContent, leftMargin, y);
+            y += (splitContent.length * 4) + 8;
+            if (options.isBold) doc.setFont("courier", "normal");
+        };
+
+        addSection("I. EXECUTIVE SUMMARY", data.executive_summary);
+        addSection("II. OVERALL RISK SENTIMENT", data.risk_sentiment, { isBold: true });
+        
+        y += 5;
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 10;
+        addSection("III. ACTIONABLE GUIDANCE", "");
+        y -= 8;
+        addSection("   A. Investor Guidance (Long-Term):", data.investor_guidance);
+        addSection("   B. Trader Guidance (Short-Term):", data.trader_guidance);
+
+        y += 5;
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 10;
+        addSection("IV. ASSET CLASS OUTLOOK", "");
+        y -= 2;
+        
+        const outlook = data.asset_outlook || {};
+        doc.setFont("courier", "normal");
+        doc.text(`- Crude Oil (WTI):`, leftMargin + 5, y); doc.text(outlook.oil || 'N/A', 70, y); y+=6;
+        doc.text(`- Bitcoin (BTC):`, leftMargin + 5, y); doc.text(outlook.btc || 'N/A', 70, y); y+=6;
+        doc.text(`- US Dollar (DXY):`, leftMargin + 5, y); doc.text(outlook.usd || 'N/A', 70, y); y+=6;
+        doc.text(`- S&P 500 Index:`, leftMargin + 5, y); doc.text(outlook.sp500 || 'N/A', 70, y); y+=6;
+
+        // Footer
+        const pageCount = doc.internal.getNumberOfPages();
+        for(let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() / 2, 287, { align: 'center' });
+            doc.text('//CONFIDENTIAL//GENERATED_BY_GIMPS//', leftMargin, 287);
+        }
+
+        doc.save(`GIMPS_Global_Briefing_${currentDate}.pdf`);
+    }
+    
+    // Nama fungsi diubah agar lebih jelas
+    function exportCountryDataToPdf(data, countryName) {
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF();
         const currentDate = new Date().toISOString().slice(0, 10);
@@ -563,6 +850,7 @@ if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
     print(">> MODIFIKASI: Library 'openai' dihapus, diganti 'requests' untuk kompatibilitas Termux.")
+    print(">> FITUR BARU: Tombol Analisis Strategis Global & Ekspor PDF telah ditambahkan.")
     print(f">> Model AI yang digunakan: {OPENROUTER_MODEL_NAME}")
     print(">> PERINGATAN: API Key yang digunakan adalah kunci publik gratis. Performa bisa tidak stabil.")
     print(f">> Notifikasi Ponsel DIKONFIGURASI untuk topik: '{NTFY_TOPIC}'")
