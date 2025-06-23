@@ -27,7 +27,7 @@ app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
 # --- KONFIGURASI OPENROUTER AI ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
 
