@@ -27,12 +27,12 @@ app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
 # --- KONFIGURASI OPENROUTER AI ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
 
 # --- KONFIGURASI NOTIFIKASI GLOBAL ---
-NTFY_TOPIC = "gimps-global-notificationA87X"
+NTFY_TOPIC = "gimps-global-notificationA87XY"
 GLOBAL_ALERT_KEYWORDS = [
     'WAR', 'MILITARY', 'CONFLICT', 'INVASION', 'ATTACK', 'BOMB', 'DRONE', 'MISSILE',
     'CRISIS', 'RECESSION', 'CRASH', 'DEFAULT', 'COLLAPSE', 'MARKET PANIC',
@@ -485,7 +485,6 @@ HTML_TEMPLATE = """
         .analysis-content strong { color: var(--blue-link); }
         ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: #111; } ::-webkit-scrollbar-thumb { background: #555; }
         
-        /* --- MODIFIKASI BARU --- */
         #global-ai-btn {
             position: fixed;
             bottom: 25px;
@@ -524,7 +523,6 @@ HTML_TEMPLATE = """
 <body>
 <div id="chartdiv"></div>
 
-<!-- --- MODIFIKASI BARU --- Tombol baru ditambahkan di sini -->
 <button id="global-ai-btn" title="Request Global Strategic Analysis">// AI GLOBAL ANALYSIS</button>
 
 <div id="infopanel">
@@ -542,12 +540,11 @@ HTML_TEMPLATE = """
     </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script> <!-- Required for better PDF export -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.amcharts.com/lib/5/index.js"></script><script src="https://cdn.amcharts.com/lib/5/map.js"></script><script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
 <script>
     const infoPanel = document.getElementById('infopanel'), infoContent = document.getElementById('info-content'), panelTitle = document.getElementById('panel-title'), closeButton = document.getElementById('close-panel');
     const exportPdfBtn = document.getElementById('export-pdf-btn');
-    // --- MODIFIKASI BARU ---
     const globalAnalysisBtn = document.getElementById('global-ai-btn');
 
     function showNotification(title, body) { if (Notification.permission === 'granted') { new Notification(title, { body: body, icon: '/favicon.ico' }); } }
@@ -571,7 +568,7 @@ HTML_TEMPLATE = """
     });
     
     closeButton.addEventListener('click', closeInfoPanel);
-    globalAnalysisBtn.addEventListener('click', fetchGlobalAnalysis); // --- MODIFIKASI BARU ---
+    globalAnalysisBtn.addEventListener('click', fetchGlobalAnalysis);
 
     function showInfoPanel() { infopanel.classList.add('visible'); }
     function closeInfoPanel() { infoPanel.classList.remove('visible'); }
@@ -614,10 +611,9 @@ HTML_TEMPLATE = """
             </div>`;
             
         exportPdfBtn.style.display = 'block';
-        exportPdfBtn.onclick = () => exportCountryDataToPdf(data, countryName); // --- MODIFIKASI BARU --- Diberi nama yang lebih spesifik
+        exportPdfBtn.onclick = () => exportCountryDataToPdf(data, countryName);
     }
 
-    // --- MODIFIKASI BARU --- Fungsi-fungsi baru untuk analisis global
     async function fetchGlobalAnalysis() {
         infoContent.innerHTML = `<p class="placeholder">REQUESTING GLOBAL STRATEGIC ANALYSIS... THIS MAY TAKE A MOMENT...</p>`;
         panelTitle.innerText = `// GLOBAL STRATEGIC ANALYSIS //`;
@@ -678,164 +674,304 @@ HTML_TEMPLATE = """
         exportPdfBtn.style.display = 'block';
         exportPdfBtn.onclick = () => exportGlobalAnalysisToPdf(data);
     }
-
+    
+    // --- FUNGSI PDF DIMODIFIKASI ---
     function exportGlobalAnalysisToPdf(data) {
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        const currentDate = new Date().toISOString().slice(0, 10);
-        let y = 15;
-        const leftMargin = 15;
-        const rightMargin = 195;
-        const writeText = (text, y_pos) => doc.splitTextToSize(text, rightMargin - leftMargin - 5);
+        const doc = new jsPDF('p', 'pt', 'a4'); // Gunakan points dan A4 untuk kontrol lebih baik
+        const currentDate = new Date();
+        const formattedDate = currentDate.toISOString().slice(0, 10);
+        const formattedTime = currentDate.toLocaleTimeString('en-GB', { hour12: false });
+        const docId = `GIMPS-GLOB-${currentDate.getTime()}`;
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const leftMargin = 40;
+        const rightMargin = pageWidth - 40;
+        const contentWidth = rightMargin - leftMargin;
+        let y = 0;
+
+        const addPageHeadersFooters = () => {
+            const pageCount = doc.internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                // HEADER
+                doc.setFont('courier', 'bold');
+                doc.setFontSize(10);
+                doc.text('G.I.M.P.S. INTELLIGENCE DIRECTORATE', leftMargin, 30);
+                doc.text('CLASSIFICATION: CONFIDENTIAL', rightMargin, 30, { align: 'right' });
+                doc.setLineWidth(1);
+                doc.line(leftMargin, 35, rightMargin, 35);
+                // FOOTER
+                doc.setFont('courier', 'normal');
+                doc.setFontSize(8);
+                const footerText = `// CONFIDENTIAL // GIMPS AUTOGENERATED DOCUMENT //`;
+                doc.text(footerText, leftMargin, pageHeight - 25);
+                doc.text(`Page ${i} of ${pageCount}`, rightMargin, pageHeight - 25, { align: 'right' });
+                doc.line(leftMargin, pageHeight - 35, rightMargin, pageHeight - 35);
+            }
+        };
         
-        // Header
-        doc.setFont("courier", "bold");
-        doc.setFontSize(16);
-        doc.text("G.I.M.P.S. - GLOBAL STRATEGIC BRIEFING", doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
-        y += 8;
-        doc.setFontSize(11);
-        doc.text(data.title || 'Global Analysis', doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
-        y += 5;
-        doc.setFont("courier", "normal");
-        doc.text(`DATE: ${currentDate}`, doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
-        y += 8;
+        const checkPageBreak = (spaceNeeded) => {
+            if (y + spaceNeeded > pageHeight - 50) { // 50 untuk margin footer
+                doc.addPage();
+                y = 50; // Posisi Y untuk halaman baru
+            }
+        };
+
+        // --- AWAL DOKUMEN ---
+        y = 60; // Posisi Y awal setelah header
+        
+        // Blok Judul
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(18);
+        doc.text('GLOBAL STRATEGIC BRIEFING', pageWidth / 2, y, { align: 'center' });
+        y += 25;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(10);
+        doc.text('DOCUMENT TITLE:', leftMargin, y);
+        doc.setFont('courier', 'normal');
+        doc.text(data.title || 'Global Market & Geopolitical Analysis', leftMargin + 120, y);
+        y += 15;
+        doc.setFont('courier', 'bold');
+        doc.text('DOCUMENT ID:', leftMargin, y);
+        doc.setFont('courier', 'normal');
+        doc.text(docId, leftMargin + 120, y);
+        y += 15;
+        doc.setFont('courier', 'bold');
+        doc.text('DATE/TIME GRP:', leftMargin, y);
+        doc.setFont('courier', 'normal');
+        doc.text(`${formattedDate} / ${formattedTime}Z`, leftMargin + 120, y);
+        y += 25;
+        
         doc.setLineWidth(0.5);
         doc.line(leftMargin, y, rightMargin, y);
-        y += 10;
+        y += 20;
 
-        const addSection = (title, content, options = {}) => {
-            if (y > 250) { doc.addPage(); y = 20; }
-            doc.setFont("courier", "bold");
+        const addSection = (title, content) => {
+            checkPageBreak(40); // Cek ruang untuk judul
+            doc.setFont('courier', 'bold');
             doc.setFontSize(12);
             doc.text(title, leftMargin, y);
-            y += 7;
-            doc.setFont("courier", "normal");
+            y += 20;
+            
+            checkPageBreak(20); // Cek ruang untuk konten
+            doc.setFont('courier', 'normal');
             doc.setFontSize(10);
-            if (options.isBold) doc.setFont("courier", "bold");
-            const splitContent = writeText(content || 'N/A', y);
+            const splitContent = doc.splitTextToSize(content || 'No data available.', contentWidth);
             doc.text(splitContent, leftMargin, y);
-            y += (splitContent.length * 4) + 8;
-            if (options.isBold) doc.setFont("courier", "normal");
+            y += (splitContent.length * 12) + 20; // 12pt line height
+        };
+        
+        // BAGIAN KONTEN
+        addSection('1.0 EXECUTIVE SUMMARY', data.executive_summary);
+        addSection('2.0 CURRENT RISK SENTIMENT', data.risk_sentiment);
+        
+        checkPageBreak(40);
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(12);
+        doc.text('3.0 ACTIONABLE GUIDANCE', leftMargin, y);
+        y += 20;
+        
+        const addSubSection = (title, content) => {
+            checkPageBreak(40);
+            doc.setFont('courier', 'bold');
+            doc.setFontSize(10);
+            doc.text(title, leftMargin + 15, y); // Indentasi
+            y += 15;
+            
+            checkPageBreak(20);
+            doc.setFont('courier', 'normal');
+            doc.setFontSize(10);
+            const splitContent = doc.splitTextToSize(content || 'No guidance available.', contentWidth - 15);
+            doc.text(splitContent, leftMargin + 15, y);
+            y += (splitContent.length * 12) + 15;
         };
 
-        addSection("I. EXECUTIVE SUMMARY", data.executive_summary);
-        addSection("II. OVERALL RISK SENTIMENT", data.risk_sentiment, { isBold: true });
+        addSubSection('3.1 Investor Guidance (Long-Term)', data.investor_guidance);
+        addSubSection('3.2 Trader Guidance (Short-Term)', data.trader_guidance);
         
-        y += 5;
-        doc.line(leftMargin, y, rightMargin, y);
-        y += 10;
-        addSection("III. ACTIONABLE GUIDANCE", "");
-        y -= 8;
-        addSection("   A. Investor Guidance (Long-Term):", data.investor_guidance);
-        addSection("   B. Trader Guidance (Short-Term):", data.trader_guidance);
-
-        y += 5;
-        doc.line(leftMargin, y, rightMargin, y);
-        y += 10;
-        addSection("IV. ASSET CLASS OUTLOOK", "");
-        y -= 2;
+        checkPageBreak(120); // Ruang untuk tabel
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(12);
+        doc.text('4.0 KEY ASSET OUTLOOK', leftMargin, y);
+        y += 20;
         
+        // Tabel manual untuk aset
         const outlook = data.asset_outlook || {};
-        doc.setFont("courier", "normal");
-        doc.text(`- Crude Oil (WTI):`, leftMargin + 5, y); doc.text(outlook.oil || 'N/A', 70, y); y+=6;
-        doc.text(`- Bitcoin (BTC):`, leftMargin + 5, y); doc.text(outlook.btc || 'N/A', 70, y); y+=6;
-        doc.text(`- US Dollar (DXY):`, leftMargin + 5, y); doc.text(outlook.usd || 'N/A', 70, y); y+=6;
-        doc.text(`- S&P 500 Index:`, leftMargin + 5, y); doc.text(outlook.sp500 || 'N/A', 70, y); y+=6;
-
-        // Footer
-        const pageCount = doc.internal.getNumberOfPages();
-        for(let i = 1; i <= pageCount; i++) {
-            doc.setPage(i);
-            doc.setFontSize(8);
-            doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() / 2, 287, { align: 'center' });
-            doc.text('//CONFIDENTIAL//GENERATED_BY_GIMPS//', leftMargin, 287);
-        }
-
-        doc.save(`GIMPS_Global_Briefing_${currentDate}.pdf`);
+        const tableStartY = y;
+        const cellHeight = 20;
+        const col1X = leftMargin + 5;
+        const col2X = leftMargin + 150;
+        
+        doc.setFont('courier', 'bold');
+        doc.text('ASSET CLASS', col1X, y);
+        doc.text('AI-DRIVEN OUTLOOK', col2X, y);
+        y += 5;
+        doc.line(leftMargin, y, rightMargin, y);
+        y += 15;
+        
+        doc.setFont('courier', 'normal');
+        doc.text('Crude Oil (WTI)', col1X, y); doc.text(`: ${outlook.oil || 'N/A'}`, col2X, y); y += cellHeight;
+        doc.text('Bitcoin (BTC)', col1X, y); doc.text(`: ${outlook.btc || 'N/A'}`, col2X, y); y += cellHeight;
+        doc.text('US Dollar (DXY)', col1X, y); doc.text(`: ${outlook.usd || 'N/A'}`, col2X, y); y += cellHeight;
+        doc.text('S&P 500 Index', col1X, y); doc.text(`: ${outlook.sp500 || 'N/A'}`, col2X, y);
+        y += 5;
+        doc.line(leftMargin, y, rightMargin, y);
+        
+        // Selesaikan dengan header dan footer di semua halaman
+        addPageHeadersFooters();
+        
+        doc.save(`GIMPS_Global_Briefing_${formattedDate}.pdf`);
     }
-    
-    // Nama fungsi diubah agar lebih jelas
+
     function exportCountryDataToPdf(data, countryName) {
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        const currentDate = new Date().toISOString().slice(0, 10);
-        let y = 15;
-        const leftMargin = 15;
-        const rightMargin = 195;
-        
-        doc.setFont("courier", "bold");
-        doc.setFontSize(14);
-        doc.text("G.I.M.P.S. STRATEGIC BRIEFING", doc.internal.pageSize.getWidth() / 2, y, { align: "center" });
-        y += 5;
-        doc.setLineWidth(0.5);
-        doc.line(leftMargin, y, rightMargin, y);
-        y += 10;
-        
-        doc.setFont("courier", "normal");
-        doc.setFontSize(12);
-        doc.text(`SUBJECT: ${countryName.toUpperCase()}`, leftMargin, y);
-        y += 7;
-        doc.text(`DATE: ${currentDate}`, leftMargin, y);
-        y += 10;
-        doc.line(leftMargin, y, rightMargin, y);
-        y += 10;
-        
-        const addSection = (title, content) => {
-            if (y > 260) { doc.addPage(); y = 20; }
-            doc.setFont("courier", "bold");
-            doc.setFontSize(11);
-            doc.text(title, leftMargin, y);
-            y += 6;
-            doc.setFont("courier", "normal");
-            doc.setFontSize(10);
-            
-            const splitContent = doc.splitTextToSize(content.replace(/\\n/g, '\\n'), rightMargin - leftMargin);
-            doc.text(splitContent, leftMargin, y);
-            y += (splitContent.length * 4) + 8;
+        const doc = new jsPDF('p', 'pt', 'a4');
+        const currentDate = new Date();
+        const formattedDate = currentDate.toISOString().slice(0, 10);
+        const formattedTime = currentDate.toLocaleTimeString('en-GB', { hour12: false });
+        const docId = `GIMPS-CTRY-${countryName.substring(0,4).toUpperCase()}-${currentDate.getTime()}`;
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const leftMargin = 40;
+        const rightMargin = pageWidth - 40;
+        const contentWidth = rightMargin - leftMargin;
+        let y = 0;
+
+        const addPageHeadersFooters = () => {
+            const pageCount = doc.internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                // HEADER
+                doc.setFont('courier', 'bold');
+                doc.setFontSize(10);
+                doc.text('G.I.M.P.S. INTELLIGENCE DIRECTORATE', leftMargin, 30);
+                doc.text('CLASSIFICATION: CONFIDENTIAL', rightMargin, 30, { align: 'right' });
+                doc.setLineWidth(1);
+                doc.line(leftMargin, 35, rightMargin, 35);
+                // FOOTER
+                doc.setFont('courier', 'normal');
+                doc.setFontSize(8);
+                const footerText = `// CONFIDENTIAL // FOR INTERNAL USE ONLY //`;
+                doc.text(footerText, leftMargin, pageHeight - 25);
+                doc.text(`Page ${i} of ${pageCount}`, rightMargin, pageHeight - 25, { align: 'right' });
+                doc.line(leftMargin, pageHeight - 35, rightMargin, pageHeight - 35);
+            }
         };
         
-        doc.setFont("courier", "bold");
-        doc.setFontSize(12);
-        doc.text("I. RAW DATA FEED", leftMargin, y);
-        y += 8;
-
-        let ratesText = "No data available.";
-        if (data.rates && data.rates.length > 0) { ratesText = data.rates.map(r => `- ${r.rate_name}: ${r.rate} (Change: ${r.change || 'N/A'}, Date: ${r.date})`).join('\\n'); }
-        addSection("Monetary Rates:", ratesText);
+        const checkPageBreak = (spaceNeeded) => {
+            if (y + spaceNeeded > pageHeight - 50) {
+                doc.addPage();
+                y = 50;
+            }
+        };
         
-        let decisionsText = "No data available.";
-        if (data.decisions && data.decisions.length > 0) { decisionsText = data.decisions.map(d => `- [${d.date}] ${d.description}`).join('\\n'); }
-        addSection("Recent Directives:", decisionsText);
-
-        let meetingsText = "No data available.";
-        if (data.meetings && data.meetings.length > 0) { meetingsText = data.meetings.map(m => `- [${m.date}] ${m.description}`).join('\\n'); }
-        addSection("Upcoming Transmissions:", meetingsText);
+        // --- AWAL DOKUMEN ---
+        y = 60;
         
-        y+= 5;
+        // Blok Judul
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(18);
+        doc.text('COUNTRY INTELLIGENCE REPORT', pageWidth / 2, y, { align: 'center' });
+        y += 25;
+        
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(10);
+        doc.text('SUBJECT:', leftMargin, y);
+        doc.setFont('courier', 'normal');
+        doc.text(countryName.toUpperCase(), leftMargin + 120, y);
+        y += 15;
+        doc.setFont('courier', 'bold');
+        doc.text('DOCUMENT ID:', leftMargin, y);
+        doc.setFont('courier', 'normal');
+        doc.text(docId, leftMargin + 120, y);
+        y += 15;
+        doc.setFont('courier', 'bold');
+        doc.text('DATE/TIME GRP:', leftMargin, y);
+        doc.setFont('courier', 'normal');
+        doc.text(`${formattedDate} / ${formattedTime}Z`, leftMargin + 120, y);
+        y += 25;
+        
+        doc.setLineWidth(0.5);
         doc.line(leftMargin, y, rightMargin, y);
-        y += 10;
+        y += 20;
         
-        doc.setFont("courier", "bold");
-        doc.setFontSize(12);
-        doc.text("II. STRATEGIC AI ANALYSIS", leftMargin, y);
-        y += 8;
-        
-        addSection(data.analysis.title || 'ANALYSIS PENDING', "");
-        y -= 8;
-        addSection("Summary:", data.analysis.summary || 'N/A');
-        addSection("Impact Analysis:", data.analysis.impact_analysis || 'N/A');
-        addSection("Futures Outlook:", data.analysis.futures_outlook || 'N/A');
-        
-        const pageCount = doc.internal.getNumberOfPages();
-        for(let i = 1; i <= pageCount; i++) {
-            doc.setPage(i);
-            doc.setFontSize(8);
-            doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() / 2, 287, { align: 'center' });
-            doc.text('//CONFIDENTIAL//GENERATED_BY_GIMPS//', leftMargin, 287);
-        }
+        const addListSection = (title, items, formatter) => {
+            checkPageBreak(40);
+            doc.setFont('courier', 'bold');
+            doc.setFontSize(12);
+            doc.text(title, leftMargin, y);
+            y += 20;
 
-        doc.save(`GIMPS_Briefing_${countryName.replace(/ /g, "_")}_${currentDate}.pdf`);
+            doc.setFont('courier', 'normal');
+            doc.setFontSize(10);
+
+            if (!items || items.length === 0) {
+                checkPageBreak(20);
+                doc.text("No data available for this section.", leftMargin + 15, y);
+                y += 20;
+                return;
+            }
+
+            items.forEach(item => {
+                const formattedText = formatter(item);
+                const splitText = doc.splitTextToSize(`- ${formattedText}`, contentWidth - 15);
+                checkPageBreak(splitText.length * 12);
+                doc.text(splitText, leftMargin + 15, y);
+                y += (splitText.length * 12) + 5;
+            });
+            y += 15;
+        };
+        
+        const addAnalysisSection = (title, content) => {
+            checkPageBreak(40);
+            doc.setFont('courier', 'bold');
+            doc.setFontSize(10);
+            doc.text(title, leftMargin + 15, y);
+            y += 15;
+
+            checkPageBreak(20);
+            doc.setFont('courier', 'normal');
+            doc.setFontSize(10);
+            const splitContent = doc.splitTextToSize(content || 'No analysis available.', contentWidth - 15);
+            doc.text(splitContent, leftMargin + 15, y);
+            y += (splitContent.length * 12) + 15;
+        };
+        
+        // DATA MENTAH
+        checkPageBreak(40);
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(14);
+        doc.text('1.0 RAW DATA FEED', leftMargin, y);
+        y += 25;
+        
+        addListSection('1.1 Monetary Rates', data.rates, r => `${r.rate_name}: ${r.rate} (Change: ${r.change || 'N/A'}, Date: ${r.date})`);
+        addListSection('1.2 Recent Directives', data.decisions, d => `[${d.date}] ${d.description}`);
+        addListSection('1.3 Upcoming Transmissions', data.meetings, m => `[${m.date}] ${m.description}`);
+        addListSection('1.4 Recent Intelligence Feed', data.news, n => n);
+
+        // ANALISIS AI
+        checkPageBreak(40);
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(14);
+        doc.text('2.0 STRATEGIC AI ANALYSIS', leftMargin, y);
+        y += 20;
+        
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(12);
+        const titleLines = doc.splitTextToSize(data.analysis.title || 'ANALYSIS PENDING', contentWidth - 15);
+        doc.text(titleLines, leftMargin + 15, y);
+        y += (titleLines.length * 12) + 15;
+
+        addAnalysisSection('2.1 Summary:', data.analysis.summary);
+        addAnalysisSection('2.2 Impact Analysis:', data.analysis.impact_analysis);
+        addAnalysisSection('2.3 Futures Outlook:', data.analysis.futures_outlook);
+
+        // Selesaikan
+        addPageHeadersFooters();
+        doc.save(`GIMPS_Report_${countryName.replace(/ /g, "_")}_${formattedDate}.pdf`);
     }
+
 
     function createTable(data, headers) { let table = '<table><thead><tr>'; headers.forEach(h => table += `<th>${h.toUpperCase()}</th>`); table += '</tr></thead><tbody>'; data.forEach(row => { table += '<tr>'; headers.forEach(h => { table += `<td>${row[h.toLowerCase().replace(/ /g, '_')] || 'N/A'}</td>`; }); table += '</tr>'; }); return table + '</tbody></table>'; }
 </script>
@@ -851,9 +987,10 @@ if __name__ == '__main__':
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
     print(">> MODIFIKASI: Library 'openai' dihapus, diganti 'requests' untuk kompatibilitas Termux.")
     print(">> FITUR BARU: Tombol Analisis Strategis Global & Ekspor PDF telah ditambahkan.")
+    print(">> UPDATE: Layout PDF telah disempurnakan untuk tampilan profesional.")
     print(f">> Model AI yang digunakan: {OPENROUTER_MODEL_NAME}")
     print(">> PERINGATAN: API Key yang digunakan adalah kunci publik gratis. Performa bisa tidak stabil.")
-    print(f">> Notifikasi Ponsel DIKONFIGURASI untuk topik: '{NTFY_TOPIC}'")
+    print(f">> Notifikasi Ponsel DIKONFIGURasi untuk topik: '{NTFY_TOPIC}'")
     print("===============================================================")
     update_thread = Thread(target=background_update_task, daemon=True)
     update_thread.start()
