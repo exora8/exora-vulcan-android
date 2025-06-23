@@ -9,6 +9,7 @@ import json
 import random
 import datetime
 import requests
+# --- MODIFIKASI TERMUX ---: Library 'openai' sudah tidak digunakan lagi.
 
 # Coba impor plyer untuk notifikasi desktop
 try:
@@ -26,7 +27,7 @@ app = Flask(__name__)
 scraper = cloudscraper.create_scraper()
 
 # --- KONFIGURASI OPENROUTER AI ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 OPENROUTER_SITE_URL = "https://openrouter.ai/api/v1"
 
@@ -67,20 +68,22 @@ global_data = { 'rates': [], 'decisions': [], 'meetings': [], 'all_news': {code:
 MONETARY_UPDATE_INTERVAL_SECONDS = 900
 
 # =================================================================
-# BAGIAN 2: LOGIKA AI
+# BAGIAN 2: LOGIKA AI (TANPA LIBRARY OPENAI)
 # =================================================================
 
 def call_openrouter_api(system_prompt, user_prompt):
     """
+    --- MODIFIKASI TERMUX ---
     Fungsi pusat untuk memanggil API OpenRouter menggunakan library 'requests'.
+    Ini menggantikan kebutuhan akan library 'openai' dan lebih portabel.
     """
     api_url = f"{OPENROUTER_SITE_URL}/chat/completions"
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost",
-        "X-Title": "GIMPS AI System"
+        "HTTP-Referer": "http://localhost",  # Bisa diisi apa saja, praktik yang baik
+        "X-Title": "GIMPS AI System"       # Nama aplikasi Anda
     }
     
     payload = {
@@ -96,53 +99,29 @@ def call_openrouter_api(system_prompt, user_prompt):
     try:
         response = requests.post(api_url, headers=headers, json=payload, timeout=45)
         response.raise_for_status()
+        # Periksa adanya potensi error API Key dari respons, bahkan jika status 200
+        response_json = response.json()
+        if 'error' in response_json:
+            error_message = response_json['error'].get('message', 'Unknown API Error')
+            # Cek spesifik untuk error API Key
+            if 'invalid' in error_message.lower() and 'api key' in error_message.lower():
+                 print(f"[!!] OPENROUTER API KEY ERROR: {error_message}")
+                 return f'{{"error": "API Key Invalid or Expired: {error_message}"}}'
         return response.json()['choices'][0]['message']['content']
+    except requests.exceptions.HTTPError as e:
+        # Menangkap error spesifik seperti 401 Unauthorized (seringkali karena API key salah)
+        if e.response.status_code == 401:
+            print(f"[!!] OPENROUTER API AUTHENTICATION ERROR (401): Please check your API Key. {e}")
+            return f'{{"error": "API Authentication Error (401): Invalid API Key."}}'
+        print(f"[!!] OPENROUTER API HTTP ERROR: {e}")
+        return f'{{"error": "API HTTP Error: {e}"}}'
     except requests.exceptions.RequestException as e:
         print(f"[!!] OPENROUTER API NETWORK ERROR: {e}")
         return f'{{"error": "API Network Error: {e}"}}'
     except (KeyError, IndexError, json.JSONDecodeError) as e:
         print(f"[!!] OPENROUTER API RESPONSE PARSE ERROR: {e}")
+        print(f"   Raw response content: {response.text}")
         return f'{{"error": "API Response Parse Error: {e}"}}'
-
-def analyze_headline_for_notification(headline):
-    """
-    Menganalisis satu headline berita untuk dampak pasar dan menghasilkan JSON.
-    Mengembalikan None jika analisis gagal atau ada error API.
-    """
-    system_prompt = """You are a financial market AI specializing in rapid impact assessment. Your task is to analyze the provided news headline and provide a structured JSON output. The JSON object must have a key "analysis_valid" (boolean) and, if the analysis is possible, the following keys: "impact_percentage" (integer from 0-100), "impact_direction" (string, "Positive" or "Negative"), "outlook_usd", "outlook_btc", "outlook_oil", "outlook_sp500" (each with string values "UP", "DOWN", or "SIDEWAYS/VOLATILE"). If you cannot perform a reliable analysis from the headline, set "analysis_valid" to false. Respond only with the JSON object.
-    """
-    user_prompt = f"Analyze this headline: \"{headline}\""
-    
-    ai_response_str = call_openrouter_api(system_prompt, user_prompt)
-    
-    try:
-        json_start = ai_response_str.find('{')
-        json_end = ai_response_str.rfind('}') + 1
-        if json_start == -1 or json_end == 0:
-            print(f"[!!] NOTIFICATION AI-ANALYSIS: No JSON object found in response for '{headline}'.")
-            return None
-
-        clean_json_str = ai_response_str[json_start:json_end]
-        parsed_json = json.loads(clean_json_str)
-
-        if 'error' in parsed_json:
-            print(f"[!!] NOTIFICATION AI-ANALYSIS ERROR from API: {parsed_json['error']}")
-            return None
-
-        if not parsed_json.get("analysis_valid", False):
-            print(f"[!!] NOTIFICATION AI-ANALYSIS: AI indicated analysis was not possible for '{headline}'")
-            return None
-
-        required_keys = ["impact_percentage", "impact_direction", "outlook_usd", "outlook_btc", "outlook_oil", "outlook_sp500"]
-        if not all(key in parsed_json for key in required_keys):
-            print(f"[!!] NOTIFICATION AI-ANALYSIS: Response JSON is missing required keys for '{headline}'")
-            return None
-
-        return parsed_json
-
-    except (json.JSONDecodeError, ValueError, KeyError) as e:
-        print(f"[!!] NOTIFICATION AI-ANALYSIS: JSON parse error or key missing: {e}")
-        return None
 
 def generate_ai_summary(all_data):
     """Menghasilkan ringkasan global menggunakan LLM."""
@@ -182,60 +161,108 @@ def generate_ai_summary(all_data):
             print(f"[!!] AI-SUMMARY JSON PARSE ERROR: {e}"); analysis_result['market_outlook'] = "AI response was not in the correct format."
     return {"world_tension": world_tension, "war_probability": war_probability, "market_outlook": analysis_result.get("market_outlook", "N/A"), "strategic_posture": analysis_result.get("strategic_posture", "N/A"), "active_hotspots": active_hotspots, "potential_hotspots": potential_hotspots}
 
+# --- FUNGSI BARU ---
+def generate_ai_analysis_for_ntfy(headline):
+    """
+    Menghasilkan analisis berita singkat untuk notifikasi ntfy dan memeriksa error API.
+    """
+    system_prompt = "You are a concise financial news analyst. Your task is to analyze a news headline and provide a brief, structured analysis of its potential market impact. Your output MUST BE a valid JSON object with four keys: 'impact' (string: 'High', 'Medium', or 'Low'), 'effect' (a short sentence on market effect), 'danger_assets' (a string listing assets negatively affected, e.g., 'Equities, Oil'), and 'good_assets' (a string listing assets positively affected, e.g., 'Gold, USD'). Be direct and do not add any extra text."
+    user_prompt = f"Analyze this headline: \"{headline}\""
+    
+    ai_response_str = call_openrouter_api(system_prompt, user_prompt)
+
+    # Langkah 1: Deteksi error API seperti yang diminta pengguna.
+    # Fungsi call_openrouter_api sudah dirancang untuk mengembalikan JSON dengan key 'error'.
+    if '"error":' in ai_response_str:
+        print(f"[!!] NTFY-AI-ANALYSIS: API call failed. Raw response: {ai_response_str}")
+        return None 
+
+    # Langkah 2: Coba parsing JSON dari respons yang (kemungkinan) valid.
+    try:
+        json_start = ai_response_str.find('{')
+        json_end = ai_response_str.rfind('}') + 1
+        if json_start == -1 or json_end == 0:
+            raise ValueError("No JSON object found in response.")
+        
+        clean_json_str = ai_response_str[json_start:json_end]
+        analysis_json = json.loads(clean_json_str)
+
+        # Langkah 3: Validasi struktur JSON
+        required_keys = ['impact', 'effect', 'danger_assets', 'good_assets']
+        if not all(key in analysis_json for key in required_keys):
+            print(f"[!!] NTFY-AI-ANALYSIS: AI response missing required keys. Response: {analysis_json}")
+            return None
+
+        # Langkah 4: Format output jika berhasil
+        formatted_analysis = (
+            f"\n\n--- AI Analysis ---\n"
+            f"Impact Level: {analysis_json.get('impact', 'N/A')}\n"
+            f"Market Effect: {analysis_json.get('effect', 'N/A')}\n"
+            f"Potential Risk For: {analysis_json.get('danger_assets', 'N/A')}\n"
+            f"Potential Good For: {analysis_json.get('good_assets', 'N/A')}"
+        )
+        return formatted_analysis
+
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[!!] NTFY-AI-ANALYSIS: Failed to parse or validate AI response. Error: {e}. Raw response: {ai_response_str}")
+        return None
+
 # =================================================================
 # BAGIAN 3: FUNGSI-FUNGSI HELPER
 # =================================================================
+# --- FUNGSI DIMODIFIKASI ---
+def send_global_alert(headline):
+    """
+    Memulai analisis AI dan mengirim notifikasi yang disempurnakan.
+    Membatalkan pengiriman ntfy jika ada error API.
+    """
+    print(f"\n[!!!] GLOBAL ALERT TRIGGERED: {headline}")
+    print(">> Requesting AI analysis for ntfy notification...")
 
-def send_global_alert(headline, ai_analysis):
-    """
-    Mengirim notifikasi yang sudah dianalisis oleh AI.
-    """
-    print(f"\n[!!!] GLOBAL ALERT & AI ANALYSIS SENDING: {headline}\n")
+    ai_analysis = generate_ai_analysis_for_ntfy(headline)
+
+    # MODIFIKASI KUNCI: Periksa jika ada error dari API AI. Jika ada, batalkan notifikasi ntfy.
+    if ai_analysis is None:
+        print("[!!] AI analysis failed or an API error was detected. The ntfy notification will NOT be sent.")
+        # Kita masih bisa mengirim notifikasi desktop yang lebih sederhana sebagai fallback
+        if PLYER_AVAILABLE:
+            try:
+                notification.notify(
+                    title='G.I.M.P.S. ALERT (AI FAILED)',
+                    message=headline,
+                    app_name='G.I.M.P.S.',
+                    timeout=20
+                )
+            except Exception as e:
+                print(f"[ERROR] Gagal mengirim notifikasi desktop darurat: {e}")
+        return # Menghentikan eksekusi fungsi di sini
+
+    # Jika analisis AI berhasil, lanjutkan mengirim notifikasi
+    print(">> AI analysis successful. Compiling and sending notifications...")
     
-    market_impact = f"{ai_analysis.get('impact_percentage', '??')}% ({ai_analysis.get('impact_direction', 'N/A')})"
-    body = (
-        f"📈 Dampak Pasar: {market_impact}\n"
-        f"💵 USD: {ai_analysis.get('outlook_usd', 'N/A')}\n"
-        f"₿ BTC: {ai_analysis.get('outlook_btc', 'N/A')}\n"
-        f"🛢️ Oil: {ai_analysis.get('outlook_oil', 'N/A')}\n"
-        f"📉 S&P 500: {ai_analysis.get('outlook_sp500', 'N/A')}"
-    )
-    
+    # Notifikasi desktop (tetap singkat)
     if PLYER_AVAILABLE:
         try:
-            # --- PERBAIKAN BUG DI SINI ---
-            # Buat judul notifikasi lengkap
-            full_title = f'G.I.M.P.S. ALERT: {headline}'
-            
-            # Potong judul jika lebih dari 63 karakter untuk menghindari error di Windows
-            if len(full_title) > 63:
-                notification_title = full_title[:60] + '...'
-            else:
-                notification_title = full_title
-            
-            notification.notify(
-                title=notification_title, 
-                message=body, 
-                app_name='G.I.M.P.S.', 
-                timeout=30
-            )
-        except Exception as e: 
-            # Menambahkan print error yang lebih spesifik
-            print(f"[ERROR] Gagal mengirim notifikasi desktop (plyer): {e}")
+            notification.notify(title='G.I.M.P.S. GLOBAL ALERT', message=headline, app_name='G.I.M.P.S.', timeout=20)
+        except Exception as e: print(f"[ERROR] Gagal mengirim notifikasi desktop: {e}")
+    
+    # Buat isi notifikasi ntfy yang sudah di-enhance dengan AI
+    ntfy_message = headline + ai_analysis
 
+    # Kirim notifikasi ntfy yang sudah lengkap
     try:
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}", 
-            data=body.encode(encoding='utf-8'), 
+            data=ntfy_message.encode(encoding='utf-8'), 
             headers={
-                "Title": f"GIMPS Alert: {headline}", 
+                "Title": f"GIMPS Alert: {headline[:50]}...",
                 "Priority": "high", 
-                "Tags": "warning,chart_with_downwards_trend,moneybag"
+                "Tags": "warning,robot"
             }
         )
+        print(f">> Successfully sent enhanced notification to ntfy topic: {NTFY_TOPIC}")
     except Exception as e: 
         print(f"[ERROR] Gagal mengirim notifikasi ntfy: {e}")
-
 
 def parse_world_rates(soup):
     data = []; table = soup.select_one('table#AutoNumber3')
@@ -360,25 +387,10 @@ def background_update_task():
                     global_data['all_news'][country_code] = formatted_headlines; global_data['last_updated_code'] = country_code
                 
                 for item in news_items:
-                    core_headline = item['core']
-                    global_data['headline_tracker'][core_headline]['countries'].add(country_code)
-                    count = len(global_data['headline_tracker'][core_headline]['countries'])
-                    is_above_threshold = count >= GLOBAL_ALERT_THRESHOLD
-                    is_not_sent_yet = core_headline not in global_data['sent_notifications']
-                    has_alert_keyword = any(keyword in core_headline for keyword in GLOBAL_ALERT_KEYWORDS)
-                    
+                    core_headline = item['core']; global_data['headline_tracker'][core_headline]['countries'].add(country_code); count = len(global_data['headline_tracker'][core_headline]['countries'])
+                    is_above_threshold = count >= GLOBAL_ALERT_THRESHOLD; is_not_sent_yet = core_headline not in global_data['sent_notifications']; has_alert_keyword = any(keyword in core_headline for keyword in GLOBAL_ALERT_KEYWORDS)
                     if is_above_threshold and is_not_sent_yet and has_alert_keyword:
-                        print(f"[AI] Headline '{core_headline}' triggered global alert. Requesting AI analysis for notification...")
-                        
-                        ai_analysis_result = analyze_headline_for_notification(core_headline)
-                        
-                        if ai_analysis_result:
-                            print(f"[AI] Analysis successful. Sending notification with AI insights.")
-                            send_global_alert(core_headline, ai_analysis_result)
-                        else:
-                            print(f"[AI] Analysis failed or returned invalid data. NOTIFICATION WILL NOT BE SENT as per rules.")
-                        
-                        global_data['sent_notifications'].add(core_headline)
+                        send_global_alert(core_headline); global_data['sent_notifications'].add(core_headline)
 
                 tension_scores = collections.defaultdict(int)
                 news_links_set = set()
@@ -603,7 +615,9 @@ HTML_TEMPLATE = """
 </head>
 <body>
 <div id="chartdiv"></div>
+
 <button id="global-ai-btn" title="Request Global Strategic Analysis">// AI GLOBAL ANALYSIS</button>
+
 <div id="infopanel">
     <div id="panel-header">
         <div id="panel-title-container">
@@ -754,9 +768,10 @@ HTML_TEMPLATE = """
         exportPdfBtn.onclick = () => exportGlobalAnalysisToPdf(data);
     }
     
+    // --- FUNGSI PDF DIMODIFIKASI ---
     function exportGlobalAnalysisToPdf(data) {
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF('p', 'pt', 'a4');
+        const doc = new jsPDF('p', 'pt', 'a4'); // Gunakan points dan A4 untuk kontrol lebih baik
         const currentDate = new Date();
         const formattedDate = currentDate.toISOString().slice(0, 10);
         const formattedTime = currentDate.toLocaleTimeString('en-GB', { hour12: false });
@@ -772,12 +787,14 @@ HTML_TEMPLATE = """
             const pageCount = doc.internal.getNumberOfPages();
             for (let i = 1; i <= pageCount; i++) {
                 doc.setPage(i);
+                // HEADER
                 doc.setFont('courier', 'bold');
                 doc.setFontSize(10);
                 doc.text('G.I.M.P.S. INTELLIGENCE DIRECTORATE', leftMargin, 30);
                 doc.text('CLASSIFICATION: CONFIDENTIAL', rightMargin, 30, { align: 'right' });
                 doc.setLineWidth(1);
                 doc.line(leftMargin, 35, rightMargin, 35);
+                // FOOTER
                 doc.setFont('courier', 'normal');
                 doc.setFontSize(8);
                 const footerText = `// CONFIDENTIAL // GIMPS AUTOGENERATED DOCUMENT //`;
@@ -788,14 +805,16 @@ HTML_TEMPLATE = """
         };
         
         const checkPageBreak = (spaceNeeded) => {
-            if (y + spaceNeeded > pageHeight - 50) {
+            if (y + spaceNeeded > pageHeight - 50) { // 50 untuk margin footer
                 doc.addPage();
-                y = 50;
+                y = 50; // Posisi Y untuk halaman baru
             }
         };
 
-        y = 60;
+        // --- AWAL DOKUMEN ---
+        y = 60; // Posisi Y awal setelah header
         
+        // Blok Judul
         doc.setFont('courier', 'bold');
         doc.setFontSize(18);
         doc.text('GLOBAL STRATEGIC BRIEFING', pageWidth / 2, y, { align: 'center' });
@@ -822,20 +841,21 @@ HTML_TEMPLATE = """
         y += 20;
 
         const addSection = (title, content) => {
-            checkPageBreak(40);
+            checkPageBreak(40); // Cek ruang untuk judul
             doc.setFont('courier', 'bold');
             doc.setFontSize(12);
             doc.text(title, leftMargin, y);
             y += 20;
             
-            checkPageBreak(20);
+            checkPageBreak(20); // Cek ruang untuk konten
             doc.setFont('courier', 'normal');
             doc.setFontSize(10);
             const splitContent = doc.splitTextToSize(content || 'No data available.', contentWidth);
             doc.text(splitContent, leftMargin, y);
-            y += (splitContent.length * 12) + 20;
+            y += (splitContent.length * 12) + 20; // 12pt line height
         };
         
+        // BAGIAN KONTEN
         addSection('1.0 EXECUTIVE SUMMARY', data.executive_summary);
         addSection('2.0 CURRENT RISK SENTIMENT', data.risk_sentiment);
         
@@ -849,7 +869,7 @@ HTML_TEMPLATE = """
             checkPageBreak(40);
             doc.setFont('courier', 'bold');
             doc.setFontSize(10);
-            doc.text(title, leftMargin + 15, y);
+            doc.text(title, leftMargin + 15, y); // Indentasi
             y += 15;
             
             checkPageBreak(20);
@@ -863,12 +883,13 @@ HTML_TEMPLATE = """
         addSubSection('3.1 Investor Guidance (Long-Term)', data.investor_guidance);
         addSubSection('3.2 Trader Guidance (Short-Term)', data.trader_guidance);
         
-        checkPageBreak(120);
+        checkPageBreak(120); // Ruang untuk tabel
         doc.setFont('courier', 'bold');
         doc.setFontSize(12);
         doc.text('4.0 KEY ASSET OUTLOOK', leftMargin, y);
         y += 20;
         
+        // Tabel manual untuk aset
         const outlook = data.asset_outlook || {};
         const tableStartY = y;
         const cellHeight = 20;
@@ -890,6 +911,7 @@ HTML_TEMPLATE = """
         y += 5;
         doc.line(leftMargin, y, rightMargin, y);
         
+        // Selesaikan dengan header dan footer di semua halaman
         addPageHeadersFooters();
         
         doc.save(`GIMPS_Global_Briefing_${formattedDate}.pdf`);
@@ -913,12 +935,14 @@ HTML_TEMPLATE = """
             const pageCount = doc.internal.getNumberOfPages();
             for (let i = 1; i <= pageCount; i++) {
                 doc.setPage(i);
+                // HEADER
                 doc.setFont('courier', 'bold');
                 doc.setFontSize(10);
                 doc.text('G.I.M.P.S. INTELLIGENCE DIRECTORATE', leftMargin, 30);
                 doc.text('CLASSIFICATION: CONFIDENTIAL', rightMargin, 30, { align: 'right' });
                 doc.setLineWidth(1);
                 doc.line(leftMargin, 35, rightMargin, 35);
+                // FOOTER
                 doc.setFont('courier', 'normal');
                 doc.setFontSize(8);
                 const footerText = `// CONFIDENTIAL // FOR INTERNAL USE ONLY //`;
@@ -935,8 +959,10 @@ HTML_TEMPLATE = """
             }
         };
         
+        // --- AWAL DOKUMEN ---
         y = 60;
         
+        // Blok Judul
         doc.setFont('courier', 'bold');
         doc.setFontSize(18);
         doc.text('COUNTRY INTELLIGENCE REPORT', pageWidth / 2, y, { align: 'center' });
@@ -1005,6 +1031,7 @@ HTML_TEMPLATE = """
             y += (splitContent.length * 12) + 15;
         };
         
+        // DATA MENTAH
         checkPageBreak(40);
         doc.setFont('courier', 'bold');
         doc.setFontSize(14);
@@ -1016,6 +1043,7 @@ HTML_TEMPLATE = """
         addListSection('1.3 Upcoming Transmissions', data.meetings, m => `[${m.date}] ${m.description}`);
         addListSection('1.4 Recent Intelligence Feed', data.news, n => n);
 
+        // ANALISIS AI
         checkPageBreak(40);
         doc.setFont('courier', 'bold');
         doc.setFontSize(14);
@@ -1032,9 +1060,11 @@ HTML_TEMPLATE = """
         addAnalysisSection('2.2 Impact Analysis:', data.analysis.impact_analysis);
         addAnalysisSection('2.3 Futures Outlook:', data.analysis.futures_outlook);
 
+        // Selesaikan
         addPageHeadersFooters();
         doc.save(`GIMPS_Report_${countryName.replace(/ /g, "_")}_${formattedDate}.pdf`);
     }
+
 
     function createTable(data, headers) { let table = '<table><thead><tr>'; headers.forEach(h => table += `<th>${h.toUpperCase()}</th>`); table += '</tr></thead><tbody>'; data.forEach(row => { table += '<tr>'; headers.forEach(h => { table += `<td>${row[h.toLowerCase().replace(/ /g, '_')] || 'N/A'}</td>`; }); table += '</tr>'; }); return table + '</tbody></table>'; }
 </script>
@@ -1048,8 +1078,9 @@ HTML_TEMPLATE = """
 if __name__ == '__main__':
     print("===============================================================")
     print(">> G.I.M.P.S (vStrategic AI) :: BOOTING...")
-    print(">> MODIFIKASI: Perbaikan bug crash pada notifikasi desktop Windows (plyer).")
-    print(">> UPDATE: Judul notifikasi sekarang dipotong otomatis untuk mencegah 'string too long'.")
+    print(">> MODIFIKASI: Notifikasi ntfy kini dilengkapi analisis AI.")
+    print(">> FITUR BARU: Ditambahkan pencegahan pengiriman notifikasi jika terjadi error pada API AI.")
+    print(">> UPDATE: Library 'openai' dihapus, diganti 'requests' untuk kompatibilitas Termux.")
     print(f">> Model AI yang digunakan: {OPENROUTER_MODEL_NAME}")
     print(">> PERINGATAN: API Key yang digunakan adalah kunci publik gratis. Performa bisa tidak stabil.")
     print(f">> Notifikasi Ponsel DIKONFIGURasi untuk topik: '{NTFY_TOPIC}'")
