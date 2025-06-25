@@ -30,7 +30,7 @@ BYBIT_API_URL = "https://api.bybit.com/v5/market"
 CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/"
 REFRESH_INTERVAL_SECONDS = 0.5
 BACKTEST_FETCH_CHUNK_LIMIT = 1000
-MAX_TRADES_IN_HISTORY = 80
+MAX_TRADES_IN_HISTORY = 800
 
 # --- STATE APLIKASI ---
 current_settings = {}
