@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("          -- REAL-TIME CHARTS EDITION --          ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("          -- REAL-TIME CHART EDITION --           ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -118,7 +118,6 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
             if len(candle_list) < 100 + 3: return None
-            # Pastikan data diurutkan dari yang terlama ke terbaru untuk chart
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
         return None
     except (requests.exceptions.RequestException, Exception): return None
@@ -297,7 +296,7 @@ def data_refresh_worker():
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
 # --- TEMPLATE HTML DENGAN PERUBAHAN CSS ---
-HTML_SKELETON_WITH_CHARTS = """
+HTML_SKELETON_CHART = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -321,27 +320,27 @@ HTML_SKELETON_WITH_CHARTS = """
         .action-btn:hover { background-color: var(--border-color); }
         .action-btn.ai-status.running { color: var(--green); }
         .action-btn.ai-status.stopped { color: var(--red); }
+        .chart-container { width: 100%; height: 400px; margin-bottom: 2rem; border-radius: 12px; background-color: var(--card-color); border: 1px solid var(--border-color); }
         .pnl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; }
         .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; transition: transform 0.2s ease; }
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
-        .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.5rem; }
-        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+        .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
+        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; transition: background-color 0.2s; }
+        .pair-card:hover { background-color: var(--border-color); }
+        .pair-card.active { border-color: var(--accent-primary); }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
-        .pair-content { padding: 1rem 1.5rem; }
-        .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; }
+        .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
         .pair-price { font-size: 1.25rem; color: var(--text-muted); }
-        .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem; }
-        .chart-container { width: 100%; height: 220px; }
-        .action-area { padding: 1.5rem; border-top: 1px solid var(--border-color); }
+        .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
         .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
         .btn-long { background-color: var(--green); color: #fff; }
         .btn-short { background-color: var(--red); color: #fff; }
         .btn-close { background-color: var(--yellow); color: var(--bg-color); }
-        .position-info { text-align: center; }
+        .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
         .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
         .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
         .history-list { list-style: none; padding: 0; }
@@ -375,6 +374,7 @@ HTML_SKELETON_WITH_CHARTS = """
 <body>
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
+        <div id="chart-container" class="chart-container"></div>
         <section id="pnl-stats" class="pnl-stats"></section>
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
@@ -383,7 +383,8 @@ HTML_SKELETON_WITH_CHARTS = """
         <div class="settings-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
-                <h3>Parameters</h3><div class="form-grid">
+                <h3>Parameters</h3>
+                <div class="form-grid">
                     <div class="form-group"><label for="fee_pct">Fee (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
                     <div class="form-group"><label for="stop_loss_pct">Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div>
                     <div class="form-group"><label for="trailing_tp_activation_pct">TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
@@ -391,89 +392,94 @@ HTML_SKELETON_WITH_CHARTS = """
                     <div class="form-group"><label for="max_allowed_funding_rate_pct">Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
                     <div class="form-group"><label for="analysis_interval_sec">AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
                     <div class="form-group"><label for="caution_level">Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div>
-                </div><h3>Watchlist</h3><div class="watchlist-manage"><ul id="watchlist-list"></ul>
-                    <div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label><div style="display:flex; gap:1rem;"><input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;"><button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button></div></div>
-                </div><button type="submit" class="action-btn" style="width:100%; margin-top: 2rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Settings</button>
+                </div>
+                <h3>Watchlist</h3>
+                <div class="watchlist-manage"><ul id="watchlist-list"></ul>
+                    <div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label>
+                        <div style="display:flex; gap:1rem;">
+                            <input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;">
+                            <button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button>
+                        </div>
+                    </div>
+                </div>
+                <button type="submit" class="action-btn" style="width:100%; margin-top: 2rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Settings</button>
             </form>
         </div>
     </div>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT = '/api/data'; const REFRESH_INTERVAL_MS = 3000;
-            const charts = {};
-            const chartOptions = {
-                layout: { backgroundColor: 'var(--card-color)', textColor: 'var(--text-muted)' },
-                grid: { vertLines: { color: 'var(--border-color)' }, horzLines: { color: 'var(--border-color)' } },
-                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                rightPriceScale: { borderColor: 'var(--border-color)' },
-                timeScale: { borderColor: 'var(--border-color)', timeVisible: true, secondsVisible: false }
-            };
+            const chartContainer = document.getElementById('chart-container');
+            let chart = null, candleSeries = null, currentChartPair = '';
 
-            const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
-            const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
-            const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
+            const formatPercent=v=>typeof v==='number'?v.toFixed(2)+'%':'N/A'; const formatPrice=v=>typeof v==='number'?(v<1?v.toPrecision(4):v.toFixed(2)):'N/A'; const getColorClass=v=>v>0?'text-green':(v<0?'text-red':'');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
+            async function initChart(pair) {
+                if (currentChartPair === pair && chart) return;
+                currentChartPair = pair;
+                if (chart) { chart.remove(); chart = null; }
+                document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active'));
+                const card = document.querySelector(`.pair-card[data-pair="${pair}"]`);
+                if(card) card.classList.add('active');
+
+                chart = LightweightCharts.createChart(chartContainer, {
+                    width: chartContainer.clientWidth, height: chartContainer.clientHeight,
+                    layout: { backgroundColor: 'var(--bg-color)', textColor: 'var(--text-muted)' },
+                    grid: { vertLines: { color: 'var(--border-color)' }, horzLines: { color: 'var(--border-color)' } },
+                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    rightPriceScale: { borderColor: 'var(--border-color)' },
+                    timeScale: { borderColor: 'var(--border-color)', timeVisible: true, secondsVisible: false }
+                });
+                candleSeries = chart.addCandlestickSeries({ upColor: 'var(--green)', downColor: 'var(--red)', wickUpColor: 'var(--green)', wickDownColor: 'var(--red)', borderVisible: false });
+                
+                const response = await fetch(`/api/historical_candles/${pair}`);
+                const historyData = await response.json();
+                const formattedData = historyData.map(d => ({ time: d.time / 1000, open: d.open, high: d.high, low: d.low, close: d.close }));
+                candleSeries.setData(formattedData);
+                chart.timeScale().fitContent();
+            }
+
             const updateUI = data => {
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                
-                const watchlistEl = document.getElementById('watchlist');
-                const seenPairs = new Set();
-
+                const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    seenPairs.add(p);
-                    const candleData = (d.candle_data || []).map(c => ({ time: c.time / 1000, open: c.open, high: c.high, low: c.low, close: c.close }));
-
-                    if (!charts[p]) { // Buat kartu dan chart jika belum ada
-                        const card = document.createElement('div');
-                        card.id = `card-${p}`;
-                        card.className = `pair-card`;
-                        watchlistEl.appendChild(card);
-                        
-                        const chartContainer = document.createElement('div');
-                        chartContainer.id = `chart-${p}`;
-                        chartContainer.className = 'chart-container';
-                        
-                        const chart = LightweightCharts.createChart(chartContainer, {...chartOptions, width: chartContainer.clientWidth, height: chartContainer.clientHeight });
-                        const series = chart.addCandlestickSeries({ upColor: 'var(--green)', downColor: 'var(--red)', wickUpColor: 'var(--green)', wickDownColor: 'var(--red)', borderVisible: false });
-                        charts[p] = { chart, series, card };
-                        series.setData(candleData);
-                    }
-                    
-                    // Selalu update elemen non-chart dan chart
-                    const { chart, series, card } = charts[p];
-                    card.className = `pair-card ${d.open_position ? 'position-open' : ''}`;
-                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                    card.innerHTML = `<div class="pair-content"><div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div></div><div id="chart-${p}" class="chart-container"></div><div class="action-area">${actionHTML}</div>`;
-                    
-                    const chartContainer = document.getElementById(`chart-${p}`);
-                    chart.applyOptions({ width: chartContainer.clientWidth }); // Ensure responsive resize
-                    chart.timeScale().fitContent();
-
-                    if(candleData.length > 0) series.update(candleData[candleData.length - 1]);
+                    const card = document.createElement('div');
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${currentChartPair === p ? 'active' : ''}`;
+                    card.dataset.pair = p;
+                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
+                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                    watchlistEl.appendChild(card);
                 });
-
-                // Hapus chart untuk pair yang sudah tidak ada di watchlist
-                Object.keys(charts).forEach(p => {
-                    if (!seenPairs.has(p)) {
-                        charts[p].chart.remove();
-                        charts[p].card.remove();
-                        delete charts[p];
-                    }
-                });
-
-                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                if (candleSeries && data.market_data[currentChartPair] && data.market_data[currentChartPair].latest_candle) {
+                    const latestCandle = data.market_data[currentChartPair].latest_candle;
+                    candleSeries.update({ time: latestCandle.time / 1000, open: latestCandle.open, high: latestCandle.high, low: latestCandle.low, close: latestCandle.close });
+                }
+                document.getElementById('history-list').innerHTML = data.trades.map((t, i) => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
-                    if (k === 'watched_pairs') {
-                        document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
+                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
                     } else { const i = document.getElementById(`s-${k}`); if(i && document.activeElement!==i) i.value=v; }
                 });
             };
-            let lastDataJSON = '';
-            const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); const dataJSON = await res.text(); if(dataJSON !== lastDataJSON) { lastDataJSON = dataJSON; updateUI(JSON.parse(dataJSON)); }} catch(e) { console.error("Update failed:", e); }};
+            let lastDataJSON = ''; let isFirstLoad = true;
+            const fetchData = async () => {
+                try {
+                    const res = await fetch(API_ENDPOINT); const dataJSON = await res.text();
+                    if(dataJSON !== lastDataJSON) { 
+                        lastDataJSON = dataJSON; 
+                        const data = JSON.parse(dataJSON);
+                        if (isFirstLoad && Object.keys(data.settings.watched_pairs).length > 0) {
+                            await initChart(Object.keys(data.settings.watched_pairs)[0]);
+                            isFirstLoad = false;
+                        }
+                        updateUI(data); 
+                    }
+                } catch(e) { console.error("Update failed:", e); }
+            };
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
+            document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card) initChart(card.dataset.pair); });
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
             const modal=document.getElementById('settings-modal');
             document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
@@ -481,6 +487,7 @@ HTML_SKELETON_WITH_CHARTS = """
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())); modal.classList.remove('visible'); });
+            window.addEventListener('resize', () => { if(chart) { chart.resize(chartContainer.clientWidth, chartContainer.clientHeight); }});
             fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
@@ -490,7 +497,7 @@ HTML_SKELETON_WITH_CHARTS = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_WITH_CHARTS)
+def dashboard(): return render_template_string(HTML_SKELETON_CHART)
 
 @app.route('/api/data')
 def get_api_data():
@@ -499,12 +506,27 @@ def get_api_data():
     fee_pct = settings_copy.get('fee_pct', 0.1)
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
-        current_price = pair_state.get("candle_data", [{}])[-1].get('close', 0.0) if pair_state.get("candle_data") else 0.0
+        candle_data = pair_state.get("candle_data", [])
+        current_price = candle_data[-1].get('close', 0.0) if candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "candle_data": pair_state.get("candle_data", [])}
+        market_data_view[pair_id] = {
+            "price": current_price, 
+            "funding": pair_state.get("funding_rate", 0.0), 
+            "timeframe": timeframe, 
+            "open_position": open_pos, 
+            "pnl": pnl,
+            "latest_candle": candle_data[-1] if candle_data else None # Tambahkan candle terbaru
+        }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
+
+@app.route('/api/historical_candles/<pair_id>')
+def get_historical_candles(pair_id):
+    """Endpoint baru untuk menyediakan data historis untuk chart."""
+    if pair_id in market_state and "candle_data" in market_state[pair_id]:
+        return jsonify(market_state[pair_id]["candle_data"])
+    return jsonify([])
 
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
@@ -512,6 +534,7 @@ def toggle_ai():
     is_autopilot_running = not is_autopilot_running
     print_colored(f"Autopilot {'diaktifkan' if is_autopilot_running else 'dimatikan'} dari Web UI.", Fore.YELLOW)
     return jsonify(success=True)
+
 @app.route('/trade/manual', methods=['POST'])
 def trade_manual():
     data = request.form; pair = data.get('pair'); trade_type = data.get('type')
@@ -533,6 +556,7 @@ def trade_manual():
         trades.insert(0, new_trade)
         print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
+
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
@@ -544,6 +568,7 @@ def trade_close():
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
     close_trade_sync(trade_to_close, current_price, "Manual Close")
     return jsonify(success=True)
+
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
     global current_settings
@@ -554,6 +579,7 @@ def update_settings():
                 except ValueError: pass
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
+
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
     pair = request.form.get('pair'); tf = request.form.get('tf', '1H')
@@ -561,6 +587,7 @@ def add_watchlist():
         with state_lock: current_settings['watched_pairs'][pair] = tf; save_settings()
         print_colored(f"{pair} ({tf}) ditambahkan ke watchlist.", Fore.GREEN)
     return jsonify(success=True)
+
 @app.route('/api/watchlist/remove', methods=['POST'])
 def remove_watchlist():
     pair = request.form.get('pair')
