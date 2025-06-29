@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("      -- ZOOM & PAN CHART CONTROLS EDITION --     ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- PERSISTENT ZOOM CHART EDITION --       ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -415,44 +415,38 @@ HTML_SKELETON_WITH_CHART = """
                 const emaSeries = marketData[pair].ema9_data || [];
                 const currentPrice = marketData[pair].price;
 
-                const newOptions = {
-                    series: [ { name: 'Price', type: 'candlestick', data: candleSeries }, { name: 'EMA 9', type: 'line', data: emaSeries } ],
-                    // --- PERUBAHAN ANNOTATIONS DI SINI ---
-                    annotations: {
-                        yaxis: [{
-                            y: currentPrice,
-                            borderColor: 'var(--accent-primary)',
-                            strokeDashArray: 2,
-                            label: {
-                                borderColor: 'var(--accent-primary)',
-                                style: { color: '#fff', background: 'var(--accent-primary)' },
-                                text: `Current: ${formatPrice(currentPrice)}`,
-                                position: 'left', // Pindahkan ke kiri
-                                textAnchor: 'start', // Mulai teks dari kiri
-                                offsetX: 10 // Beri sedikit padding
-                            }
-                        }]
-                    }
-                };
-                
                 if (!chart) {
                     const options = {
-                        theme: { mode: 'dark' }, stroke: { width: [1, 1.5] },
-                        // --- PERUBAHAN TOOLBAR & ANIMASI DI SINI ---
-                        chart: { 
-                            type: 'candlestick', height: 350, background: 'transparent', 
-                            toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' },
-                            animations: { enabled: false } // Matikan animasi untuk interaksi cepat
-                        },
+                        series: [{ name: 'Price', type: 'candlestick', data: candleSeries }, { name: 'EMA 9', type: 'line', data: emaSeries }],
+                        theme: { mode: 'dark' }, stroke: { width: [1, 1.5], curve: 'smooth' },
+                        chart: { type: 'line', height: 350, background: 'transparent', toolbar: { show: true, tools: { download: false } }, animations: { enabled: false } },
                         xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
                         yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
                         grid: { borderColor: 'var(--border-color)' },
                         tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
                         legend: { show: false }
                     };
-                    chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
+                    chart = new ApexCharts(document.querySelector("#chart-container"), options);
                     chart.render();
-                } else { chart.updateOptions(newOptions); }
+                } else {
+                    chart.updateSeries([ { data: candleSeries }, { data: emaSeries } ]);
+                }
+                
+                // --- LOGIKA BARU: Update annotations secara terpisah ---
+                chart.clearAnnotations();
+                chart.addYaxisAnnotation({
+                    y: currentPrice,
+                    borderColor: 'var(--accent-primary)',
+                    strokeDashArray: 4,
+                    label: {
+                        borderColor: 'var(--accent-primary)',
+                        style: { color: '#fff', background: 'var(--accent-primary)' },
+                        text: `Current: ${formatPrice(currentPrice)}`,
+                        position: 'left',
+                        textAnchor: 'start',
+                        offsetX: 10
+                    }
+                });
             };
 
             const updateUI = data => {
@@ -584,7 +578,7 @@ def update_settings():
             if key in current_settings and key != 'watched_pairs':
                 try: current_settings[key] = float(value) if '.' in value else int(value)
                 except ValueError: pass
-        save_settings()
+        save_trades()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
 
 @app.route('/api/watchlist/add', methods=['POST'])
