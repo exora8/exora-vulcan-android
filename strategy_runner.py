@@ -25,16 +25,14 @@ except ImportError:
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
-CRYPTOCOMPARE_API_URL = "https://min-api.cryptocompare.com/data/v2/"
 REFRESH_INTERVAL_SECONDS = 0.5
 MAX_TRADES_IN_HISTORY = 80
 
 # --- STATE APLIKASI ---
 current_settings = {}
-autopilot_trades = []
+trades = [] # Diganti dari autopilot_trades menjadi trades
 market_state = {}
 is_ai_thinking = False
-is_autopilot_in_cooldown = {}
 is_autopilot_running = True # Default AI ON
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
@@ -65,16 +63,19 @@ def display_welcome_message():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
+    # Pengaturan CryptoCompare dihapus
     default_settings = {
         "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10,
         "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05,
         "caution_level": 0.5, "target_winrate_pct": 85.0,
-        "cryptocompare_api_key": "YOUR_CRYPTOCOMPARE_API_KEY",
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"}
     }
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f: loaded_settings = json.load(f)
+            # Membersihkan key lama yang mungkin masih ada di file settings pengguna
+            if 'cryptocompare_api_key' in loaded_settings:
+                del loaded_settings['cryptocompare_api_key']
             for key, value in default_settings.items():
                 if key not in loaded_settings: loaded_settings[key] = value
             current_settings = loaded_settings
@@ -86,22 +87,22 @@ def save_settings():
         with open(SETTINGS_FILE, 'w') as f: json.dump(current_settings, f, indent=4)
     except IOError as e: print_colored(f"Error saving settings: {e}", Fore.RED)
 def load_trades():
-    global autopilot_trades
+    global trades
     if os.path.exists(TRADES_FILE):
         try:
-            with open(TRADES_FILE, 'r') as f: autopilot_trades = json.load(f)
-        except (json.JSONDecodeError, IOError): autopilot_trades = []
-    else: autopilot_trades = []
+            with open(TRADES_FILE, 'r') as f: trades = json.load(f)
+        except (json.JSONDecodeError, IOError): trades = []
+    else: trades = []
 def save_trades():
+    global trades
     with state_lock:
-        autopilot_trades.sort(key=lambda x: x['entryTimestamp'], reverse=True)
-        if len(autopilot_trades) > MAX_TRADES_IN_HISTORY: autopilot_trades = autopilot_trades[:MAX_TRADES_IN_HISTORY]
+        trades.sort(key=lambda x: x['entryTimestamp'], reverse=True)
+        if len(trades) > MAX_TRADES_IN_HISTORY: trades = trades[:MAX_TRADES_IN_HISTORY]
         try:
-            with open(TRADES_FILE, 'w') as f: json.dump(autopilot_trades, f, indent=4)
+            with open(TRADES_FILE, 'w') as f: json.dump(trades, f, indent=4)
         except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
 
-# --- FUNGSI API, KALKULASI, AI, THREAD WORKERS (Tidak ada perubahan di blok ini) ---
-# ... [Blok kode dari fetch_funding_rate hingga data_refresh_worker tidak diubah sama sekali] ...
+# --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
 def fetch_funding_rate(instId):
     bybit_symbol = instId.replace('-', '')
     try:
@@ -122,8 +123,7 @@ def fetch_recent_candles(instId, timeframe, limit=300):
             if len(candle_list) < 100 + 3: return None
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
         return None
-    except requests.exceptions.RequestException: return None
-    except Exception: return None
+    except (requests.exceptions.RequestException, Exception): return None
 def calculate_pnl(entry_price, current_price, trade_type):
     if entry_price == 0: return 0.0
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
@@ -235,15 +235,15 @@ async def run_autopilot_analysis(instrument_id):
     if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 3: return
     is_ai_thinking = True
     try:
-        with state_lock: open_pos = next((t for t in autopilot_trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
-        relevant_trades = [t for t in autopilot_trades if t['instrumentId'] == instrument_id]
-        ai = LocalAI(current_settings, relevant_trades)
+        with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
+        relevant_trades_history = [t for t in trades if t['instrumentId'] == instrument_id]
+        ai = LocalAI(current_settings, relevant_trades_history)
         funding_rate = pair_state.get("funding_rate", 0.0)
         decision = ai.get_decision(pair_state["candle_data"], open_pos, funding_rate)
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
-            new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "run_up_percent": 0.0, "max_drawdown_percent": 0.0, "trailing_stop_price": None, "current_tp_checkpoint_level": 0.0, "exitPrice": None, "pl_percent": None }
-            with state_lock: autopilot_trades.insert(0, new_trade)
+            new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "exitPrice": None, "pl_percent": None }
+            with state_lock: trades.insert(0, new_trade)
             save_trades()
             notif_title = f"🟢 Posisi {new_trade['type']} Dibuka: {instrument_id}"; notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | {decision.get('reason')}"
             send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.GREEN)
@@ -257,31 +257,29 @@ def autopilot_worker():
 async def check_realtime_position_management(trade_obj, current_candle_data):
     if not trade_obj: return
     with state_lock:
-        if trade_obj['type'] == 'LONG':
-            pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'LONG'); pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'LONG')
-            if pnl_at_high > trade_obj.get('run_up_percent', 0.0): trade_obj['run_up_percent'] = pnl_at_high
-            if pnl_at_low < trade_obj.get('max_drawdown_percent', 0.0): trade_obj['max_drawdown_percent'] = pnl_at_low
-        elif trade_obj['type'] == 'SHORT':
-            pnl_at_low = calculate_pnl(trade_obj['entryPrice'], current_candle_data['low'], 'SHORT'); pnl_at_high = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high'], 'SHORT')
-            if pnl_at_low > trade_obj.get('run_up_percent', 0.0): trade_obj['run_up_percent'] = pnl_at_low
-            if pnl_at_high < trade_obj.get('max_drawdown_percent', 0.0): trade_obj['max_drawdown_percent'] = pnl_at_high
-        sl_pct = current_settings.get('stop_loss_pct')
-        sl_price = trade_obj['entryPrice'] * (1 - abs(sl_pct) / 100) if trade_obj['type'] == 'LONG' else trade_obj['entryPrice'] * (1 + abs(sl_pct) / 100)
-        if (trade_obj['type'] == 'LONG' and current_candle_data['low'] <= sl_price) or (trade_obj['type'] == 'SHORT' and current_candle_data['high'] >= sl_price):
-            await analyze_and_close_trade(trade_obj, sl_price, f"Stop Loss @ {-abs(sl_pct):.2f}%"); return
+        if trade_obj.get('type') == 'LONG':
+            sl_price = trade_obj['entryPrice'] * (1 - current_settings.get('stop_loss_pct') / 100)
+            if current_candle_data['low'] <= sl_price:
+                await analyze_and_close_trade(trade_obj, sl_price, f"Stop Loss @ {-current_settings.get('stop_loss_pct'):.2f}%"); return
+        elif trade_obj.get('type') == 'SHORT':
+            sl_price = trade_obj['entryPrice'] * (1 + current_settings.get('stop_loss_pct') / 100)
+            if current_candle_data['high'] >= sl_price:
+                await analyze_and_close_trade(trade_obj, sl_price, f"Stop Loss @ {-current_settings.get('stop_loss_pct'):.2f}%"); return
+        
         activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
-        if trade_obj.get("current_tp_checkpoint_level", 0.0) > 0.0:
-            ts_price = trade_obj.get('trailing_stop_price')
-            if ts_price is not None and ((trade_obj['type'] == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj['type'] == 'SHORT' and current_candle_data['high'] >= ts_price)):
-                await analyze_and_close_trade(trade_obj, ts_price, f"Trailing TP"); return
-        pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj['type'] == 'LONG' else 'low'], trade_obj['type'])
+        pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
         if pnl_now >= activation_pct:
             current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
             if current_cp == 0.0: current_cp = activation_pct
             steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
             if steps_passed >= 0:
                 new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
-                new_ts_level = new_cp - gap_pct; trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj['type'] == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+                new_ts_level = new_cp - gap_pct; trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj.get('type') == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+        
+        ts_price = trade_obj.get('trailing_stop_price')
+        if ts_price is not None:
+            if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+                await analyze_and_close_trade(trade_obj, ts_price, f"Trailing TP"); return
     save_trades()
 def data_refresh_worker():
     while not stop_event.is_set():
@@ -291,151 +289,94 @@ def data_refresh_worker():
             market_state[pair_id]['funding_rate'] = funding_rate if funding_rate is not None else market_state[pair_id].get('funding_rate', 0.0)
             if candle_data:
                 market_state[pair_id]["candle_data"] = candle_data
-                with state_lock: open_pos = next((t for t in autopilot_trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
                 if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
             time.sleep(0.2)
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
 # --- TEMPLATE HTML DENGAN UI MEWAH & MODAL SETTINGS ---
-HTML_SKELETON_V4 = """
+HTML_SKELETON_FINAL = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vulcan AI Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root {
-            --bg-color: #121212; --card-color: #1E1E1E; --border-color: #333; --text-color: #EAEAEA;
-            --text-muted: #888; --green: #34D399; --red: #F87171; --yellow: #FBBF24;
-            --accent-primary: #60A5FA; --accent-secondary: #C4B5FD;
-        }
+        :root { --bg-color: #121212; --card-color: #1E1E1E; --border-color: #333; --text-color: #EAEAEA; --text-muted: #888; --green: #34D399; --red: #F87171; --yellow: #FBBF24; --accent-primary: #60A5FA; }
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; font-size: 16px; }
-        body {
-            background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif;
-            margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
-        }
+        body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
         .container { max-width: 1200px; margin: 0 auto; }
         h1, h2 { font-weight: 600; letter-spacing: -0.5px; }
         h1 { margin: 0; font-size: 1.75rem; }
         h2 { margin-top: 2.5rem; margin-bottom: 1.5rem; font-size: 1.25rem; color: var(--text-muted); }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
-        
         .header-actions { display: flex; gap: 1rem; }
-        .action-btn {
-            background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color);
-            padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer;
-            transition: background-color 0.2s ease, border-color 0.2s ease;
-        }
+        .action-btn { background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease; }
         .action-btn:hover { background-color: var(--border-color); }
-        .action-btn.ai-status.running { color: var(--green); border-color: var(--green); }
-        .action-btn.ai-status.stopped { color: var(--red); border-color: var(--red); }
-        
+        .action-btn.ai-status.running { color: var(--green); }
+        .action-btn.ai-status.stopped { color: var(--red); }
         .pnl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; }
         .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; transition: transform 0.2s ease; }
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
-        
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
-        .pair-card {
-            background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px;
-            padding: 1.5rem; display: flex; flex-direction: column; transition: transform 0.3s ease, background-color 0.3s ease;
-            opacity: 0; transform: translateY(20px); animation: fadeInUp 0.5s ease forwards;
-        }
+        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; transition: transform 0.3s ease, background-color 0.3s ease; opacity: 0; transform: translateY(20px); animation: fadeInUp 0.5s ease forwards; }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
         .pair-price { font-size: 1.25rem; color: var(--text-muted); }
         .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
-        .manual-trade-btns { display: flex; gap: 1rem; margin-top: auto; }
-        .btn {
-            flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600;
-            cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;
-        }
+        .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
         .btn-long { background-color: var(--green); color: #fff; }
         .btn-short { background-color: var(--red); color: #fff; }
         .btn-close { background-color: var(--yellow); color: var(--bg-color); }
-        
         .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
         .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
         .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
-        
         .history-list { list-style: none; padding: 0; }
-        .history-item {
-            background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px;
-            padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
-            gap: 1rem; opacity: 0; transform: translateY(20px); animation: fadeInUp 0.5s ease forwards;
-        }
+        .history-item { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; opacity: 0; transform: translateY(20px); animation: fadeInUp 0.5s ease forwards; }
         .history-main { display: flex; align-items: center; gap: 1rem; }
         .history-type { font-weight: 600; font-size: 1.1rem; }
         .history-pair { color: var(--text-muted); }
         .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
         .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
-        .text-green { color: var(--green); } .text-red { color: var(--red); }
-        
-        .settings-modal {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px);
-            display: none; justify-content: center; align-items: center; z-index: 1000;
-            opacity: 0; transition: opacity 0.3s ease;
-        }
+        .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
         .settings-modal.visible { display: flex; opacity: 1; }
-        .settings-content {
-            background-color: var(--card-color); color: var(--text-color); border: 1px solid var(--border-color);
-            border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px;
-            max-height: 90vh; overflow-y: auto;
-        }
-        .settings-content h2 { margin-top: 0; }
+        .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+        .settings-content h3 { margin-top: 2rem; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
-        .form-group input {
-            background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color);
-            padding: 0.75rem; border-radius: 8px; font-size: 1rem;
-        }
+        .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
         .watchlist-manage ul { list-style: none; padding: 0; }
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
-        
+        .text-green { color: var(--green); } .text-red { color: var(--red); }
         @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
             .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
-            .stat-item, .pair-card { padding: 1rem; }
             .history-item { flex-direction: column; align-items: flex-start; }
             .history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
         }
     </style>
 </head>
 <body>
-    <div class="container" id="main-container">
-        <header class="header">
-            <h1>Vulcan AI</h1>
-            <div class="header-actions">
-                <button id="ai-status-btn" class="action-btn ai-status"></button>
-                <button id="settings-btn" class="action-btn">Settings</button>
-            </div>
-        </header>
+    <div class="container">
+        <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <h2>Watchlist</h2>
-        <section id="watchlist" class="watchlist"></section>
-        <h2>Recent History</h2>
-        <ul id="history-list" class="history-list"></ul>
+        <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
+        <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
-
-    <!-- Settings Modal -->
     <div id="settings-modal" class="settings-modal">
         <div class="settings-content">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h2>Settings</h2>
-                <button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button>
-            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
                 <h3>Parameters</h3>
                 <div class="form-grid">
@@ -446,16 +387,11 @@ HTML_SKELETON_V4 = """
                     <div class="form-group"><label for="max_allowed_funding_rate_pct">Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
                     <div class="form-group"><label for="analysis_interval_sec">AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
                 </div>
-                <div class="form-group" style="margin-top: 1.5rem;"><label for="cryptocompare_api_key">CryptoCompare API Key</label><input type="text" name="cryptocompare_api_key" id="s-cryptocompare_api_key"></div>
-                
-                <h3 style="margin-top: 2rem;">Watchlist</h3>
-                <div class="watchlist-manage">
-                    <ul id="watchlist-list"></ul>
-                    <div class="form-group" style="margin-top:1rem;">
-                        <label>Add New Pair (e.g., BTC-USDT)</label>
+                <h3>Watchlist</h3>
+                <div class="watchlist-manage"><ul id="watchlist-list"></ul>
+                    <div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label>
                         <div style="display:flex; gap:1rem;">
-                            <input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;">
-                            <input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;">
+                            <input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;">
                             <button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button>
                         </div>
                     </div>
@@ -464,122 +400,49 @@ HTML_SKELETON_V4 = """
             </form>
         </div>
     </div>
-    
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const API_ENDPOINT = '/api/data';
-            const REFRESH_INTERVAL_MS = 3000;
-            let lastData = {}; // Cache to compare new data
-
-            const formatPercent = val => typeof val === 'number' ? val.toFixed(2) + '%' : 'N/A';
-            const formatPrice = val => typeof val === 'number' ? (val < 1 ? val.toPrecision(4) : val.toFixed(2)) : 'N/A';
-            const getColorClass = val => val > 0 ? 'text-green' : (val < 0 ? 'text-red' : '');
-            const postRequest = async (url, data) => {
-                try {
-                    await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) });
-                } catch (error) { console.error(`POST to ${url} failed:`, error); }
+            const API_ENDPOINT = '/api/data'; const REFRESH_INTERVAL_MS = 3000;
+            const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
+            const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
+            const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
+            const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
+            const updateUI = data => {
+                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
+                document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
+                document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
+                const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
+                Object.entries(data.market_data).forEach(([p, d], i) => {
+                    const card = document.createElement('div');
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''}`;
+                    card.style.animationDelay = `${i * 50}ms`;
+                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
+                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                    watchlistEl.appendChild(card);
+                });
+                document.getElementById('history-list').innerHTML = data.trades.map((t, i) => `<li class="history-item" style="animation-delay:${i*50}ms;"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                Object.entries(data.settings).forEach(([k, v]) => {
+                    const i = document.getElementById(`s-${k}`);
+                    if(i && document.activeElement!==i) i.value=v;
+                });
+                document.getElementById('watchlist-list').innerHTML = Object.entries(data.settings.watched_pairs).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
             };
-            
-            async function updateDashboard() {
+            let lastDataJSON = '';
+            const fetchData = async () => {
                 try {
-                    const response = await fetch(API_ENDPOINT);
-                    if (!response.ok) return;
-                    const data = await response.json();
-                    
-                    // Only update if data has changed to prevent unnecessary re-renders
-                    if (JSON.stringify(data) === JSON.stringify(lastData)) return;
-                    lastData = data;
-
-                    // AI Status Button
-                    const aiBtn = document.getElementById('ai-status-btn');
-                    aiBtn.textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
-                    aiBtn.className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
-                    
-                    // PNL Stats
-                    document.getElementById('pnl-stats').innerHTML = `
-                        <div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div>
-                        <div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div>
-                        <div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                    
-                    // Watchlist
-                    const watchlistContainer = document.getElementById('watchlist');
-                    watchlistContainer.innerHTML = ''; // Rebuild for simplicity
-                    Object.entries(data.market_data).forEach(([pair, pairData], index) => {
-                        const card = document.createElement('div');
-                        card.className = `pair-card ${pairData.open_position ? 'position-open' : ''}`;
-                        card.style.animationDelay = `${index * 50}ms`;
-                        let actionHTML = pairData.open_position ? `
-                            <div class="position-info">
-                                <div class="position-header">${pairData.open_position.type} POSITION</div>
-                                <div class="position-pnl ${getColorClass(pairData.pnl)}">${formatPercent(pairData.pnl)}</div>
-                                <div style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">Entry @ ${formatPrice(pairData.open_position.entryPrice)}</div>
-                                <form class="trade-form" data-url="/trade/close" data-body='{"trade_id": "${pairData.open_position.id}"}'><button type="submit" class="btn btn-close">Close Position</button></form>
-                            </div>` : `
-                            <div class="manual-trade-btns">
-                                <form class="trade-form" data-url="/trade/manual" data-body='{"pair": "${pair}", "type": "LONG"}'><button type="submit" class="btn btn-long">Long</button></form>
-                                <form class="trade-form" data-url="/trade/manual" data-body='{"pair": "${pair}", "type": "SHORT"}'><button type="submit" class="btn btn-short">Short</button></form>
-                            </div>`;
-                        card.innerHTML = `<div class="pair-header"><span class="pair-name">${pair}</span><span class="pair-price">${formatPrice(pairData.price)}</span></div>
-                            <div class="pair-info"><span>Timeframe: <strong>${pairData.timeframe}</strong></span><span>Funding: <strong class="${pairData.funding > 0.01 ? 'text-red' : ''}">${formatPercent(pairData.funding)}</strong></span></div>
-                            ${actionHTML}`;
-                        watchlistContainer.appendChild(card);
-                    });
-
-                    // History
-                    document.getElementById('history-list').innerHTML = data.trades.map((trade, index) => {
-                        const pnlNet = trade.pl_percent !== null ? trade.pl_percent - data.settings.fee_pct : null;
-                        return `<li class="history-item" style="animation-delay: ${index * 50}ms;">
-                            <div class="history-main"><span class="history-type ${trade.type === 'LONG' ? 'text-green' : 'text-red'}">${trade.type}</span><span class="history-pair">${trade.instrumentId}</span></div>
-                            <div class="history-pnl ${getColorClass(pnlNet)}">${trade.status === 'CLOSED' ? formatPercent(pnlNet) : 'OPEN'}</div>
-                            <div class="history-details">Entry @ ${formatPrice(trade.entryPrice)} • ${trade.entryReason.split('\\n')[0]}</div></li>`;
-                    }).join('');
-
-                    // Populate Settings Modal
-                    Object.entries(data.settings).forEach(([key, value]) => {
-                        const input = document.getElementById(`s-${key}`);
-                        if (input && document.activeElement !== input) {
-                            if (typeof value === 'object' && key === 'watched_pairs') {
-                                document.getElementById('watchlist-list').innerHTML = Object.entries(value).map(([p, tf]) => `<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
-                            } else if (input) { input.value = value; }
-                        }
-                    });
-
-                } catch (error) { console.error("Update failed:", error); }
-            }
-            
-            // Event Listeners using delegation
-            document.body.addEventListener('submit', e => {
-                if (e.target.matches('.trade-form')) {
-                    e.preventDefault();
-                    const form = e.target;
-                    postRequest(form.dataset.url, JSON.parse(form.dataset.body.replace(/'/g, '"')));
-                }
-            });
-            document.getElementById('watchlist-list').addEventListener('click', e => {
-                if (e.target.matches('.btn-remove')) {
-                    postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair});
-                }
-            });
-
-            // Settings Modal Logic
-            const modal = document.getElementById('settings-modal');
-            document.getElementById('settings-btn').addEventListener('click', () => modal.classList.add('visible'));
-            document.getElementById('close-settings-btn').addEventListener('click', () => modal.classList.remove('visible'));
-            document.getElementById('ai-status-btn').addEventListener('click', () => postRequest('/toggle-ai', {}));
-            document.getElementById('add-pair-btn').addEventListener('click', () => {
-                const pair = document.getElementById('new-pair-input').value.toUpperCase();
-                const tf = document.getElementById('new-tf-input').value;
-                if(pair) postRequest('/api/watchlist/add', {pair, tf});
-            });
-            document.getElementById('settings-form').addEventListener('submit', e => {
-                e.preventDefault();
-                const formData = new FormData(e.target);
-                const settingsData = Object.fromEntries(formData.entries());
-                postRequest('/api/settings', settingsData);
-                modal.classList.remove('visible');
-            });
-
-            updateDashboard(); setInterval(updateDashboard, REFRESH_INTERVAL_MS);
+                    const res = await fetch(API_ENDPOINT); const dataJSON = await res.text();
+                    if(dataJSON !== lastDataJSON) { lastDataJSON = dataJSON; updateUI(JSON.parse(dataJSON)); }
+                } catch(e) { console.error("Update failed:", e); }
+            };
+            document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
+            document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
+            const modal=document.getElementById('settings-modal');
+            document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
+            document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
+            document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
+            document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{p,tf});});
+            document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())); modal.classList.remove('visible'); });
+            fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
 </body>
@@ -588,10 +451,10 @@ HTML_SKELETON_V4 = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_V4)
+def dashboard(): return render_template_string(HTML_SKELETON_FINAL)
 @app.route('/api/data')
 def get_api_data():
-    with state_lock: trades_copy = list(autopilot_trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
+    with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
@@ -615,16 +478,16 @@ def trade_manual():
     current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
     with state_lock:
-        if any(t for t in autopilot_trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
+        if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
         new_trade = {"id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None}
-        autopilot_trades.insert(0, new_trade)
+        trades.insert(0, new_trade)
         print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
     with state_lock:
-        trade_to_close = next((t for t in autopilot_trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
+        trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
         if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
         pair = trade_to_close['instrumentId']
         current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
@@ -637,7 +500,7 @@ def update_settings():
     for key, value in request.form.items():
         if key in current_settings and key != 'watched_pairs':
             try: current_settings[key] = float(value) if '.' in value else int(value)
-            except ValueError: current_settings[key] = value # For API Key (string)
+            except ValueError: pass # Abaikan jika konversi gagal
     save_settings(); print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
