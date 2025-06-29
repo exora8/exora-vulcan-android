@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- FINAL UI REFINEMENT EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- AI LEARNING FROM MANUAL TRADES --      ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -63,7 +63,11 @@ def display_welcome_message():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
-    default_settings = { "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10, "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05, "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"} }
+    default_settings = {
+        "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10,
+        "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05,
+        "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"}
+    }
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f: loaded_settings = json.load(f)
@@ -210,6 +214,7 @@ class LocalAI:
             ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
+
 def close_trade_sync(trade, exit_price, reason):
     with state_lock:
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
@@ -223,6 +228,7 @@ def close_trade_sync(trade, exit_price, reason):
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
     send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
+
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
@@ -237,7 +243,7 @@ async def run_autopilot_analysis(instrument_id):
         decision = ai.get_decision(pair_state["candle_data"], open_pos, funding_rate)
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
-            new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "exitPrice": None, "pl_percent": None, "run_up_percent": 0.0, "max_drawdown_percent": 0.0, "trailing_stop_price": None, "current_tp_checkpoint_level": 0.0 }
+            new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "exitPrice": None, "pl_percent": None }
             with state_lock: trades.insert(0, new_trade)
             save_trades()
             notif_title = f"🟢 Posisi {new_trade['type']} Dibuka: {instrument_id}"; notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | {decision.get('reason')}"
@@ -256,6 +262,7 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
+    
     activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
     ts_price = None
@@ -284,8 +291,8 @@ def data_refresh_worker():
             time.sleep(0.2)
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
-# --- TEMPLATE HTML DENGAN PERBAIKAN ANIMASI ---
-HTML_SKELETON_FINAL_V2 = """
+# --- TEMPLATE HTML DENGAN PERUBAHAN CSS ---
+HTML_SKELETON_NO_ANIMATION = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -312,19 +319,13 @@ HTML_SKELETON_FINAL_V2 = """
         .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; transition: transform 0.2s ease; }
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
-        .stat-item .value { font-size: 1.75rem; font-weight: 700; /* Dihapus: transition: color 0.2s ease; */ }
+        .stat-item .value { font-size: 1.75rem; font-weight: 700; }
+        
+        /* PERUBAHAN DI SINI: Watchlist tanpa animasi */
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
-        .pair-card {
-            background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; 
-            padding: 1.5rem; display: flex; flex-direction: column; 
-            opacity: 0; transform: translateY(20px); animation: fadeInUp 0.5s ease forwards;
-            /* Dihapus: transition umum. Transisi hanya untuk hover. */
-        }
-        .pair-card:hover {
-            transform: translateY(-3px);
-            transition: transform 0.2s ease;
-        }
+        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
+        
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
         .pair-price { font-size: 1.25rem; color: var(--text-muted); }
@@ -337,18 +338,17 @@ HTML_SKELETON_FINAL_V2 = """
         .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
         .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
         .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
+        
+        /* PERUBAHAN DI SINI: History tanpa animasi */
         .history-list { list-style: none; padding: 0; }
-        .history-item {
-            background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px; 
-            padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; 
-            justify-content: space-between; align-items: center; gap: 1rem; 
-            opacity: 0; transform: translateY(20px); animation: fadeInUp 0.5s ease forwards;
-        }
+        .history-item { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; }
+        
         .history-main { display: flex; align-items: center; gap: 1rem; }
         .history-type { font-weight: 600; font-size: 1.1rem; }
         .history-pair { color: var(--text-muted); }
         .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
         .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
+        
         .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
         .settings-modal.visible { display: flex; opacity: 1; }
         .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
@@ -361,7 +361,7 @@ HTML_SKELETON_FINAL_V2 = """
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
         .text-green { color: var(--green); } .text-red { color: var(--red); }
-        @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
+        
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
@@ -416,15 +416,14 @@ HTML_SKELETON_FINAL_V2 = """
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
-                Object.entries(data.market_data).forEach(([p, d], i) => {
+                Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div');
                     card.className = `pair-card ${d.open_position ? 'position-open' : ''}`;
-                    card.style.animationDelay = `${i * 50}ms`;
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
-                document.getElementById('history-list').innerHTML = data.trades.map((t, i) => `<li class="history-item" style="animation-delay:${i*50}ms;"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     if (k === 'watched_pairs') {
                         document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
@@ -458,7 +457,7 @@ HTML_SKELETON_FINAL_V2 = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_FINAL_V2)
+def dashboard(): return render_template_string(HTML_SKELETON_NO_ANIMATION)
 
 @app.route('/api/data')
 def get_api_data():
@@ -485,9 +484,13 @@ def toggle_ai():
 def trade_manual():
     data = request.form; pair = data.get('pair'); trade_type = data.get('type')
     if not pair or not trade_type: return jsonify(success=False, error="Data tidak lengkap"), 400
-    pair_state = market_state.get(pair, {}); candle_data = pair_state.get("candle_data")
+    
+    pair_state = market_state.get(pair, {})
+    candle_data = pair_state.get("candle_data")
     current_price = candle_data[-1].get('close') if candle_data else None
+
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
+    
     entry_snapshot = {}
     if candle_data and len(candle_data) >= 100 + 3:
         with state_lock: relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
@@ -496,19 +499,19 @@ def trade_manual():
         if analysis_result:
             analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
             entry_snapshot = analysis_result
+    
     with state_lock:
         if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
-        new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot, "run_up_percent": 0.0, "max_drawdown_percent": 0.0, "trailing_stop_price": None, "current_tp_checkpoint_level": 0.0 }
+        new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot }
         trades.insert(0, new_trade)
-        print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka (dengan snapshot).", Fore.BLUE)
+        print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
 
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
     trade_to_close = None
-    with state_lock:
-        trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
+    with state_lock: trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
     if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
     pair = trade_to_close['instrumentId']
     current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
