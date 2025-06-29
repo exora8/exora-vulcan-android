@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- STABLE CHART FIX & ROBUST UI --        ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("          -- REAL-TIME CHART EDITION --           ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -163,12 +163,17 @@ class LocalAI:
         return body / full_range if full_range > 0 else 1.0
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100 + 3: return None
-        ema9 = self.calculate_ema(candle_data, 9); ema50 = self.calculate_ema(candle_data, 50); ema100 = self.calculate_ema(candle_data, 100)
-        if len(ema9) < 2 or not ema50 or not ema100: return None
-        analysis = { "ema9_current": ema9[-1], "ema9_prev": ema9[-2], "ema50": ema50[-1], "ema100": ema100[-1], "current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'], "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING" }
+        ema9_full = self.calculate_ema(candle_data, 9); ema50_full = self.calculate_ema(candle_data, 50); ema100_full = self.calculate_ema(candle_data, 100)
+        if len(ema9_full) < 2 or not ema50_full or not ema100_full: return None
+        analysis = { "ema9_current": ema9_full[-1], "ema9_prev": ema9_full[-2], "ema50": ema50_full[-1], "ema100": ema100_full[-1], "current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'], "bias": "BULLISH" if ema50_full[-1] > ema100_full[-1] else "BEARISH" if ema50_full[-1] < ema100_full[-1] else "RANGING" }
         pre_entry_candles = candle_data[-4:-1]
         analysis["pre_entry_candle_solidity"] = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
         analysis["pre_entry_candle_direction"] = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
+        
+        # PERUBAHAN: Sertakan data EMA series untuk chart
+        analysis["ema9_series"] = ema9_full
+        analysis["ema50_series"] = ema50_full
+        
         return analysis
     def check_for_repeated_mistake(self, current_analysis):
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) < 0]
@@ -191,7 +196,6 @@ class LocalAI:
                 reason = (f"Peringatan: Mirip loss ID {loss.get('id', 'N/A')}. Bias: {current_analysis['bias']}")
                 return (True, reason)
         return (False, None)
-    
     def get_decision(self, candle_data, open_position, funding_rate=0.0):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
@@ -257,7 +261,6 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
-    
     activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
     ts_price = None
@@ -274,64 +277,75 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
         if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
             close_trade_sync(trade_obj, ts_price, "Trailing TP")
 def data_refresh_worker():
+    global market_state
     while not stop_event.is_set():
+        # PERUBAHAN: Lakukan analisis di sini untuk menyertakan data EMA di API
+        temp_market_state = {}
         for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
-            if pair_id not in market_state: market_state[pair_id] = {}
-            candle_data = fetch_recent_candles(pair_id, timeframe); funding_rate = fetch_funding_rate(pair_id)
-            market_state[pair_id]['funding_rate'] = funding_rate if funding_rate is not None else market_state[pair_id].get('funding_rate', 0.0)
+            candle_data = fetch_recent_candles(pair_id, timeframe)
+            funding_rate = fetch_funding_rate(pair_id)
+            analysis_data = None
             if candle_data:
-                market_state[pair_id]["candle_data"] = candle_data
-                with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
+                ai = LocalAI(current_settings, []) # Past trades tidak relevan untuk sekedar analisis
+                analysis_data = ai.get_market_analysis(candle_data)
+
+            temp_market_state[pair_id] = {
+                'candle_data': candle_data,
+                'funding_rate': funding_rate if funding_rate is not None else 0.0,
+                'analysis': analysis_data
+            }
+            # Cek SL/TP di sini
+            if candle_data:
+                with state_lock:
+                    open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                if open_pos:
+                    asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
             time.sleep(0.2)
+        
+        with state_lock:
+            market_state = temp_market_state
+            
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
-# --- TEMPLATE HTML DENGAN PERBAIKAN CHART ---
-HTML_SKELETON_CHART_FIX = """
+# --- TEMPLATE HTML DENGAN PERUBAHAN CSS ---
+HTML_SKELETON_CHART = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vulcan AI Dashboard</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
-        :root { --bg-color: #121212; --card-color: #1E1E1E; --border-color: #333; --text-color: #EAEAEA; --text-muted: #888; --green: #34D399; --red: #F87171; --yellow: #FBBF24; --accent-primary: #60A5FA; }
+        :root { --bg-color: #121212; --card-color: #1E1E1E; --border-color: #333; --text-color: #EAEAEA; --text-muted: #888; --green: #34D399; --red: #F87171; --yellow: #FBBF24; --accent-primary: #60A5FA; --ema9-color: #FF6D00; --ema50-color: #2962FF; }
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; font-size: 16px; }
-        body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+        body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; }
         .container { max-width: 1200px; margin: 0 auto; }
         h1, h2 { font-weight: 600; letter-spacing: -0.5px; }
-        h1 { margin: 0; font-size: 1.75rem; }
         h2 { margin-top: 2.5rem; margin-bottom: 1.5rem; font-size: 1.25rem; color: var(--text-muted); }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
         .header-actions { display: flex; gap: 1rem; }
-        .action-btn { background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease; }
+        .action-btn { background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease; }
         .action-btn:hover { background-color: var(--border-color); }
-        .action-btn.ai-status.running { color: var(--green); }
-        .action-btn.ai-status.stopped { color: var(--red); }
-        .chart-container { width: 100%; height: 400px; margin-bottom: 2rem; border-radius: 12px; background-color: var(--card-color); border: 1px solid var(--border-color); }
+        .action-btn.ai-status.running { color: var(--green); } .action-btn.ai-status.stopped { color: var(--red); }
         .pnl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; }
         .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; transition: transform 0.2s ease; }
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
-        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; transition: background-color 0.2s; }
-        .pair-card:hover { background-color: var(--border-color); }
-        .pair-card.active { border-color: var(--accent-primary); }
+        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
-        .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
+        .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; pointer-events: none; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
         .pair-price { font-size: 1.25rem; color: var(--text-muted); }
-        .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
-        .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
+        .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; pointer-events: none; }
+        .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; pointer-events: auto; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
-        .btn-long { background-color: var(--green); color: #fff; }
-        .btn-short { background-color: var(--red); color: #fff; }
-        .btn-close { background-color: var(--yellow); color: var(--bg-color); }
-        .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
+        .btn-long { background-color: var(--green); color: #fff; } .btn-short { background-color: var(--red); color: #fff; } .btn-close { background-color: var(--yellow); color: var(--bg-color); }
+        .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto; pointer-events: none; }
         .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
         .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
         .history-list { list-style: none; padding: 0; }
@@ -341,10 +355,12 @@ HTML_SKELETON_CHART_FIX = """
         .history-pair { color: var(--text-muted); }
         .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
         .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
-        .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
-        .settings-modal.visible { display: flex; opacity: 1; }
-        .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
-        .settings-content h3 { margin-top: 2rem; margin-bottom: 1rem; font-size: 1.1rem; }
+        .settings-modal, .chart-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
+        .settings-modal.visible, .chart-modal.visible { display: flex; opacity: 1; }
+        .modal-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-height: 90vh; overflow-y: auto; }
+        .modal-content.chart-content { max-width: 900px; height: 70vh; padding: 1rem; display: flex; flex-direction: column; }
+        .modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 1rem; }
+        #chart-container { width: 100%; height: 100%; flex-grow: 1; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
@@ -359,79 +375,66 @@ HTML_SKELETON_CHART_FIX = """
             .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
             .history-item { flex-direction: column; align-items: flex-start; }
             .history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
+            .modal-content.chart-content { width: 95%; height: 80vh; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
-        <div id="chart-container" class="chart-container"></div>
         <section id="pnl-stats" class="pnl-stats"></section>
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
-    <div id="settings-modal" class="settings-modal">
-        <div class="settings-content">
-            <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
-            <form id="settings-form">
-                <h3>Parameters</h3>
-                <div class="form-grid">
-                    <div class="form-group"><label for="fee_pct">Fee (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
-                    <div class="form-group"><label for="stop_loss_pct">Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div>
-                    <div class="form-group"><label for="trailing_tp_activation_pct">TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
-                    <div class="form-group"><label for="trailing_tp_gap_pct">TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
-                    <div class="form-group"><label for="max_allowed_funding_rate_pct">Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
-                    <div class="form-group"><label for="analysis_interval_sec">AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
-                    <div class="form-group"><label for="caution_level">Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div>
-                </div>
-                <h3>Watchlist</h3>
-                <div class="watchlist-manage"><ul id="watchlist-list"></ul>
-                    <div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label>
-                        <div style="display:flex; gap:1rem;">
-                            <input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;">
-                            <button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button>
-                        </div>
-                    </div>
-                </div>
-                <button type="submit" class="action-btn" style="width:100%; margin-top: 2rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Settings</button>
-            </form>
-        </div>
-    </div>
+    <div id="settings-modal" class="settings-modal"><div id="settings-content" class="modal-content"></div></div>
+    <div id="chart-modal" class="chart-modal"><div id="chart-content" class="modal-content chart-content"></div></div>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT = '/api/data'; const REFRESH_INTERVAL_MS = 3000;
-            const chartContainer = document.getElementById('chart-container');
-            let chart = null, candleSeries = null, currentChartPair = '';
-
-            const formatPercent=v=>typeof v==='number'?v.toFixed(2)+'%':'N/A'; const formatPrice=v=>typeof v==='number'?(v<1?v.toPrecision(4):v.toFixed(2)):'N/A'; const getColorClass=v=>v>0?'text-green':(v<0?'text-red':'');
+            const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
+            const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
+            const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
+            let lastData = {}; let chart = null;
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            async function initChart(pair) {
-                if (currentChartPair === pair && chart) return;
-                currentChartPair = pair;
-                if (chart) { chart.remove(); chart = null; }
-                document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active'));
-                const card = document.querySelector(`.pair-card[data-pair="${pair}"]`);
-                if(card) card.classList.add('active');
-
-                // PERBAIKAN 1: Menggunakan kode warna heksadesimal langsung
-                chart = LightweightCharts.createChart(chartContainer, {
-                    width: chartContainer.clientWidth, height: chartContainer.clientHeight,
-                    layout: { backgroundColor: '#121212', textColor: '#EAEAEA' },
-                    grid: { vertLines: { color: '#333333' }, horzLines: { color: '#333333' } },
-                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: '#333333' },
-                    timeScale: { borderColor: '#333333', timeVisible: true, secondsVisible: false }
-                });
-                candleSeries = chart.addCandlestickSeries({ upColor: '#34D399', downColor: '#F87171', wickUpColor: '#34D399', wickDownColor: '#F87171', borderVisible: false });
+            const settingsModal = document.getElementById('settings-modal');
+            const chartModal = document.getElementById('chart-modal');
+            
+            const openChartModal = (pair, data) => {
+                if (!data || !data.candles) { console.error('No candle data available for chart.'); return; }
+                const chartContent = document.getElementById('chart-content');
+                chartContent.innerHTML = `<div class="modal-header"><h2>${pair} Chart</h2><button id="close-chart-btn" style="background:none;border:none;color:var(--text-color);font-size:2rem;cursor:pointer;">×</button></div><div id="chart-container"></div>`;
+                document.getElementById('close-chart-btn').addEventListener('click', () => chartModal.classList.remove('visible'));
                 
-                const response = await fetch(`/api/historical_candles/${pair}`);
-                const historyData = await response.json();
-                if (historyData.length === 0) { console.error('No historical data received for chart.'); return; }
-                const formattedData = historyData.map(d => ({ time: d.time / 1000, open: d.open, high: d.high, low: d.low, close: d.close }));
-                candleSeries.setData(formattedData);
+                const chartContainer = document.getElementById('chart-container');
+                chart = LightweightCharts.createChart(chartContainer, {
+                    layout: { backgroundColor: 'var(--card-color)', textColor: 'var(--text-muted)' },
+                    grid: { vertLines: { color: 'var(--border-color)' }, horzLines: { color: 'var(--border-color)' } },
+                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    rightPriceScale: { borderColor: 'var(--border-color)' },
+                    timeScale: { borderColor: 'var(--border-color)' }
+                });
+                const candleSeries = chart.addCandlestickSeries({ upColor: 'var(--green)', downColor: 'var(--red)', borderVisible: false, wickUpColor: 'var(--green)', wickDownColor: 'var(--red)' });
+                const candlestickData = data.candles.map(c => ({ time: c.time / 1000, open: c.open, high: c.high, low: c.low, close: c.close }));
+                candleSeries.setData(candlestickData);
+                
+                if (data.analysis && data.analysis.ema9_series) {
+                    const ema9Series = chart.addLineSeries({ color: 'var(--ema9-color)', lineWidth: 2 });
+                    const ema9Data = data.analysis.ema9_series.map((val, index) => ({ time: data.candles[index].time / 1000, value: val }));
+                    ema9Series.setData(ema9Data);
+                }
+                if (data.analysis && data.analysis.ema50_series) {
+                    const ema50Series = chart.addLineSeries({ color: 'var(--ema50-color)', lineWidth: 2 });
+                    const ema50Data = data.analysis.ema50_series.map((val, index) => ({ time: data.candles[index].time / 1000, value: val }));
+                    ema50Series.setData(ema50Data);
+                }
+                
                 chart.timeScale().fitContent();
-            }
+                chartModal.classList.add('visible');
+                const handleResize = () => chart.applyOptions({ width: chartContainer.clientWidth });
+                window.addEventListener('resize', handleResize);
+                chartModal.addEventListener('transitionend', () => window.removeEventListener('resize', handleResize), { once: true });
+            };
 
             const updateUI = data => {
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
@@ -440,47 +443,42 @@ HTML_SKELETON_CHART_FIX = """
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div');
-                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${currentChartPair === p ? 'active' : ''}`;
-                    card.dataset.pair = p;
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''}`;
+                    card.dataset.pair = p; // For chart click
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
-                if (candleSeries && data.market_data[currentChartPair] && data.market_data[currentChartPair].latest_candle) {
-                    const latestCandle = data.market_data[currentChartPair].latest_candle;
-                    candleSeries.update({ time: latestCandle.time / 1000, open: latestCandle.open, high: latestCandle.high, low: latestCandle.low, close: latestCandle.close });
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                const settingsContent = document.getElementById('settings-content');
+                if (settingsContent.innerHTML === '') {
+                    settingsContent.innerHTML = `<div class="modal-header"><h2>Settings</h2><button id="close-settings-btn" style="background:none;border:none;color:var(--text-color);font-size:2rem;cursor:pointer;">×</button></div><form id="settings-form"><h3>Parameters</h3><div class="form-grid"><div class="form-group"><label>Fee (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div><div class="form-group"><label>Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div><div class="form-group"><label>TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div><div class="form-group"><label>TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div><div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div><div class="form-group"><label>AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div><div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div></div><h3>Watchlist</h3><div class="watchlist-manage"><ul id="watchlist-list"></ul><div class="form-group" style="margin-top:1rem;"><label>Add New Pair</label><div style="display:flex;gap:1rem;"><input type="text" id="new-pair-input" placeholder="BTC-USDT" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="1H" style="width:100px;"><button type="button" id="add-pair-btn" class="action-btn" style="background-color:var(--accent-primary);border:none;">Add</button></div></div></div><button type="submit" class="action-btn" style="width:100%;margin-top:2rem;padding:0.75rem;background-color:var(--accent-primary);border:none;">Save Settings</button></form>`;
+                    document.getElementById('close-settings-btn').addEventListener('click',()=>settingsModal.classList.remove('visible'));
+                    document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
+                    document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())); settingsModal.classList.remove('visible'); });
                 }
-                document.getElementById('history-list').innerHTML = data.trades.map((t, i) => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
-                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
-                    } else { const i = document.getElementById(`s-${k}`); if(i && document.activeElement!==i) i.value=v; }
+                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
+                    else { const i = document.getElementById(`s-${k}`); if(i && document.activeElement!==i) i.value=v; }
                 });
             };
-            let lastDataJSON = ''; let isFirstLoad = true;
             const fetchData = async () => {
                 try {
-                    const res = await fetch(API_ENDPOINT); const dataJSON = await res.text();
-                    if(dataJSON !== lastDataJSON) { 
-                        lastDataJSON = dataJSON; 
-                        const data = JSON.parse(dataJSON);
-                        if (isFirstLoad && Object.keys(data.settings.watched_pairs).length > 0) {
-                            await initChart(Object.keys(data.settings.watched_pairs)[0]);
-                            isFirstLoad = false;
-                        }
-                        updateUI(data); 
-                    }
+                    const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json();
+                    lastData = data; updateUI(data);
                 } catch(e) { console.error("Update failed:", e); }
             };
+            document.getElementById('watchlist').addEventListener('click', e => {
+                const card = e.target.closest('.pair-card');
+                if (card && lastData.market_data) {
+                    openChartModal(card.dataset.pair, lastData.market_data[card.dataset.pair]);
+                }
+            });
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
-            document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card) initChart(card.dataset.pair); });
-            document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
-            const modal=document.getElementById('settings-modal');
-            document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
-            document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
+            document.getElementById('settings-modal').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
+            document.getElementById('settings-btn').addEventListener('click',()=>settingsModal.classList.add('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
-            document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
-            document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())); modal.classList.remove('visible'); });
-            window.addEventListener('resize', () => { if(chart) { chart.resize(chartContainer.clientWidth, chartContainer.clientHeight); }});
+            
             fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
@@ -490,8 +488,7 @@ HTML_SKELETON_CHART_FIX = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_CHART_FIX)
-
+def dashboard(): return render_template_string(HTML_SKELETON_CHART)
 @app.route('/api/data')
 def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
@@ -499,32 +496,22 @@ def get_api_data():
     fee_pct = settings_copy.get('fee_pct', 0.1)
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
-        candle_data = pair_state.get("candle_data", [])
-        current_price = candle_data[-1].get('close', 0.0) if candle_data else 0.0
+        current_price = pair_state.get("candle_data", [{}])[-1].get('close', 0.0) if pair_state.get("candle_data") else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "latest_candle": candle_data[-1] if candle_data else None}
+        market_data_view[pair_id] = {
+            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe,
+            "open_position": open_pos, "pnl": pnl,
+            "candles": pair_state.get("candle_data"), # Kirim data candle
+            "analysis": pair_state.get("analysis") # Kirim data analisis (termasuk EMA)
+        }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
-
-# PERBAIKAN 2: Membuat endpoint historis lebih tangguh
-@app.route('/api/historical_candles/<pair_id>')
-def get_historical_candles(pair_id):
-    pair_tf = current_settings.get("watched_pairs", {}).get(pair_id, "1H")
-    candles = market_state.get(pair_id, {}).get("candle_data")
-    if not candles:
-        print_colored(f"Data candle untuk {pair_id} tidak ada di memori, mengambil langsung...", Fore.YELLOW)
-        candles = fetch_recent_candles(pair_id, pair_tf, limit=300)
-        if candles: market_state[pair_id]["candle_data"] = candles
-    return jsonify(candles or [])
-
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
-    global is_autopilot_running
-    is_autopilot_running = not is_autopilot_running
+    global is_autopilot_running; is_autopilot_running = not is_autopilot_running
     print_colored(f"Autopilot {'diaktifkan' if is_autopilot_running else 'dimatikan'} dari Web UI.", Fore.YELLOW)
     return jsonify(success=True)
-
 @app.route('/trade/manual', methods=['POST'])
 def trade_manual():
     data = request.form; pair = data.get('pair'); trade_type = data.get('type')
@@ -532,25 +519,17 @@ def trade_manual():
     pair_state = market_state.get(pair, {}); candle_data = pair_state.get("candle_data")
     current_price = candle_data[-1].get('close') if candle_data else None
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
-    entry_snapshot = {}
-    if candle_data and len(candle_data) >= 100 + 3:
-        with state_lock: relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
-        ai_analyzer = LocalAI(current_settings, relevant_trades_history)
-        analysis_result = ai_analyzer.get_market_analysis(candle_data)
-        if analysis_result:
-            analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
-            entry_snapshot = analysis_result
+    entry_snapshot = pair_state.get("analysis", {})
+    if entry_snapshot: entry_snapshot["funding_rate"] = pair_state.get("funding_rate", 0.0)
     with state_lock:
         if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
         new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot }
         trades.insert(0, new_trade)
         print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
-
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
-    trade_to_close = None
     with state_lock: trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
     if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
     pair = trade_to_close['instrumentId']
@@ -558,10 +537,8 @@ def trade_close():
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
     close_trade_sync(trade_to_close, current_price, "Manual Close")
     return jsonify(success=True)
-
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
-    global current_settings
     with state_lock:
         for key, value in request.form.items():
             if key in current_settings and key != 'watched_pairs':
@@ -569,7 +546,6 @@ def update_settings():
                 except ValueError: pass
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
-
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
     pair = request.form.get('pair'); tf = request.form.get('tf', '1H')
@@ -577,16 +553,13 @@ def add_watchlist():
         with state_lock: current_settings['watched_pairs'][pair] = tf; save_settings()
         print_colored(f"{pair} ({tf}) ditambahkan ke watchlist.", Fore.GREEN)
     return jsonify(success=True)
-
 @app.route('/api/watchlist/remove', methods=['POST'])
 def remove_watchlist():
     pair = request.form.get('pair')
     with state_lock:
-        if pair in current_settings['watched_pairs']:
-            del current_settings['watched_pairs'][pair]; save_settings()
-            print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
+        if pair in current_settings['watched_pairs']: del current_settings['watched_pairs'][pair]; save_settings()
+        print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
-
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
     load_settings(); load_trades(); display_welcome_message()
