@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("          -- REAL-TIME CHART EDITION --           ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- STABLE CHART FIX & ROBUST UI --        ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -63,12 +63,7 @@ def display_welcome_message():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
-    default_settings = {
-        "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10,
-        "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05,
-        "caution_level": 0.5,
-        "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"}
-    }
+    default_settings = { "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10, "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"} }
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f: loaded_settings = json.load(f)
@@ -131,8 +126,7 @@ def calculate_todays_pnl(all_trades):
     for trade in all_trades:
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
-                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc:
-                    total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
+                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc: total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
             except (ValueError, TypeError): continue
     return total_pnl
 def calculate_this_weeks_pnl(all_trades):
@@ -142,8 +136,7 @@ def calculate_this_weeks_pnl(all_trades):
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                if start_of_week_utc <= exit_date <= today_utc:
-                    total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
+                if start_of_week_utc <= exit_date <= today_utc: total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
             except (ValueError, TypeError): continue
     return total_pnl
 def calculate_last_weeks_pnl(all_trades):
@@ -154,8 +147,7 @@ def calculate_last_weeks_pnl(all_trades):
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                if start_of_last_week_utc <= exit_date <= end_of_last_week_utc:
-                    total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
+                if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
             except (ValueError, TypeError): continue
     return total_pnl
 class LocalAI:
@@ -226,8 +218,7 @@ def close_trade_sync(trade, exit_price, reason):
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
         is_profit = (pnl_gross - current_settings.get('fee_pct', 0.1)) > 0
-        if is_profit and 'entry_snapshot' in trade:
-            del trade['entry_snapshot']
+        if is_profit and 'entry_snapshot' in trade: del trade['entry_snapshot']
     save_trades()
     pnl_net = pnl_gross - current_settings.get('fee_pct', 0.1)
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
@@ -295,8 +286,8 @@ def data_refresh_worker():
             time.sleep(0.2)
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
-# --- TEMPLATE HTML DENGAN PERUBAHAN CSS ---
-HTML_SKELETON_CHART = """
+# --- TEMPLATE HTML DENGAN PERBAIKAN CHART ---
+HTML_SKELETON_CHART_FIX = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -423,18 +414,20 @@ HTML_SKELETON_CHART = """
                 const card = document.querySelector(`.pair-card[data-pair="${pair}"]`);
                 if(card) card.classList.add('active');
 
+                // PERBAIKAN 1: Menggunakan kode warna heksadesimal langsung
                 chart = LightweightCharts.createChart(chartContainer, {
                     width: chartContainer.clientWidth, height: chartContainer.clientHeight,
-                    layout: { backgroundColor: 'var(--bg-color)', textColor: 'var(--text-muted)' },
-                    grid: { vertLines: { color: 'var(--border-color)' }, horzLines: { color: 'var(--border-color)' } },
+                    layout: { backgroundColor: '#121212', textColor: '#EAEAEA' },
+                    grid: { vertLines: { color: '#333333' }, horzLines: { color: '#333333' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: 'var(--border-color)' },
-                    timeScale: { borderColor: 'var(--border-color)', timeVisible: true, secondsVisible: false }
+                    rightPriceScale: { borderColor: '#333333' },
+                    timeScale: { borderColor: '#333333', timeVisible: true, secondsVisible: false }
                 });
-                candleSeries = chart.addCandlestickSeries({ upColor: 'var(--green)', downColor: 'var(--red)', wickUpColor: 'var(--green)', wickDownColor: 'var(--red)', borderVisible: false });
+                candleSeries = chart.addCandlestickSeries({ upColor: '#34D399', downColor: '#F87171', wickUpColor: '#34D399', wickDownColor: '#F87171', borderVisible: false });
                 
                 const response = await fetch(`/api/historical_candles/${pair}`);
                 const historyData = await response.json();
+                if (historyData.length === 0) { console.error('No historical data received for chart.'); return; }
                 const formattedData = historyData.map(d => ({ time: d.time / 1000, open: d.open, high: d.high, low: d.low, close: d.close }));
                 candleSeries.setData(formattedData);
                 chart.timeScale().fitContent();
@@ -497,7 +490,7 @@ HTML_SKELETON_CHART = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_CHART)
+def dashboard(): return render_template_string(HTML_SKELETON_CHART_FIX)
 
 @app.route('/api/data')
 def get_api_data():
@@ -511,22 +504,19 @@ def get_api_data():
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        market_data_view[pair_id] = {
-            "price": current_price, 
-            "funding": pair_state.get("funding_rate", 0.0), 
-            "timeframe": timeframe, 
-            "open_position": open_pos, 
-            "pnl": pnl,
-            "latest_candle": candle_data[-1] if candle_data else None # Tambahkan candle terbaru
-        }
+        market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "latest_candle": candle_data[-1] if candle_data else None}
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
+# PERBAIKAN 2: Membuat endpoint historis lebih tangguh
 @app.route('/api/historical_candles/<pair_id>')
 def get_historical_candles(pair_id):
-    """Endpoint baru untuk menyediakan data historis untuk chart."""
-    if pair_id in market_state and "candle_data" in market_state[pair_id]:
-        return jsonify(market_state[pair_id]["candle_data"])
-    return jsonify([])
+    pair_tf = current_settings.get("watched_pairs", {}).get(pair_id, "1H")
+    candles = market_state.get(pair_id, {}).get("candle_data")
+    if not candles:
+        print_colored(f"Data candle untuk {pair_id} tidak ada di memori, mengambil langsung...", Fore.YELLOW)
+        candles = fetch_recent_candles(pair_id, pair_tf, limit=300)
+        if candles: market_state[pair_id]["candle_data"] = candles
+    return jsonify(candles or [])
 
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
