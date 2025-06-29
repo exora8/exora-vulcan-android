@@ -28,9 +28,6 @@ BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5
 MAX_TRADES_IN_HISTORY = 80
 CHART_CANDLE_LIMIT = 80
-# Kamus untuk durasi timeframe dalam milidetik
-TIMEFRAME_MS = { '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000, '2H': 7200000, '4H': 14400000, '1D': 86400000, '1W': 604800000 }
-
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -58,7 +55,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("       -- CANDLE COUNTDOWN TIMER EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("      -- CHART COUNTDOWN TIMER EDITION --         ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -407,61 +404,42 @@ HTML_SKELETON_WITH_CHART = """
             const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let chart = null; let currentChartPair = null; let lastData = {}; let countdownInterval = null;
+            let chart = null; let currentChartPair = null; let lastData = {}; let activeCandleCloseTime = 0;
 
-            const startCountdown = (closeTimestamp) => {
-                clearInterval(countdownInterval);
-                const countdownEl = document.getElementById('candle-countdown');
-                if (!countdownEl) return;
-
-                countdownInterval = setInterval(() => {
-                    const now = new Date().getTime();
-                    const distance = closeTimestamp - now;
-                    if (distance < 0) {
-                        countdownEl.innerHTML = "Closing...";
-                        clearInterval(countdownInterval);
-                    } else {
-                        const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-                        const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-                        countdownEl.innerHTML = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                    }
-                }, 1000);
+            const getDurationInMs = tf => {
+                if (!tf) return 3600000; // Default 1 hour
+                const unit = tf.slice(-1); const val = parseInt(tf.slice(0, -1));
+                if (unit === 'm') return val * 60 * 1000; if (unit === 'H') return val * 60 * 60 * 1000;
+                if (unit === 'D') return val * 24 * 60 * 60 * 1000; return 3600000;
             };
 
             const updateChart = (pair, marketData) => {
-                if (!pair || !marketData[pair] || !marketData[pair].candles) return;
+                if (!pair || !marketData[pair] || !marketData[pair].candles || marketData[pair].candles.length === 0) return;
                 
                 document.getElementById('chart-pair-title').textContent = pair;
                 document.getElementById('chart-timeframe').textContent = marketData[pair].timeframe;
                 
-                const candleSeries = marketData[pair].candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
-                const currentPrice = marketData[pair].price;
-                const priceLineLabel = `Current: ${formatPrice(currentPrice)} | Close in: <span id="candle-countdown"></span>`;
+                const candles = marketData[pair].candles;
+                const lastCandle = candles[candles.length - 1];
+                activeCandleCloseTime = lastCandle.time + getDurationInMs(marketData[pair].timeframe);
 
+                const candleSeries = candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
+                
                 const newOptions = {
                     series: [
                         { name: 'Price', type: 'candlestick', data: candleSeries },
                         { name: 'EMA 9', type: 'line', data: marketData[pair].ema9_data || [] },
                         { name: 'EMA 50', type: 'line', data: marketData[pair].ema50_data || [] },
                         { name: 'EMA 100', type: 'line', data: marketData[pair].ema100_data || [] }
-                    ],
-                    annotations: {
-                        yaxis: [{
-                            y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2,
-                            label: {
-                                text: priceLineLabel, borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)', padding: { left: 10, right: 10, top: 2, bottom: 2 } },
-                                position: 'left', textAnchor: 'start', offsetX: 10
-                            }
-                        }]
-                    }
+                    ]
                 };
                 
                 if (!chart) {
                     const options = {
-                        theme: { mode: 'dark' }, colors: ['#FFFFFF', '#00BFFF', '#FFD700', '#C792EA'],
-                        stroke: { width: [1.5, 1.5, 1.5, 1.5], curve: 'smooth' },
+                        theme: { mode: 'dark' }, colors: ['#FFFFFF', '#60A5FA', '#FBBF24', '#C4B5FD'],
+                        stroke: { width: [1, 1.5, 1.5, 1.5], curve: 'smooth' },
                         chart: { type: 'candlestick', height: 350, background: 'transparent', 
-                            toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' },
+                            toolbar: { show: true, tools: { download: false }, autoSelected: 'zoom' },
                             animations: { enabled: false }
                         },
                         xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
@@ -473,10 +451,6 @@ HTML_SKELETON_WITH_CHART = """
                     chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
                     chart.render();
                 } else { chart.updateOptions(newOptions); }
-
-                if (marketData[pair].candle_close_timestamp_ms) {
-                    startCountdown(marketData[pair].candle_close_timestamp_ms);
-                }
             };
 
             const updateUI = data => {
@@ -505,12 +479,30 @@ HTML_SKELETON_WITH_CHART = """
                     if(JSON.stringify(data) !== JSON.stringify(lastData)) { lastData = data; updateUI(data); }
                 } catch(e) { console.error("Update failed:", e); }
             };
+            
+            // Countdown Timer
+            setInterval(() => {
+                if (!activeCandleCloseTime || !chart || !currentChartPair || !lastData.market_data) return;
+                const now = new Date().getTime(); const remaining = Math.max(0, activeCandleCloseTime - now);
+                const minutes = Math.floor((remaining / 1000 / 60) % 60).toString().padStart(2, '0');
+                const seconds = Math.floor((remaining / 1000) % 60).toString().padStart(2, '0');
+                const currentPrice = lastData.market_data[currentChartPair].price;
+                chart.updateOptions({
+                    annotations: { yaxis: [{ y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2,
+                        label: {
+                            borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' },
+                            text: `Current: ${formatPrice(currentPrice)} (Close in ${minutes}:${seconds})`,
+                            position: 'left', textAnchor: 'start', offsetX: 10
+                        }
+                    }] }
+                });
+            }, 1000);
+            
             document.getElementById('watchlist').addEventListener('click', e => {
                 const card = e.target.closest('.pair-card');
                 if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
                     currentChartPair = card.dataset.pair; updateChart(currentChartPair, lastData.market_data);
-                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
-                    card.classList.add('active-chart');
+                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart');
                 }
             });
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
@@ -552,22 +544,24 @@ def get_api_data():
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         
-        ema9_chart, ema50_chart, ema100_chart, candle_chart, close_ts = [], [], [], [], None
+        ema9_chart, ema50_chart, ema100_chart, candle_chart = [], [], [], []
         if full_candle_data:
-            ema9_raw = ai_for_ema.calculate_ema(full_candle_data, 9); ema50_raw = ai_for_ema.calculate_ema(full_candle_data, 50); ema100_raw = ai_for_ema.calculate_ema(full_candle_data, 100)
-            ema9_full = format_ema_for_chart(full_candle_data, ema9_raw); ema50_full = format_ema_for_chart(full_candle_data, ema50_raw); ema100_full = format_ema_for_chart(full_candle_data, ema100_raw)
+            ema9_raw = ai_for_ema.calculate_ema(full_candle_data, 9)
+            ema50_raw = ai_for_ema.calculate_ema(full_candle_data, 50)
+            ema100_raw = ai_for_ema.calculate_ema(full_candle_data, 100)
+            ema9_full = format_ema_for_chart(full_candle_data, ema9_raw)
+            ema50_full = format_ema_for_chart(full_candle_data, ema50_raw)
+            ema100_full = format_ema_for_chart(full_candle_data, ema100_raw)
             
-            candle_chart = full_candle_data[-CHART_CANDLE_LIMIT:]; ema9_chart = ema9_full[-CHART_CANDLE_LIMIT:]; ema50_chart = ema50_full[-CHART_CANDLE_LIMIT:]; ema100_chart = ema100_full[-CHART_CANDLE_LIMIT:]
-            
-            # Hitung timestamp penutupan candle
-            latest_candle_open_time = full_candle_data[-1]['time']
-            timeframe_duration_ms = TIMEFRAME_MS.get(timeframe.upper(), 3600000) # Default ke 1 jam jika tidak ditemukan
-            close_ts = latest_candle_open_time + timeframe_duration_ms
+            candle_chart = full_candle_data[-CHART_CANDLE_LIMIT:]
+            ema9_chart = ema9_full[-CHART_CANDLE_LIMIT:]
+            ema50_chart = ema50_full[-CHART_CANDLE_LIMIT:]
+            ema100_chart = ema100_full[-CHART_CANDLE_LIMIT:]
 
         market_data_view[pair_id] = {
             "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, 
-            "open_position": open_pos, "pnl": pnl, "candles": candle_chart, "ema9_data": ema9_chart, 
-            "ema50_data": ema50_chart, "ema100_data": ema100_chart, "candle_close_timestamp_ms": close_ts
+            "open_position": open_pos, "pnl": pnl, 
+            "candles": candle_chart, "ema9_data": ema9_chart, "ema50_data": ema50_chart, "ema100_data": ema100_chart
         }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
