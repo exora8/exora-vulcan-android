@@ -26,7 +26,7 @@ SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5
-MAX_TRADES_IN_HISTORY = 80
+MAX_TRADES_IN_HISTORY = 500
 
 # --- STATE APLIKASI ---
 current_settings = {}
