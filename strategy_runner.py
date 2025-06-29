@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("         -- REAL-TIME CHART EDITION --            ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("      -- INTERACTIVE CHART & EMA EDITION --       ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -316,7 +316,8 @@ HTML_SKELETON_WITH_CHART = """
         #chart-pair-title { margin-top: 2.5rem; margin-bottom: 1rem; }
         #chart-timeframe { color: var(--text-muted); }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
-        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; }
+        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
+        .pair-card.active-chart { border-color: var(--accent-primary); }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
@@ -402,56 +403,77 @@ HTML_SKELETON_WITH_CHART = """
             const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let chart = null; // Variable untuk menyimpan instance chart
-            
+            let chart = null; let currentChartPair = null; let lastData = {};
+
+            const updateChart = (pair, marketData) => {
+                if (!pair || !marketData[pair] || !marketData[pair].candles) return;
+                
+                document.getElementById('chart-pair-title').textContent = pair;
+                document.getElementById('chart-timeframe').textContent = marketData[pair].timeframe;
+                
+                const candleSeries = marketData[pair].candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
+                const emaSeries = marketData[pair].ema9_data || [];
+                const currentPrice = marketData[pair].price;
+
+                const newOptions = {
+                    series: [ { name: 'Price', type: 'candlestick', data: candleSeries }, { name: 'EMA 9', type: 'line', data: emaSeries } ],
+                    annotations: { yaxis: [{ y: currentPrice, borderColor: 'var(--accent-primary)', label: { borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' }, text: `Current: ${formatPrice(currentPrice)}` } }] }
+                };
+                
+                if (!chart) {
+                    const options = {
+                        theme: { mode: 'dark' }, stroke: { width: [1, 1.5] },
+                        chart: { type: 'line', height: 350, background: 'transparent', toolbar: { show: false }, animations: { enabled: true, easing: 'easeinout', speed: 800, animateGradually: { enabled: false } } },
+                        xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
+                        yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
+                        grid: { borderColor: 'var(--border-color)' },
+                        tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
+                        legend: { show: false }
+                    };
+                    chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
+                    chart.render();
+                } else { chart.updateOptions(newOptions); }
+            };
+
             const updateUI = data => {
+                if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; }
+
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 
-                // Update Chart
-                const firstPair = Object.keys(data.market_data)[0];
-                if (firstPair && data.market_data[firstPair].candles) {
-                    document.getElementById('chart-pair-title').textContent = firstPair;
-                    document.getElementById('chart-timeframe').textContent = data.market_data[firstPair].timeframe;
-                    const seriesData = data.market_data[firstPair].candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
-                    if (!chart) {
-                        const options = {
-                            series: [{ data: seriesData }], theme: { mode: 'dark' },
-                            chart: { type: 'candlestick', height: 350, background: 'transparent', toolbar: { show: false }, animations: { enabled: false } },
-                            xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
-                            yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' } } },
-                            grid: { borderColor: 'var(--border-color)' },
-                            tooltip: { theme: 'dark' }
-                        };
-                        chart = new ApexCharts(document.querySelector("#chart-container"), options);
-                        chart.render();
-                    } else { chart.updateSeries([{ data: seriesData }]); }
-                }
+                updateChart(currentChartPair, data.market_data);
 
-                // Update Watchlist & History
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''}`;
+                    const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
+                    card.dataset.pair = p;
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 
-                // Update Settings Modal
                 Object.entries(data.settings).forEach(([k, v]) => {
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
                     else { const i = document.getElementById(`s-${k}`); if(i && document.activeElement!==i) i.value=v; }
                 });
             };
-            let lastDataJSON = '';
             const fetchData = async () => {
                 try {
-                    const res = await fetch(API_ENDPOINT); const dataJSON = await res.text();
-                    if(dataJSON !== lastDataJSON) { lastDataJSON = dataJSON; updateUI(JSON.parse(dataJSON)); }
+                    const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json();
+                    if(JSON.stringify(data) !== JSON.stringify(lastData)) { lastData = data; updateUI(data); }
                 } catch(e) { console.error("Update failed:", e); }
             };
+            document.getElementById('watchlist').addEventListener('click', e => {
+                const card = e.target.closest('.pair-card');
+                if (card && card.dataset.pair) {
+                    currentChartPair = card.dataset.pair;
+                    updateChart(currentChartPair, lastData.market_data);
+                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
+                    card.classList.add('active-chart');
+                }
+            });
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
             const modal=document.getElementById('settings-modal');
@@ -476,20 +498,30 @@ def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
+    
+    # Instance tunggal LocalAI untuk efisiensi
+    ai_for_ema = LocalAI(settings_copy, []) 
+
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
-        current_price = pair_state.get("candle_data", [{}])[-1].get('close', 0.0)
+        candle_data = pair_state.get("candle_data", [])
+        current_price = candle_data[-1].get('close', 0.0) if candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        # Menambahkan data candle untuk chart
+        
+        # Kalkulasi EMA 9
+        ema9_values = []
+        if candle_data:
+            ema9_raw = ai_for_ema.calculate_ema(candle_data, 9)
+            if ema9_raw:
+                # Cocokkan timestamp candle dengan nilai EMA
+                start_index = len(candle_data) - len(ema9_raw)
+                ema9_values = [{'x': candle_data[i]['time'], 'y': ema9_raw[i - start_index]} for i in range(start_index, len(candle_data))]
+
         market_data_view[pair_id] = {
-            "price": current_price, 
-            "funding": pair_state.get("funding_rate", 0.0), 
-            "timeframe": timeframe, 
-            "open_position": open_pos, 
-            "pnl": pnl,
-            "candles": pair_state.get("candle_data", []) # Tambahkan ini
+            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, 
+            "open_position": open_pos, "pnl": pnl, "candles": candle_data, "ema9_data": ema9_values
         }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
