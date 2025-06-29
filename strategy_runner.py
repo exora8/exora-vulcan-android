@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, timedelta
 import asyncio
 import math
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, send_from_directory
 
 # --- Dummy Colorama for environments where it's not installed ---
 class DummyColor:
@@ -27,7 +27,6 @@ TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5
 MAX_TRADES_IN_HISTORY = 80
-CHART_CANDLE_LIMIT = 80
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -55,8 +54,9 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("      -- CHART COUNTDOWN TIMER EDITION --         ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- PRO CHARTING LIBRARY EDITION --        ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
+    print_colored("PASTIKAN FOLDER 'charting_library' ADA DI DIREKTORI YANG SAMA!", Fore.RED, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
     print()
@@ -283,13 +283,13 @@ def data_refresh_worker():
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
 # --- TEMPLATE HTML DENGAN PERUBAHAN ---
-HTML_SKELETON_WITH_CHART = """
+HTML_SKELETON_TV_CHART = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vulcan AI Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="/charting_library/charting_library.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -312,10 +312,7 @@ HTML_SKELETON_WITH_CHART = """
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
-        #chart-container { background-color: var(--card-color); padding: 0.5rem; border-radius: 12px; border: 1px solid var(--border-color); }
-        .chart-header { display: flex; justify-content: space-between; align-items: baseline; }
-        #chart-pair-title { margin-top: 2.5rem; margin-bottom: 1rem; }
-        #chart-timeframe { color: var(--text-muted); }
+        #chart-container { height: 500px; width: 100%; }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
         .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
         .pair-card.active-chart { border-color: var(--accent-primary); }
@@ -364,8 +361,7 @@ HTML_SKELETON_WITH_CHART = """
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <div class="chart-header"><h2 id="chart-pair-title">Real-time Chart</h2><span id="chart-timeframe"></span></div>
-        <div id="chart-container"></div>
+        <h2>Real-time Chart</h2><div id="chart-container"></div>
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
@@ -404,61 +400,53 @@ HTML_SKELETON_WITH_CHART = """
             const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let chart = null; let currentChartPair = null; let lastData = {}; let activeCandleCloseTime = 0;
+            let tvWidget = null; let lastData = {}; let currentChartPair = null;
 
-            const getDurationInMs = tf => {
-                if (!tf) return 3600000; // Default 1 hour
-                const unit = tf.slice(-1); const val = parseInt(tf.slice(0, -1));
-                if (unit === 'm') return val * 60 * 1000; if (unit === 'H') return val * 60 * 60 * 1000;
-                if (unit === 'D') return val * 24 * 60 * 60 * 1000; return 3600000;
+            const datafeed = {
+                onReady: callback => setTimeout(() => callback({ supported_resolutions: ["1", "3", "5", "15", "30", "60", "120", "240", "D", "W"] }), 0),
+                resolveSymbol: (symbolName, onSymbolResolvedCallback, onResolveErrorCallback) => {
+                    setTimeout(() => {
+                        onSymbolResolvedCallback({
+                            name: symbolName, full_name: symbolName, description: symbolName, type: 'crypto',
+                            session: '24x7', timezone: 'Etc/UTC', ticker: symbolName,
+                            minmov: 1, pricescale: 10000, has_intraday: true,
+                        });
+                    }, 0);
+                },
+                getBars: (symbolInfo, resolution, periodParams, onHistoryCallback, onErrorCallback) => {
+                    if (!lastData.market_data || !lastData.market_data[symbolInfo.name]) { onHistoryCallback([], {noData: true}); return; }
+                    const candles = lastData.market_data[symbolInfo.name].candles_full;
+                    if (!candles || candles.length === 0) { onHistoryCallback([], {noData: true}); return; }
+                    const bars = candles.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+                    onHistoryCallback(bars, {noData: false});
+                },
+                subscribeBars: (symbolInfo, resolution, onRealtimeCallback, subscriberUID, onResetCacheNeededCallback) => {},
+                unsubscribeBars: subscriberUID => {},
             };
-
-            const updateChart = (pair, marketData) => {
-                if (!pair || !marketData[pair] || !marketData[pair].candles || marketData[pair].candles.length === 0) return;
-                
-                document.getElementById('chart-pair-title').textContent = pair;
-                document.getElementById('chart-timeframe').textContent = marketData[pair].timeframe;
-                
-                const candles = marketData[pair].candles;
-                const lastCandle = candles[candles.length - 1];
-                activeCandleCloseTime = lastCandle.time + getDurationInMs(marketData[pair].timeframe);
-
-                const candleSeries = candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
-                
-                const newOptions = {
-                    series: [
-                        { name: 'Price', type: 'candlestick', data: candleSeries },
-                        { name: 'EMA 9', type: 'line', data: marketData[pair].ema9_data || [] },
-                        { name: 'EMA 50', type: 'line', data: marketData[pair].ema50_data || [] },
-                        { name: 'EMA 100', type: 'line', data: marketData[pair].ema100_data || [] }
-                    ]
+            
+            function initTradingViewChart(pair) {
+                if (tvWidget) { tvWidget.remove(); tvWidget = null; }
+                const widgetOptions = {
+                    symbol: pair, datafeed: datafeed, interval: '60',
+                    container_id: "chart-container", library_path: "/charting_library/",
+                    locale: "en", theme: "Dark", autosize: true,
+                    enabled_features: ["study_templates"],
+                    disabled_features: ["header_symbol_search", "header_resolutions", "header_compare", "header_screenshot", "header_settings", "use_localstorage_for_settings"],
+                    overrides: { "paneProperties.background": "#1E1E1E", "mainSeriesProperties.candleStyle.upColor": "#34D399", "mainSeriesProperties.candleStyle.downColor": "#F87171", "mainSeriesProperties.candleStyle.borderColor": "#888", "mainSeriesProperties.candleStyle.wickUpColor": "#34D399", "mainSeriesProperties.candleStyle.wickDownColor": "#F87171" }
                 };
-                
-                if (!chart) {
-                    const options = {
-                        theme: { mode: 'dark' }, colors: ['#FFFFFF', '#60A5FA', '#FBBF24', '#C4B5FD'],
-                        stroke: { width: [1, 1.5, 1.5, 1.5], curve: 'smooth' },
-                        chart: { type: 'candlestick', height: 350, background: 'transparent', 
-                            toolbar: { show: true, tools: { download: false }, autoSelected: 'zoom' },
-                            animations: { enabled: false }
-                        },
-                        xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
-                        yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
-                        grid: { borderColor: 'var(--border-color)' },
-                        tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
-                        legend: { show: true, position: 'top', horizontalAlign: 'left', markers: { width: 10, height: 10, radius: 12 } }
-                    };
-                    chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
-                    chart.render();
-                } else { chart.updateOptions(newOptions); }
-            };
+                tvWidget = new TradingView.widget(widgetOptions);
+                tvWidget.onChartReady(() => {
+                    tvWidget.chart().createStudy('Moving Average Exponential', false, false, { length: 9 }, { "plot.color": "#60A5FA" });
+                    tvWidget.chart().createStudy('Moving Average Exponential', false, false, { length: 50 }, { "plot.color": "#FBBF24" });
+                    tvWidget.chart().createStudy('Moving Average Exponential', false, false, { length: 100 }, { "plot.color": "#C4B5FD" });
+                });
+            }
 
             const updateUI = data => {
-                if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; }
+                if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; initTradingViewChart(currentChartPair); }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                updateChart(currentChartPair, data.market_data);
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
@@ -476,32 +464,16 @@ HTML_SKELETON_WITH_CHART = """
             const fetchData = async () => {
                 try {
                     const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json();
-                    if(JSON.stringify(data) !== JSON.stringify(lastData)) { lastData = data; updateUI(data); }
+                    const chartNeedsUpdate = JSON.stringify(data.market_data) !== JSON.stringify(lastData.market_data);
+                    lastData = data; 
+                    updateUI(data); 
+                    if(chartNeedsUpdate && tvWidget) { tvWidget.chart().setSymbol(currentChartPair, '60', () => {}); }
                 } catch(e) { console.error("Update failed:", e); }
             };
-            
-            // Countdown Timer
-            setInterval(() => {
-                if (!activeCandleCloseTime || !chart || !currentChartPair || !lastData.market_data) return;
-                const now = new Date().getTime(); const remaining = Math.max(0, activeCandleCloseTime - now);
-                const minutes = Math.floor((remaining / 1000 / 60) % 60).toString().padStart(2, '0');
-                const seconds = Math.floor((remaining / 1000) % 60).toString().padStart(2, '0');
-                const currentPrice = lastData.market_data[currentChartPair].price;
-                chart.updateOptions({
-                    annotations: { yaxis: [{ y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2,
-                        label: {
-                            borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' },
-                            text: `Current: ${formatPrice(currentPrice)} (Close in ${minutes}:${seconds})`,
-                            position: 'left', textAnchor: 'start', offsetX: 10
-                        }
-                    }] }
-                });
-            }, 1000);
-            
             document.getElementById('watchlist').addEventListener('click', e => {
                 const card = e.target.closest('.pair-card');
                 if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
-                    currentChartPair = card.dataset.pair; updateChart(currentChartPair, lastData.market_data);
+                    currentChartPair = card.dataset.pair; initTradingViewChart(currentChartPair);
                     document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart');
                 }
             });
@@ -522,20 +494,19 @@ HTML_SKELETON_WITH_CHART = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_WITH_CHART)
+def dashboard(): return render_template_string(HTML_SKELETON_TV_CHART)
+
+# Rute baru untuk menyajikan file statis dari charting_library
+@app.route('/charting_library/<path:path>')
+def send_charting_library(path):
+    return send_from_directory('charting_library', path)
 
 @app.route('/api/data')
 def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
-    ai_for_ema = LocalAI(settings_copy, []) 
     
-    def format_ema_for_chart(full_candle_data, ema_raw_values):
-        if not ema_raw_values or not full_candle_data: return []
-        start_index = len(full_candle_data) - len(ema_raw_values)
-        return [{'x': full_candle_data[i]['time'], 'y': ema_raw_values[i - start_index]} for i in range(start_index, len(full_candle_data))]
-
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
@@ -544,24 +515,10 @@ def get_api_data():
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         
-        ema9_chart, ema50_chart, ema100_chart, candle_chart = [], [], [], []
-        if full_candle_data:
-            ema9_raw = ai_for_ema.calculate_ema(full_candle_data, 9)
-            ema50_raw = ai_for_ema.calculate_ema(full_candle_data, 50)
-            ema100_raw = ai_for_ema.calculate_ema(full_candle_data, 100)
-            ema9_full = format_ema_for_chart(full_candle_data, ema9_raw)
-            ema50_full = format_ema_for_chart(full_candle_data, ema50_raw)
-            ema100_full = format_ema_for_chart(full_candle_data, ema100_raw)
-            
-            candle_chart = full_candle_data[-CHART_CANDLE_LIMIT:]
-            ema9_chart = ema9_full[-CHART_CANDLE_LIMIT:]
-            ema50_chart = ema50_full[-CHART_CANDLE_LIMIT:]
-            ema100_chart = ema100_full[-CHART_CANDLE_LIMIT:]
-
         market_data_view[pair_id] = {
             "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, 
             "open_position": open_pos, "pnl": pnl, 
-            "candles": candle_chart, "ema9_data": ema9_chart, "ema50_data": ema50_chart, "ema100_data": ema100_chart
+            "candles_full": full_candle_data # Kirim data penuh untuk datafeed TV
         }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
