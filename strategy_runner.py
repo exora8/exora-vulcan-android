@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("         -- LUXURY UI & STABLE EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- AI LEARNING FROM MANUAL TRADES --      ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -183,18 +183,19 @@ class LocalAI:
         SIMILARITY_THRESHOLD = 3
         for loss in losing_trades:
             past_snapshot = loss.get("entry_snapshot")
-            if not past_snapshot or past_snapshot.get('bias') != current_analysis['bias']: continue
+            if not past_snapshot or not past_snapshot.get('bias') or past_snapshot.get('bias') != current_analysis['bias']: continue
             similarity_score = 1
             current_pos_vs_ema50 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema50'] else 'below'
-            past_pos_vs_ema50 = 'above' if past_snapshot['current_candle_close'] > past_snapshot['ema50'] else 'below'
+            past_pos_vs_ema50 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema50', 0) else 'below'
             if current_pos_vs_ema50 == past_pos_vs_ema50: similarity_score += 1
-            if current_analysis['pre_entry_candle_direction'] == past_snapshot.get('pre_entry_candle_direction', []): similarity_score += 1
-            avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 3
-            past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', [0,0,0])
-            avg_solidity_past = sum(past_solidity_list) / 3 if past_solidity_list else 0
-            if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
+            if 'pre_entry_candle_direction' in current_analysis and current_analysis['pre_entry_candle_direction'] == past_snapshot.get('pre_entry_candle_direction', []): similarity_score += 1
+            if 'pre_entry_candle_solidity' in current_analysis and 'pre_entry_candle_solidity' in past_snapshot:
+                avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 3
+                past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', [0,0,0])
+                avg_solidity_past = sum(past_solidity_list) / 3 if past_solidity_list else 0
+                if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
             if similarity_score >= SIMILARITY_THRESHOLD:
-                reason = (f"Peringatan: Mirip loss ID {loss['id']}. Bias: {current_analysis['bias']}, Posisi vs EMA50: {current_pos_vs_ema50}")
+                reason = (f"Peringatan: Mirip loss ID {loss.get('id', 'N/A')}. Bias: {current_analysis['bias']}")
                 return (True, reason)
         return (False, None)
     def get_decision(self, candle_data, open_position, funding_rate=0.0):
@@ -214,24 +215,19 @@ class LocalAI:
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
 
-# --- FUNGSI BARU (SINKRON) UNTUK MENUTUP TRADE DARI WEB ---
 def close_trade_sync(trade, exit_price, reason):
-    """Versi sinkron dari analyze_and_close_trade, aman untuk dipanggil dari Flask."""
     with state_lock:
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
-        if (pnl_gross - current_settings.get('fee_pct', 0.1)) > 0 and 'entry_snapshot' in trade:
+        is_profit = (pnl_gross - current_settings.get('fee_pct', 0.1)) > 0
+        if is_profit and 'entry_snapshot' in trade:
             del trade['entry_snapshot']
-    save_trades() # Simpan perubahan ke file
+    save_trades()
     pnl_net = pnl_gross - current_settings.get('fee_pct', 0.1)
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
     send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
-
-async def analyze_and_close_trade_async(trade, exit_price, reason):
-    """Versi async yang ada sebelumnya, sekarang hanya untuk AI di background."""
-    close_trade_sync(trade, exit_price, reason) # Cukup panggil versi sinkronnya
 
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
@@ -261,39 +257,27 @@ def autopilot_worker():
         else: time.sleep(1)
 async def check_realtime_position_management(trade_obj, current_candle_data):
     if not trade_obj or not trade_obj.get('type'): return
-    
     sl_pct = current_settings.get('stop_loss_pct')
-    if trade_obj.get('type') == 'LONG':
-        sl_price = trade_obj['entryPrice'] * (1 - sl_pct / 100)
-        if current_candle_data['low'] <= sl_price:
-            await analyze_and_close_trade_async(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
-    elif trade_obj.get('type') == 'SHORT':
-        sl_price = trade_obj['entryPrice'] * (1 + sl_pct / 100)
-        if current_candle_data['high'] >= sl_price:
-            await analyze_and_close_trade_async(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
+    if trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= trade_obj['entryPrice'] * (1 - sl_pct / 100):
+        close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
+    elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
+        close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     
-    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
-    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
-    
+    ts_price = None
     with state_lock:
         if pnl_now >= activation_pct:
             current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
             if current_cp == 0.0: current_cp = activation_pct
             steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
             if steps_passed >= 0:
-                new_cp = current_cp + (steps_passed * gap_pct)
-                trade_obj['current_tp_checkpoint_level'] = new_cp
-                new_ts_level = new_cp - gap_pct
-                trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj.get('type') == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
-        
+                new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
+                new_ts_level = new_cp - gap_pct; trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj.get('type') == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
         ts_price = trade_obj.get('trailing_stop_price')
-    
     if ts_price is not None:
-        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or \
-           (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
-            await analyze_and_close_trade_async(trade_obj, ts_price, "Trailing TP")
-            return
+        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+            close_trade_sync(trade_obj, ts_price, "Trailing TP")
 def data_refresh_worker():
     while not stop_event.is_set():
         for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
@@ -494,11 +478,38 @@ def toggle_ai():
 def trade_manual():
     data = request.form; pair = data.get('pair'); trade_type = data.get('type')
     if not pair or not trade_type: return jsonify(success=False, error="Data tidak lengkap"), 400
-    current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
+    
+    pair_state = market_state.get(pair, {})
+    candle_data = pair_state.get("candle_data")
+    current_price = candle_data[-1].get('close') if candle_data else None
+
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
+    
+    # --- LOGIKA BARU: Membuat snapshot untuk trade manual ---
+    entry_snapshot = {}
+    if candle_data and len(candle_data) >= 100 + 3:
+        with state_lock:
+            relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
+        ai_analyzer = LocalAI(current_settings, relevant_trades_history)
+        analysis_result = ai_analyzer.get_market_analysis(candle_data)
+        if analysis_result:
+            analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
+            entry_snapshot = analysis_result
+            print_colored(f"Snapshot berhasil dibuat untuk trade manual {pair}.", Fore.CYAN)
+        else:
+            print_colored(f"Peringatan: Gagal membuat snapshot untuk trade manual {pair} (analisis gagal).", Fore.YELLOW)
+    else:
+        print_colored(f"Peringatan: Gagal membuat snapshot untuk trade manual {pair} (data candle tidak cukup).", Fore.YELLOW)
+    # --- AKHIR LOGIKA BARU ---
+
     with state_lock:
         if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
-        new_trade = {"id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None}
+        new_trade = {
+            "id": int(time.time()), "instrumentId": pair, "type": trade_type, 
+            "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, 
+            "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None,
+            "entry_snapshot": entry_snapshot # Menyimpan snapshot yang baru dibuat
+        }
         trades.insert(0, new_trade)
         print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
@@ -507,7 +518,6 @@ def trade_manual():
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
     trade_to_close = None
-    # Cari trade di luar lock untuk menghindari menahan lock terlalu lama
     with state_lock:
         trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
     
@@ -518,7 +528,7 @@ def trade_close():
     
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
     
-    # Panggil fungsi sinkron yang aman
+    # Memanggil fungsi sinkron yang aman untuk menghindari crash
     close_trade_sync(trade_to_close, current_price, "Manual Close")
     return jsonify(success=True)
 
@@ -528,26 +538,16 @@ def update_settings():
     with state_lock:
         for key, value in request.form.items():
             if key in current_settings and key != 'watched_pairs':
-                try:
-                    # Coba konversi ke float jika ada titik, jika tidak coba ke int.
-                    if '.' in value:
-                        current_settings[key] = float(value)
-                    else:
-                        current_settings[key] = int(value)
-                except ValueError:
-                    # Jika gagal, biarkan sebagai string (berguna untuk API key jika ada di masa depan)
-                    current_settings[key] = value
+                try: current_settings[key] = float(value) if '.' in value else int(value)
+                except ValueError: pass
         save_settings()
-    print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN)
-    return jsonify(success=True)
+    print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
 
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
     pair = request.form.get('pair'); tf = request.form.get('tf', '1H')
     if pair:
-        with state_lock:
-            current_settings['watched_pairs'][pair] = tf
-            save_settings()
+        with state_lock: current_settings['watched_pairs'][pair] = tf; save_settings()
         print_colored(f"{pair} ({tf}) ditambahkan ke watchlist.", Fore.GREEN)
     return jsonify(success=True)
 
@@ -556,8 +556,7 @@ def remove_watchlist():
     pair = request.form.get('pair')
     with state_lock:
         if pair in current_settings['watched_pairs']:
-            del current_settings['watched_pairs'][pair]
-            save_settings()
+            del current_settings['watched_pairs'][pair]; save_settings()
             print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
 
