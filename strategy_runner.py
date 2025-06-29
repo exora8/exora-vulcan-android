@@ -27,6 +27,7 @@ TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5
 MAX_TRADES_IN_HISTORY = 80
+CHART_CANDLE_LIMIT = 80 # Batas candle untuk ditampilkan di chart
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -54,7 +55,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- PERSISTENT ZOOM CHART EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- ADVANCED CHARTING EDITION --           ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -412,52 +413,52 @@ HTML_SKELETON_WITH_CHART = """
                 document.getElementById('chart-timeframe').textContent = marketData[pair].timeframe;
                 
                 const candleSeries = marketData[pair].candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
-                const emaSeries = marketData[pair].ema9_data || [];
                 const currentPrice = marketData[pair].price;
 
+                const newOptions = {
+                    series: [
+                        { name: 'Price', type: 'candlestick', data: candleSeries },
+                        { name: 'EMA 9', type: 'line', data: marketData[pair].ema9_data || [] },
+                        { name: 'EMA 50', type: 'line', data: marketData[pair].ema50_data || [] },
+                        { name: 'EMA 100', type: 'line', data: marketData[pair].ema100_data || [] }
+                    ],
+                    annotations: {
+                        yaxis: [{
+                            y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2,
+                            label: {
+                                borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' },
+                                text: `Current: ${formatPrice(currentPrice)}`, position: 'left', textAnchor: 'start', offsetX: 10
+                            }
+                        }]
+                    }
+                };
+                
                 if (!chart) {
                     const options = {
-                        series: [{ name: 'Price', type: 'candlestick', data: candleSeries }, { name: 'EMA 9', type: 'line', data: emaSeries }],
-                        theme: { mode: 'dark' }, stroke: { width: [1, 1.5], curve: 'smooth' },
-                        chart: { type: 'line', height: 350, background: 'transparent', toolbar: { show: true, tools: { download: false } }, animations: { enabled: false } },
+                        theme: { mode: 'dark' },
+                        colors: ['#FFFFFF', '#00BFFF', '#FFD700', '#C792EA'], // Candle, EMA9, EMA50, EMA100
+                        stroke: { width: [1, 1.5, 1.5, 1.5], curve: 'smooth' },
+                        chart: { type: 'candlestick', height: 350, background: 'transparent', 
+                            toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' },
+                            animations: { enabled: false }
+                        },
                         xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
                         yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
                         grid: { borderColor: 'var(--border-color)' },
                         tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
-                        legend: { show: false }
+                        legend: { show: true, position: 'top', horizontalAlign: 'left', markers: { width: 10, height: 10, radius: 12 } }
                     };
-                    chart = new ApexCharts(document.querySelector("#chart-container"), options);
+                    chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
                     chart.render();
-                } else {
-                    chart.updateSeries([ { data: candleSeries }, { data: emaSeries } ]);
-                }
-                
-                // --- LOGIKA BARU: Update annotations secara terpisah ---
-                chart.clearAnnotations();
-                chart.addYaxisAnnotation({
-                    y: currentPrice,
-                    borderColor: 'var(--accent-primary)',
-                    strokeDashArray: 4,
-                    label: {
-                        borderColor: 'var(--accent-primary)',
-                        style: { color: '#fff', background: 'var(--accent-primary)' },
-                        text: `Current: ${formatPrice(currentPrice)}`,
-                        position: 'left',
-                        textAnchor: 'start',
-                        offsetX: 10
-                    }
-                });
+                } else { chart.updateOptions(newOptions); }
             };
 
             const updateUI = data => {
                 if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; }
-
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                
                 updateChart(currentChartPair, data.market_data);
-
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
@@ -467,7 +468,6 @@ HTML_SKELETON_WITH_CHART = """
                     watchlistEl.appendChild(card);
                 });
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
-                
                 Object.entries(data.settings).forEach(([k, v]) => {
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
                     else { const i = document.getElementById(`s-${k}`); if(i && document.activeElement!==i) i.value=v; }
@@ -513,20 +513,41 @@ def get_api_data():
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
     ai_for_ema = LocalAI(settings_copy, []) 
+    
+    def format_ema_for_chart(full_candle_data, ema_raw_values):
+        if not ema_raw_values or not full_candle_data: return []
+        start_index = len(full_candle_data) - len(ema_raw_values)
+        return [{'x': full_candle_data[i]['time'], 'y': ema_raw_values[i - start_index]} for i in range(start_index, len(full_candle_data))]
+
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
-        candle_data = pair_state.get("candle_data", [])
-        current_price = candle_data[-1].get('close', 0.0) if candle_data else 0.0
+        full_candle_data = pair_state.get("candle_data", [])
+        current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        ema9_values = []
-        if candle_data:
-            ema9_raw = ai_for_ema.calculate_ema(candle_data, 9)
-            if ema9_raw:
-                start_index = len(candle_data) - len(ema9_raw)
-                ema9_values = [{'x': candle_data[i]['time'], 'y': ema9_raw[i - start_index]} for i in range(start_index, len(candle_data))]
-        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "candles": candle_data, "ema9_data": ema9_values }
+        
+        ema9_chart, ema50_chart, ema100_chart, candle_chart = [], [], [], []
+        if full_candle_data:
+            ema9_raw = ai_for_ema.calculate_ema(full_candle_data, 9)
+            ema50_raw = ai_for_ema.calculate_ema(full_candle_data, 50)
+            ema100_raw = ai_for_ema.calculate_ema(full_candle_data, 100)
+            
+            ema9_full = format_ema_for_chart(full_candle_data, ema9_raw)
+            ema50_full = format_ema_for_chart(full_candle_data, ema50_raw)
+            ema100_full = format_ema_for_chart(full_candle_data, ema100_raw)
+            
+            # Slice semua data untuk chart setelah perhitungan
+            candle_chart = full_candle_data[-CHART_CANDLE_LIMIT:]
+            ema9_chart = ema9_full[-CHART_CANDLE_LIMIT:]
+            ema50_chart = ema50_full[-CHART_CANDLE_LIMIT:]
+            ema100_chart = ema100_full[-CHART_CANDLE_LIMIT:]
+
+        market_data_view[pair_id] = {
+            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, 
+            "open_position": open_pos, "pnl": pnl, 
+            "candles": candle_chart, "ema9_data": ema9_chart, "ema50_data": ema50_chart, "ema100_data": ema100_chart
+        }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
 @app.route('/toggle-ai', methods=['POST'])
@@ -578,7 +599,7 @@ def update_settings():
             if key in current_settings and key != 'watched_pairs':
                 try: current_settings[key] = float(value) if '.' in value else int(value)
                 except ValueError: pass
-        save_trades()
+        save_settings()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
 
 @app.route('/api/watchlist/add', methods=['POST'])
