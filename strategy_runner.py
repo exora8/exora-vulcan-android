@@ -27,6 +27,10 @@ TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5
 MAX_TRADES_IN_HISTORY = 80
+CHART_CANDLE_LIMIT = 80
+# Kamus untuk durasi timeframe dalam milidetik
+TIMEFRAME_MS = { '1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000, '2H': 7200000, '4H': 14400000, '1D': 86400000, '1W': 604800000 }
+
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -54,7 +58,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("      -- INTERACTIVE CHART & EMA EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("       -- CANDLE COUNTDOWN TIMER EDITION --       ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -289,7 +293,6 @@ HTML_SKELETON_WITH_CHART = """
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vulcan AI Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
-    <script src="https://s3.tradingview.com/tv.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -308,14 +311,14 @@ HTML_SKELETON_WITH_CHART = """
         .action-btn.ai-status.running { color: var(--green); }
         .action-btn.ai-status.stopped { color: var(--red); }
         .pnl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; }
-        .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; }
+        .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; transition: transform 0.2s ease; }
+        .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
-        #chart-container, #secondary-chart-container { background-color: var(--card-color); padding: 0.5rem; border-radius: 12px; border: 1px solid var(--border-color); }
-        #secondary-chart-container { height: 450px; }
+        #chart-container { background-color: var(--card-color); padding: 0.5rem; border-radius: 12px; border: 1px solid var(--border-color); }
         .chart-header { display: flex; justify-content: space-between; align-items: baseline; }
         #chart-pair-title { margin-top: 2.5rem; margin-bottom: 1rem; }
-        #chart-extra-info { color: var(--text-muted); }
+        #chart-timeframe { color: var(--text-muted); }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
         .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
         .pair-card.active-chart { border-color: var(--accent-primary); }
@@ -364,10 +367,8 @@ HTML_SKELETON_WITH_CHART = """
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <div class="chart-header"><h2 id="chart-pair-title">Real-time Chart</h2><div id="chart-extra-info"></div></div>
+        <div class="chart-header"><h2 id="chart-pair-title">Real-time Chart</h2><span id="chart-timeframe"></span></div>
         <div id="chart-container"></div>
-        <h2 id="secondary-chart-title"></h2>
-        <div id="secondary-chart-container"></div>
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
@@ -406,91 +407,80 @@ HTML_SKELETON_WITH_CHART = """
             const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let chart = null; let currentChartPair = null; let lastData = {}; let candleCountdownInterval = null;
+            let chart = null; let currentChartPair = null; let lastData = {}; let countdownInterval = null;
 
-            const startCandleCountdown = (lastCandleTime, timeframeString) => {
-                if (candleCountdownInterval) clearInterval(candleCountdownInterval);
-                const tfMap = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400 };
-                const intervalSeconds = tfMap[timeframeString] || 3600;
-                const closeTime = lastCandleTime + (intervalSeconds * 1000);
-                const timerEl = document.getElementById('chart-extra-info');
-                
-                candleCountdownInterval = setInterval(() => {
+            const startCountdown = (closeTimestamp) => {
+                clearInterval(countdownInterval);
+                const countdownEl = document.getElementById('candle-countdown');
+                if (!countdownEl) return;
+
+                countdownInterval = setInterval(() => {
                     const now = new Date().getTime();
-                    const remaining = closeTime - now;
-                    if (remaining <= 0) {
-                        timerEl.innerHTML = `<span>${timeframeString}</span> | <span class="text-yellow">New Candle...</span>`;
-                        clearInterval(candleCountdownInterval);
+                    const distance = closeTimestamp - now;
+                    if (distance < 0) {
+                        countdownEl.innerHTML = "Closing...";
+                        clearInterval(countdownInterval);
                     } else {
-                        const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-                        const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
-                        timerEl.innerHTML = `<span>${timeframeString}</span> | <span style="color:var(--text-color)">${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</span> to close`;
+                        const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                        const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+                        countdownEl.innerHTML = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
                     }
                 }, 1000);
             };
 
-            const updateEmbeddedChart = (pair, timeframe) => {
-                const container = document.getElementById('secondary-chart-container');
-                container.innerHTML = '';
-                document.getElementById('secondary-chart-title').textContent = `${pair} on Binance`;
-                const tfMap = { '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D' };
-                const tradingViewTf = tfMap[timeframe] || '60';
-
-                new TradingView.widget({
-                    "width": "100%", "height": "100%",
-                    "symbol": `BINANCE:${pair.replace('-', '')}P`, // ".P" untuk Perpetual
-                    "interval": tradingViewTf,
-                    "timezone": "Etc/UTC",
-                    "theme": "dark",
-                    "style": "1",
-                    "locale": "en",
-                    "toolbar_bg": "#f1f3f6",
-                    "enable_publishing": false,
-                    "hide_top_toolbar": true,
-                    "withdateranges": true,
-                    "save_image": false,
-                    "container_id": "secondary-chart-container",
-                    "studies": [
-                        "EMA@tv-basicstudies;9",
-                        "EMA@tv-basicstudies;50",
-                        "EMA@tv-basicstudies;100"
-                    ]
-                });
-            };
-
             const updateChart = (pair, marketData) => {
-                if (!pair || !marketData[pair] || !marketData[pair].candles || marketData[pair].candles.length === 0) return;
+                if (!pair || !marketData[pair] || !marketData[pair].candles) return;
                 
-                document.getElementById('chart-pair-title').textContent = `AI Chart: ${pair}`;
-                const lastCandle = marketData[pair].candles[marketData[pair].candles.length - 1];
-                startCandleCountdown(lastCandle.time, marketData[pair].timeframe);
-
+                document.getElementById('chart-pair-title').textContent = pair;
+                document.getElementById('chart-timeframe').textContent = marketData[pair].timeframe;
+                
                 const candleSeries = marketData[pair].candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
                 const currentPrice = marketData[pair].price;
+                const priceLineLabel = `Current: ${formatPrice(currentPrice)} | Close in: <span id="candle-countdown"></span>`;
 
                 const newOptions = {
                     series: [
                         { name: 'Price', type: 'candlestick', data: candleSeries },
                         { name: 'EMA 9', type: 'line', data: marketData[pair].ema9_data || [] },
+                        { name: 'EMA 50', type: 'line', data: marketData[pair].ema50_data || [] },
+                        { name: 'EMA 100', type: 'line', data: marketData[pair].ema100_data || [] }
                     ],
-                    annotations: { yaxis: [{ y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2, label: { borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' }, text: `Current: ${formatPrice(currentPrice)}`, position: 'left', textAnchor: 'start', offsetX: 10 } }] }
+                    annotations: {
+                        yaxis: [{
+                            y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2,
+                            label: {
+                                text: priceLineLabel, borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)', padding: { left: 10, right: 10, top: 2, bottom: 2 } },
+                                position: 'left', textAnchor: 'start', offsetX: 10
+                            }
+                        }]
+                    }
                 };
                 
                 if (!chart) {
                     const options = {
-                        theme: { mode: 'dark' }, stroke: { width: [1, 1.5] },
-                        chart: { type: 'line', height: 350, background: 'transparent', toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' }, animations: { enabled: false } },
+                        theme: { mode: 'dark' }, colors: ['#FFFFFF', '#00BFFF', '#FFD700', '#C792EA'],
+                        stroke: { width: [1.5, 1.5, 1.5, 1.5], curve: 'smooth' },
+                        chart: { type: 'candlestick', height: 350, background: 'transparent', 
+                            toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' },
+                            animations: { enabled: false }
+                        },
                         xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
                         yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
-                        grid: { borderColor: 'var(--border-color)' }, tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } }, legend: { show: false }
+                        grid: { borderColor: 'var(--border-color)' },
+                        tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
+                        legend: { show: true, position: 'top', horizontalAlign: 'left', markers: { width: 10, height: 10, radius: 12 } }
                     };
                     chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
                     chart.render();
                 } else { chart.updateOptions(newOptions); }
+
+                if (marketData[pair].candle_close_timestamp_ms) {
+                    startCountdown(marketData[pair].candle_close_timestamp_ms);
+                }
             };
 
             const updateUI = data => {
-                if (!currentChartPair) { const firstPair = Object.keys(data.market_data)[0]; if (firstPair) { currentChartPair = firstPair; updateEmbeddedChart(firstPair, data.market_data[firstPair].timeframe); }}
+                if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
@@ -518,9 +508,7 @@ HTML_SKELETON_WITH_CHART = """
             document.getElementById('watchlist').addEventListener('click', e => {
                 const card = e.target.closest('.pair-card');
                 if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
-                    currentChartPair = card.dataset.pair;
-                    updateChart(currentChartPair, lastData.market_data);
-                    updateEmbeddedChart(currentChartPair, lastData.market_data[currentChartPair].timeframe);
+                    currentChartPair = card.dataset.pair; updateChart(currentChartPair, lastData.market_data);
                     document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
                     card.classList.add('active-chart');
                 }
@@ -550,19 +538,37 @@ def get_api_data():
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
     ai_for_ema = LocalAI(settings_copy, []) 
+    
+    def format_ema_for_chart(full_candle_data, ema_raw_values):
+        if not ema_raw_values or not full_candle_data: return []
+        start_index = len(full_candle_data) - len(ema_raw_values)
+        return [{'x': full_candle_data[i]['time'], 'y': ema_raw_values[i - start_index]} for i in range(start_index, len(full_candle_data))]
+
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
-        candle_data = pair_state.get("candle_data", [])
-        current_price = candle_data[-1].get('close', 0.0) if candle_data else 0.0
+        full_candle_data = pair_state.get("candle_data", [])
+        current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        ema9_values = []
-        if candle_data:
-            ema9_raw = ai_for_ema.calculate_ema(candle_data, 9)
-            start_index = len(candle_data) - len(ema9_raw)
-            ema9_values = [{'x': candle_data[i]['time'], 'y': ema9_raw[i - start_index]} for i in range(start_index, len(candle_data))]
-        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "candles": candle_data, "ema9_data": ema9_values }
+        
+        ema9_chart, ema50_chart, ema100_chart, candle_chart, close_ts = [], [], [], [], None
+        if full_candle_data:
+            ema9_raw = ai_for_ema.calculate_ema(full_candle_data, 9); ema50_raw = ai_for_ema.calculate_ema(full_candle_data, 50); ema100_raw = ai_for_ema.calculate_ema(full_candle_data, 100)
+            ema9_full = format_ema_for_chart(full_candle_data, ema9_raw); ema50_full = format_ema_for_chart(full_candle_data, ema50_raw); ema100_full = format_ema_for_chart(full_candle_data, ema100_raw)
+            
+            candle_chart = full_candle_data[-CHART_CANDLE_LIMIT:]; ema9_chart = ema9_full[-CHART_CANDLE_LIMIT:]; ema50_chart = ema50_full[-CHART_CANDLE_LIMIT:]; ema100_chart = ema100_full[-CHART_CANDLE_LIMIT:]
+            
+            # Hitung timestamp penutupan candle
+            latest_candle_open_time = full_candle_data[-1]['time']
+            timeframe_duration_ms = TIMEFRAME_MS.get(timeframe.upper(), 3600000) # Default ke 1 jam jika tidak ditemukan
+            close_ts = latest_candle_open_time + timeframe_duration_ms
+
+        market_data_view[pair_id] = {
+            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, 
+            "open_position": open_pos, "pnl": pnl, "candles": candle_chart, "ema9_data": ema9_chart, 
+            "ema50_data": ema50_chart, "ema100_data": ema100_chart, "candle_close_timestamp_ms": close_ts
+        }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
 @app.route('/toggle-ai', methods=['POST'])
