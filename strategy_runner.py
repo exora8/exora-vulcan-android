@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("      -- INTERACTIVE CHART & EMA EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("      -- ZOOM & PAN CHART CONTROLS EDITION --     ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -417,13 +417,33 @@ HTML_SKELETON_WITH_CHART = """
 
                 const newOptions = {
                     series: [ { name: 'Price', type: 'candlestick', data: candleSeries }, { name: 'EMA 9', type: 'line', data: emaSeries } ],
-                    annotations: { yaxis: [{ y: currentPrice, borderColor: 'var(--accent-primary)', label: { borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' }, text: `Current: ${formatPrice(currentPrice)}` } }] }
+                    // --- PERUBAHAN ANNOTATIONS DI SINI ---
+                    annotations: {
+                        yaxis: [{
+                            y: currentPrice,
+                            borderColor: 'var(--accent-primary)',
+                            strokeDashArray: 2,
+                            label: {
+                                borderColor: 'var(--accent-primary)',
+                                style: { color: '#fff', background: 'var(--accent-primary)' },
+                                text: `Current: ${formatPrice(currentPrice)}`,
+                                position: 'left', // Pindahkan ke kiri
+                                textAnchor: 'start', // Mulai teks dari kiri
+                                offsetX: 10 // Beri sedikit padding
+                            }
+                        }]
+                    }
                 };
                 
                 if (!chart) {
                     const options = {
                         theme: { mode: 'dark' }, stroke: { width: [1, 1.5] },
-                        chart: { type: 'line', height: 350, background: 'transparent', toolbar: { show: false }, animations: { enabled: true, easing: 'easeinout', speed: 800, animateGradually: { enabled: false } } },
+                        // --- PERUBAHAN TOOLBAR & ANIMASI DI SINI ---
+                        chart: { 
+                            type: 'candlestick', height: 350, background: 'transparent', 
+                            toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' },
+                            animations: { enabled: false } // Matikan animasi untuk interaksi cepat
+                        },
                         xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
                         yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
                         grid: { borderColor: 'var(--border-color)' },
@@ -467,7 +487,7 @@ HTML_SKELETON_WITH_CHART = """
             };
             document.getElementById('watchlist').addEventListener('click', e => {
                 const card = e.target.closest('.pair-card');
-                if (card && card.dataset.pair) {
+                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
                     currentChartPair = card.dataset.pair;
                     updateChart(currentChartPair, lastData.market_data);
                     document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
@@ -498,10 +518,7 @@ def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
-    
-    # Instance tunggal LocalAI untuk efisiensi
     ai_for_ema = LocalAI(settings_copy, []) 
-
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         candle_data = pair_state.get("candle_data", [])
@@ -509,20 +526,13 @@ def get_api_data():
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        
-        # Kalkulasi EMA 9
         ema9_values = []
         if candle_data:
             ema9_raw = ai_for_ema.calculate_ema(candle_data, 9)
             if ema9_raw:
-                # Cocokkan timestamp candle dengan nilai EMA
                 start_index = len(candle_data) - len(ema9_raw)
                 ema9_values = [{'x': candle_data[i]['time'], 'y': ema9_raw[i - start_index]} for i in range(start_index, len(candle_data))]
-
-        market_data_view[pair_id] = {
-            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, 
-            "open_position": open_pos, "pnl": pnl, "candles": candle_data, "ema9_data": ema9_values
-        }
+        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "candles": candle_data, "ema9_data": ema9_values }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
 @app.route('/toggle-ai', methods=['POST'])
