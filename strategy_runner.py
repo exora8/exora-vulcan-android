@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("          -- REAL-TIME CHART EDITION --           ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("          -- REAL-TIME CHART EDITION (FIXED) --     ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -169,11 +169,7 @@ class LocalAI:
         pre_entry_candles = candle_data[-4:-1]
         analysis["pre_entry_candle_solidity"] = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
         analysis["pre_entry_candle_direction"] = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
-        
-        # PERUBAHAN: Sertakan data EMA series untuk chart
-        analysis["ema9_series"] = ema9_full
-        analysis["ema50_series"] = ema50_full
-        
+        analysis["ema9_series"] = ema9_full; analysis["ema50_series"] = ema50_full
         return analysis
     def check_for_repeated_mistake(self, current_analysis):
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) < 0]
@@ -279,36 +275,24 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
 def data_refresh_worker():
     global market_state
     while not stop_event.is_set():
-        # PERUBAHAN: Lakukan analisis di sini untuk menyertakan data EMA di API
         temp_market_state = {}
         for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
             candle_data = fetch_recent_candles(pair_id, timeframe)
             funding_rate = fetch_funding_rate(pair_id)
             analysis_data = None
             if candle_data:
-                ai = LocalAI(current_settings, []) # Past trades tidak relevan untuk sekedar analisis
+                ai = LocalAI(current_settings, [])
                 analysis_data = ai.get_market_analysis(candle_data)
-
-            temp_market_state[pair_id] = {
-                'candle_data': candle_data,
-                'funding_rate': funding_rate if funding_rate is not None else 0.0,
-                'analysis': analysis_data
-            }
-            # Cek SL/TP di sini
+            temp_market_state[pair_id] = {'candle_data': candle_data, 'funding_rate': funding_rate if funding_rate is not None else 0.0, 'analysis': analysis_data}
             if candle_data:
-                with state_lock:
-                    open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                if open_pos:
-                    asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
+                with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
             time.sleep(0.2)
-        
-        with state_lock:
-            market_state = temp_market_state
-            
+        with state_lock: market_state = temp_market_state
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
 # --- TEMPLATE HTML DENGAN PERUBAHAN CSS ---
-HTML_SKELETON_CHART = """
+HTML_SKELETON_CHART_FIXED = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -336,16 +320,17 @@ HTML_SKELETON_CHART = """
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
-        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
+        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
-        .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; pointer-events: none; }
+        .pair-card .card-main-content { cursor: pointer; } /* Area yang bisa diklik untuk chart */
+        .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
         .pair-price { font-size: 1.25rem; color: var(--text-muted); }
-        .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; pointer-events: none; }
-        .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; pointer-events: auto; }
+        .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
+        .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
         .btn-long { background-color: var(--green); color: #fff; } .btn-short { background-color: var(--red); color: #fff; } .btn-close { background-color: var(--yellow); color: var(--bg-color); }
-        .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto; pointer-events: none; }
+        .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
         .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
         .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
         .history-list { list-style: none; padding: 0; }
@@ -355,10 +340,10 @@ HTML_SKELETON_CHART = """
         .history-pair { color: var(--text-muted); }
         .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
         .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
-        .settings-modal, .chart-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
-        .settings-modal.visible, .chart-modal.visible { display: flex; opacity: 1; }
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
+        .modal.visible { display: flex; opacity: 1; }
         .modal-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-height: 90vh; overflow-y: auto; }
-        .modal-content.chart-content { max-width: 900px; height: 70vh; padding: 1rem; display: flex; flex-direction: column; }
+        .chart-content { max-width: 900px; height: 70vh; padding: 1rem; display: flex; flex-direction: column; }
         .modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 1rem; }
         #chart-container { width: 100%; height: 100%; flex-grow: 1; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
@@ -375,7 +360,7 @@ HTML_SKELETON_CHART = """
             .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
             .history-item { flex-direction: column; align-items: flex-start; }
             .history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
-            .modal-content.chart-content { width: 95%; height: 80vh; }
+            .chart-content { width: 95%; height: 80vh; }
         }
     </style>
 </head>
@@ -386,8 +371,8 @@ HTML_SKELETON_CHART = """
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
-    <div id="settings-modal" class="settings-modal"><div id="settings-content" class="modal-content"></div></div>
-    <div id="chart-modal" class="chart-modal"><div id="chart-content" class="modal-content chart-content"></div></div>
+    <div id="settings-modal" class="modal"><div id="settings-content" class="modal-content"></div></div>
+    <div id="chart-modal" class="modal"><div id="chart-content" class="modal-content chart-content"></div></div>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT = '/api/data'; const REFRESH_INTERVAL_MS = 3000;
@@ -404,38 +389,28 @@ HTML_SKELETON_CHART = """
                 if (!data || !data.candles) { console.error('No candle data available for chart.'); return; }
                 const chartContent = document.getElementById('chart-content');
                 chartContent.innerHTML = `<div class="modal-header"><h2>${pair} Chart</h2><button id="close-chart-btn" style="background:none;border:none;color:var(--text-color);font-size:2rem;cursor:pointer;">×</button></div><div id="chart-container"></div>`;
-                document.getElementById('close-chart-btn').addEventListener('click', () => chartModal.classList.remove('visible'));
-                
+                document.getElementById('close-chart-btn').addEventListener('click', () => { chartModal.classList.remove('visible'); if(chart) { chart.remove(); chart = null; } });
                 const chartContainer = document.getElementById('chart-container');
-                chart = LightweightCharts.createChart(chartContainer, {
-                    layout: { backgroundColor: 'var(--card-color)', textColor: 'var(--text-muted)' },
-                    grid: { vertLines: { color: 'var(--border-color)' }, horzLines: { color: 'var(--border-color)' } },
-                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                    rightPriceScale: { borderColor: 'var(--border-color)' },
-                    timeScale: { borderColor: 'var(--border-color)' }
-                });
+                chart = LightweightCharts.createChart(chartContainer, { layout: { backgroundColor: 'var(--card-color)', textColor: 'var(--text-muted)' }, grid: { vertLines: { color: 'var(--border-color)' }, horzLines: { color: 'var(--border-color)' } } });
                 const candleSeries = chart.addCandlestickSeries({ upColor: 'var(--green)', downColor: 'var(--red)', borderVisible: false, wickUpColor: 'var(--green)', wickDownColor: 'var(--red)' });
                 const candlestickData = data.candles.map(c => ({ time: c.time / 1000, open: c.open, high: c.high, low: c.low, close: c.close }));
                 candleSeries.setData(candlestickData);
-                
                 if (data.analysis && data.analysis.ema9_series) {
-                    const ema9Series = chart.addLineSeries({ color: 'var(--ema9-color)', lineWidth: 2 });
+                    const ema9Series = chart.addLineSeries({ color: 'var(--ema9-color)', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
                     const ema9Data = data.analysis.ema9_series.map((val, index) => ({ time: data.candles[index].time / 1000, value: val }));
                     ema9Series.setData(ema9Data);
                 }
                 if (data.analysis && data.analysis.ema50_series) {
-                    const ema50Series = chart.addLineSeries({ color: 'var(--ema50-color)', lineWidth: 2 });
+                    const ema50Series = chart.addLineSeries({ color: 'var(--ema50-color)', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
                     const ema50Data = data.analysis.ema50_series.map((val, index) => ({ time: data.candles[index].time / 1000, value: val }));
                     ema50Series.setData(ema50Data);
                 }
-                
-                chart.timeScale().fitContent();
-                chartModal.classList.add('visible');
+                chart.timeScale().fitContent(); chartModal.classList.add('visible');
                 const handleResize = () => chart.applyOptions({ width: chartContainer.clientWidth });
                 window.addEventListener('resize', handleResize);
                 chartModal.addEventListener('transitionend', () => window.removeEventListener('resize', handleResize), { once: true });
             };
-
+            
             const updateUI = data => {
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
@@ -444,9 +419,9 @@ HTML_SKELETON_CHART = """
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div');
                     card.className = `pair-card ${d.open_position ? 'position-open' : ''}`;
-                    card.dataset.pair = p; // For chart click
-                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                    card.dataset.pair = p;
+                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form"><input type="hidden" name="trade_id" value="${d.open_position.id}"><button type="submit" class="btn btn-close" formaction="/trade/close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form"><input type="hidden" name="pair" value="${p}"><input type="hidden" name="type" value="LONG"><button type="submit" class="btn btn-long" formaction="/trade/manual">Long</button></form><form class="trade-form"><input type="hidden" name="pair" value="${p}"><input type="hidden" name="type" value="SHORT"><button type="submit" class="btn btn-short" formaction="/trade/manual">Short</button></form></div>`;
+                    card.innerHTML = `<div class="card-main-content"><div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
@@ -468,17 +443,19 @@ HTML_SKELETON_CHART = """
                     lastData = data; updateUI(data);
                 } catch(e) { console.error("Update failed:", e); }
             };
-            document.getElementById('watchlist').addEventListener('click', e => {
-                const card = e.target.closest('.pair-card');
-                if (card && lastData.market_data) {
-                    openChartModal(card.dataset.pair, lastData.market_data[card.dataset.pair]);
+            document.body.addEventListener('click', e => {
+                if(e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair});
+                const cardContent = e.target.closest('.card-main-content');
+                if (cardContent) {
+                    const card = cardContent.closest('.pair-card');
+                    if (card && lastData.market_data) {
+                        openChartModal(card.dataset.pair, lastData.market_data[card.dataset.pair]);
+                    }
                 }
             });
-            document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
-            document.getElementById('settings-modal').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
+            document.body.addEventListener('submit', e => { if (e.target.matches('.trade-form')) { e.preventDefault(); postRequest(e.target.formAction.split('/').pop(), Object.fromEntries(new FormData(e.target).entries())); } });
             document.getElementById('settings-btn').addEventListener('click',()=>settingsModal.classList.add('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
-            
             fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
@@ -488,7 +465,7 @@ HTML_SKELETON_CHART = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_CHART)
+def dashboard(): return render_template_string(HTML_SKELETON_CHART_FIXED)
 @app.route('/api/data')
 def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
@@ -500,12 +477,7 @@ def get_api_data():
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        market_data_view[pair_id] = {
-            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe,
-            "open_position": open_pos, "pnl": pnl,
-            "candles": pair_state.get("candle_data"), # Kirim data candle
-            "analysis": pair_state.get("analysis") # Kirim data analisis (termasuk EMA)
-        }
+        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "candles": pair_state.get("candle_data"), "analysis": pair_state.get("analysis") }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
@@ -557,8 +529,9 @@ def add_watchlist():
 def remove_watchlist():
     pair = request.form.get('pair')
     with state_lock:
-        if pair in current_settings['watched_pairs']: del current_settings['watched_pairs'][pair]; save_settings()
-        print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
+        if pair in current_settings['watched_pairs']:
+            del current_settings['watched_pairs'][pair]; save_settings()
+            print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
