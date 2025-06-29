@@ -27,7 +27,7 @@ TRADES_FILE = 'trades.json'
 BYBIT_API_URL = "https://api.bybit.com/v5/market"
 REFRESH_INTERVAL_SECONDS = 0.5
 MAX_TRADES_IN_HISTORY = 80
-CHART_CANDLE_LIMIT = 80 # Batas candle untuk ditampilkan di chart
+CHART_CANDLE_LIMIT = 80
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -55,7 +55,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- ADVANCED CHARTING EDITION --           ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("    -- COMPARATIVE CHART & COUNTDOWN EDITION --   ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -290,6 +290,7 @@ HTML_SKELETON_WITH_CHART = """
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vulcan AI Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="https://s3.tradingview.com/tv.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -312,10 +313,10 @@ HTML_SKELETON_WITH_CHART = """
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
-        #chart-container { background-color: var(--card-color); padding: 0.5rem; border-radius: 12px; border: 1px solid var(--border-color); }
-        .chart-header { display: flex; justify-content: space-between; align-items: baseline; }
+        #chart-container, #secondary-chart-container { background-color: var(--card-color); padding: 0.5rem; border-radius: 12px; border: 1px solid var(--border-color); }
+        .chart-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
         #chart-pair-title { margin-top: 2.5rem; margin-bottom: 1rem; }
-        #chart-timeframe { color: var(--text-muted); }
+        .chart-info-group { display: flex; gap: 1rem; align-items: center; color: var(--text-muted); }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
         .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
         .pair-card.active-chart { border-color: var(--accent-primary); }
@@ -326,19 +327,8 @@ HTML_SKELETON_WITH_CHART = """
         .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
         .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
-        .btn-long { background-color: var(--green); color: #fff; }
-        .btn-short { background-color: var(--red); color: #fff; }
-        .btn-close { background-color: var(--yellow); color: var(--bg-color); }
-        .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
-        .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
-        .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
         .history-list { list-style: none; padding: 0; }
         .history-item { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; }
-        .history-main { display: flex; align-items: center; gap: 1rem; }
-        .history-type { font-weight: 600; font-size: 1.1rem; }
-        .history-pair { color: var(--text-muted); }
-        .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
-        .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
         .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
         .settings-modal.visible { display: flex; opacity: 1; }
         .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
@@ -347,25 +337,18 @@ HTML_SKELETON_WITH_CHART = """
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
         .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
-        .watchlist-manage ul { list-style: none; padding: 0; }
-        .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
-        .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
         .text-green { color: var(--green); } .text-red { color: var(--red); }
-        @media (max-width: 768px) {
-            h1 { font-size: 1.5rem; } h2, #chart-pair-title { font-size: 1.1rem; }
-            .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
-            .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
-            .history-item { flex-direction: column; align-items: flex-start; }
-            .history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
-        }
+        @media (max-width: 768px) { h1 { font-size: 1.5rem; } h2, #chart-pair-title { font-size: 1.1rem; } .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; } .header { flex-direction: column; align-items: flex-start; gap: 1rem; } }
     </style>
 </head>
 <body>
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <div class="chart-header"><h2 id="chart-pair-title">Real-time Chart</h2><span id="chart-timeframe"></span></div>
+        <div class="chart-header"><h2 id="chart-pair-title">Real-time Chart</h2><div class="chart-info-group"><span id="chart-timeframe"></span><span>Next Candle: <strong id="candle-countdown">--:--</strong></span></div></div>
         <div id="chart-container"></div>
+        <h2 style="margin-top:1.5rem;">Binance Market View</h2>
+        <div id="secondary-chart-container" style="height: 400px;"></div>
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
@@ -375,13 +358,13 @@ HTML_SKELETON_WITH_CHART = """
             <form id="settings-form">
                 <h3>Parameters</h3>
                 <div class="form-grid">
-                    <div class="form-group"><label for="fee_pct">Fee (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
-                    <div class="form-group"><label for="stop_loss_pct">Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div>
-                    <div class="form-group"><label for="trailing_tp_activation_pct">TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
-                    <div class="form-group"><label for="trailing_tp_gap_pct">TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
-                    <div class="form-group"><label for="max_allowed_funding_rate_pct">Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
-                    <div class="form-group"><label for="analysis_interval_sec">AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
-                    <div class="form-group"><label for="caution_level">Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div>
+                    <div class="form-group"><label>Fee (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
+                    <div class="form-group"><label>Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div>
+                    <div class="form-group"><label>TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
+                    <div class="form-group"><label>TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
+                    <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
+                    <div class="form-group"><label>AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
+                    <div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div>
                 </div>
                 <h3>Watchlist</h3>
                 <div class="watchlist-manage"><ul id="watchlist-list"></ul>
@@ -404,48 +387,56 @@ HTML_SKELETON_WITH_CHART = """
             const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let chart = null; let currentChartPair = null; let lastData = {};
+            let chart = null; let currentChartPair = null; let lastData = {}; let countdownInterval = null;
+
+            const startCountdown = (lastCandleTime, timeframeStr) => {
+                if (countdownInterval) clearInterval(countdownInterval);
+                const tfMap = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
+                const timeframeInSeconds = tfMap[timeframeStr] || 3600;
+                const nextCandleTime = lastCandleTime + (timeframeInSeconds * 1000);
+
+                countdownInterval = setInterval(() => {
+                    const remaining = Math.max(0, nextCandleTime - Date.now());
+                    const minutes = Math.floor((remaining / 1000 / 60) % 60).toString().padStart(2, '0');
+                    const seconds = Math.floor((remaining / 1000) % 60).toString().padStart(2, '0');
+                    document.getElementById('candle-countdown').textContent = `${minutes}:${seconds}`;
+                }, 1000);
+            };
+            
+            const updateSecondaryChart = (pair, timeframe) => {
+                const container = document.getElementById('secondary-chart-container');
+                container.innerHTML = '';
+                const tfMap = { '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W' };
+                new TradingView.widget({
+                    "container_id": "secondary-chart-container", "autosize": true, "symbol": `BINANCE:${pair.replace('-', '')}`,
+                    "interval": tfMap[timeframe] || '60', "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en",
+                    "toolbar_bg": "#f1f3f6", "enable_publishing": false, "hide_side_toolbar": false,
+                    "studies": [ "EMA@tv-basicstudies", "EMA@tv-basicstudies", "EMA@tv-basicstudies" ],
+                    "studies_overrides": {
+                        "moving average.ma.plot.0": {"color": "#00BFFF"}, "moving average.ma.length": 9,
+                        "moving average.ma.plot.1": {"color": "#FFD700"}, "moving average.ma.length.1": 50,
+                        "moving average.ma.plot.2": {"color": "#C792EA"}, "moving average.ma.length.2": 100
+                    }
+                });
+            };
 
             const updateChart = (pair, marketData) => {
                 if (!pair || !marketData[pair] || !marketData[pair].candles) return;
-                
                 document.getElementById('chart-pair-title').textContent = pair;
                 document.getElementById('chart-timeframe').textContent = marketData[pair].timeframe;
-                
                 const candleSeries = marketData[pair].candles.map(c => ({ x: c.time, y: [c.open, c.high, c.low, c.close] }));
                 const currentPrice = marketData[pair].price;
-
                 const newOptions = {
-                    series: [
-                        { name: 'Price', type: 'candlestick', data: candleSeries },
-                        { name: 'EMA 9', type: 'line', data: marketData[pair].ema9_data || [] },
-                        { name: 'EMA 50', type: 'line', data: marketData[pair].ema50_data || [] },
-                        { name: 'EMA 100', type: 'line', data: marketData[pair].ema100_data || [] }
-                    ],
-                    annotations: {
-                        yaxis: [{
-                            y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2,
-                            label: {
-                                borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' },
-                                text: `Current: ${formatPrice(currentPrice)}`, position: 'left', textAnchor: 'start', offsetX: 10
-                            }
-                        }]
-                    }
+                    series: [ { name: 'Price', type: 'candlestick', data: candleSeries }, { name: 'EMA 9', type: 'line', data: marketData[pair].ema9_data || [] }, { name: 'EMA 50', type: 'line', data: marketData[pair].ema50_data || [] }, { name: 'EMA 100', type: 'line', data: marketData[pair].ema100_data || [] } ],
+                    annotations: { yaxis: [{ y: currentPrice, borderColor: 'var(--accent-primary)', strokeDashArray: 2, label: { borderColor: 'var(--accent-primary)', style: { color: '#fff', background: 'var(--accent-primary)' }, text: `Current: ${formatPrice(currentPrice)}`, position: 'left', textAnchor: 'start', offsetX: 10 } }] }
                 };
-                
                 if (!chart) {
                     const options = {
-                        theme: { mode: 'dark' },
-                        colors: ['#FFFFFF', '#00BFFF', '#FFD700', '#C792EA'], // Candle, EMA9, EMA50, EMA100
-                        stroke: { width: [1, 1.5, 1.5, 1.5], curve: 'smooth' },
-                        chart: { type: 'candlestick', height: 350, background: 'transparent', 
-                            toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }, autoSelected: 'zoom' },
-                            animations: { enabled: false }
-                        },
+                        theme: { mode: 'dark' }, colors: ['#FFFFFF', '#00BFFF', '#FFD700', '#C792EA'], stroke: { width: [1, 1.5, 1.5, 1.5], curve: 'smooth' },
+                        chart: { type: 'candlestick', height: 350, background: 'transparent', toolbar: { show: true, tools: { download: false }, autoSelected: 'zoom' }, animations: { enabled: false } },
                         xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
                         yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (v) => formatPrice(v) } },
-                        grid: { borderColor: 'var(--border-color)' },
-                        tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
+                        grid: { borderColor: 'var(--border-color)' }, tooltip: { theme: 'dark', x: { format: 'dd MMM HH:mm' } },
                         legend: { show: true, position: 'top', horizontalAlign: 'left', markers: { width: 10, height: 10, radius: 12 } }
                     };
                     chart = new ApexCharts(document.querySelector("#chart-container"), {...options, ...newOptions});
@@ -454,11 +445,15 @@ HTML_SKELETON_WITH_CHART = """
             };
 
             const updateUI = data => {
-                if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; }
+                if (!currentChartPair) { currentChartPair = Object.keys(data.market_data)[0]; updateSecondaryChart(currentChartPair, data.market_data[currentChartPair].timeframe); }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 updateChart(currentChartPair, data.market_data);
+                if (data.market_data[currentChartPair] && data.market_data[currentChartPair].candles.length > 0) {
+                    const lastCandle = data.market_data[currentChartPair].candles.slice(-1)[0];
+                    startCountdown(lastCandle.time, data.market_data[currentChartPair].timeframe);
+                }
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
@@ -484,6 +479,7 @@ HTML_SKELETON_WITH_CHART = """
                 if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
                     currentChartPair = card.dataset.pair;
                     updateChart(currentChartPair, lastData.market_data);
+                    updateSecondaryChart(currentChartPair, lastData.market_data[currentChartPair].timeframe);
                     document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
                     card.classList.add('active-chart');
                 }
@@ -537,7 +533,6 @@ def get_api_data():
             ema50_full = format_ema_for_chart(full_candle_data, ema50_raw)
             ema100_full = format_ema_for_chart(full_candle_data, ema100_raw)
             
-            # Slice semua data untuk chart setelah perhitungan
             candle_chart = full_candle_data[-CHART_CANDLE_LIMIT:]
             ema9_chart = ema9_full[-CHART_CANDLE_LIMIT:]
             ema50_chart = ema50_full[-CHART_CANDLE_LIMIT:]
