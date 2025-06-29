@@ -30,10 +30,10 @@ MAX_TRADES_IN_HISTORY = 80
 
 # --- STATE APLIKASI ---
 current_settings = {}
-trades = [] # Diganti dari autopilot_trades menjadi trades
+trades = [] # Menggunakan nama 'trades' yang lebih general
 market_state = {}
 is_ai_thinking = False
-is_autopilot_running = True # Default AI ON
+is_autopilot_running = True
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
 state_lock = threading.Lock()
@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("         -- LUXURY UI & SETTINGS EDITION --       ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("         -- LUXURY UI & STABLE EDITION --       ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -63,19 +63,15 @@ def display_welcome_message():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
-    # Pengaturan CryptoCompare dihapus
     default_settings = {
         "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10,
         "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05,
-        "caution_level": 0.5, "target_winrate_pct": 85.0,
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"}
     }
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f: loaded_settings = json.load(f)
-            # Membersihkan key lama yang mungkin masih ada di file settings pengguna
-            if 'cryptocompare_api_key' in loaded_settings:
-                del loaded_settings['cryptocompare_api_key']
+            if 'cryptocompare_api_key' in loaded_settings: del loaded_settings['cryptocompare_api_key']
             for key, value in default_settings.items():
                 if key not in loaded_settings: loaded_settings[key] = value
             current_settings = loaded_settings
@@ -217,17 +213,26 @@ class LocalAI:
             ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
-async def analyze_and_close_trade(trade, exit_price, reason):
+
+# --- FUNGSI BARU (SINKRON) UNTUK MENUTUP TRADE DARI WEB ---
+def close_trade_sync(trade, exit_price, reason):
+    """Versi sinkron dari analyze_and_close_trade, aman untuk dipanggil dari Flask."""
     with state_lock:
-        pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type', 'LONG'))
+        pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
-        if (pnl_gross - current_settings.get('fee_pct', 0.1)) > 0 and 'entry_snapshot' in trade: del trade['entry_snapshot']
-    save_trades()
+        if (pnl_gross - current_settings.get('fee_pct', 0.1)) > 0 and 'entry_snapshot' in trade:
+            del trade['entry_snapshot']
+    save_trades() # Simpan perubahan ke file
     pnl_net = pnl_gross - current_settings.get('fee_pct', 0.1)
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
     send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
+
+async def analyze_and_close_trade_async(trade, exit_price, reason):
+    """Versi async yang ada sebelumnya, sekarang hanya untuk AI di background."""
+    close_trade_sync(trade, exit_price, reason) # Cukup panggil versi sinkronnya
+
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
@@ -255,32 +260,40 @@ def autopilot_worker():
             time.sleep(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
 async def check_realtime_position_management(trade_obj, current_candle_data):
-    if not trade_obj: return
+    if not trade_obj or not trade_obj.get('type'): return
+    
+    sl_pct = current_settings.get('stop_loss_pct')
+    if trade_obj.get('type') == 'LONG':
+        sl_price = trade_obj['entryPrice'] * (1 - sl_pct / 100)
+        if current_candle_data['low'] <= sl_price:
+            await analyze_and_close_trade_async(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
+    elif trade_obj.get('type') == 'SHORT':
+        sl_price = trade_obj['entryPrice'] * (1 + sl_pct / 100)
+        if current_candle_data['high'] >= sl_price:
+            await analyze_and_close_trade_async(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
+    
+    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
+    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+    pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
+    
     with state_lock:
-        if trade_obj.get('type') == 'LONG':
-            sl_price = trade_obj['entryPrice'] * (1 - current_settings.get('stop_loss_pct') / 100)
-            if current_candle_data['low'] <= sl_price:
-                await analyze_and_close_trade(trade_obj, sl_price, f"Stop Loss @ {-current_settings.get('stop_loss_pct'):.2f}%"); return
-        elif trade_obj.get('type') == 'SHORT':
-            sl_price = trade_obj['entryPrice'] * (1 + current_settings.get('stop_loss_pct') / 100)
-            if current_candle_data['high'] >= sl_price:
-                await analyze_and_close_trade(trade_obj, sl_price, f"Stop Loss @ {-current_settings.get('stop_loss_pct'):.2f}%"); return
-        
-        activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
-        pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
         if pnl_now >= activation_pct:
             current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
             if current_cp == 0.0: current_cp = activation_pct
             steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
             if steps_passed >= 0:
-                new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
-                new_ts_level = new_cp - gap_pct; trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj.get('type') == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+                new_cp = current_cp + (steps_passed * gap_pct)
+                trade_obj['current_tp_checkpoint_level'] = new_cp
+                new_ts_level = new_cp - gap_pct
+                trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj.get('type') == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
         
         ts_price = trade_obj.get('trailing_stop_price')
-        if ts_price is not None:
-            if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
-                await analyze_and_close_trade(trade_obj, ts_price, f"Trailing TP"); return
-    save_trades()
+    
+    if ts_price is not None:
+        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or \
+           (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+            await analyze_and_close_trade_async(trade_obj, ts_price, "Trailing TP")
+            return
 def data_refresh_worker():
     while not stop_event.is_set():
         for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
@@ -294,7 +307,7 @@ def data_refresh_worker():
             time.sleep(0.2)
         time.sleep(REFRESH_INTERVAL_SECONDS)
 
-# --- TEMPLATE HTML DENGAN UI MEWAH & MODAL SETTINGS ---
+# --- TEMPLATE HTML (Tidak perlu diubah) ---
 HTML_SKELETON_FINAL = """
 <!DOCTYPE html>
 <html lang="en">
@@ -348,7 +361,7 @@ HTML_SKELETON_FINAL = """
         .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
         .settings-modal.visible { display: flex; opacity: 1; }
         .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
-        .settings-content h3 { margin-top: 2rem; }
+        .settings-content h3 { margin-top: 2rem; margin-bottom: 1rem; font-size: 1.1rem; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
@@ -422,10 +435,13 @@ HTML_SKELETON_FINAL = """
                 });
                 document.getElementById('history-list').innerHTML = data.trades.map((t, i) => `<li class="history-item" style="animation-delay:${i*50}ms;"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
-                    const i = document.getElementById(`s-${k}`);
-                    if(i && document.activeElement!==i) i.value=v;
+                    if (k === 'watched_pairs') {
+                        document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
+                    } else {
+                        const i = document.getElementById(`s-${k}`);
+                        if(i && document.activeElement!==i) i.value=v;
+                    }
                 });
-                document.getElementById('watchlist-list').innerHTML = Object.entries(data.settings.watched_pairs).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join('');
             };
             let lastDataJSON = '';
             const fetchData = async () => {
@@ -440,7 +456,7 @@ HTML_SKELETON_FINAL = """
             document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
             document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
-            document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{p,tf});});
+            document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())); modal.classList.remove('visible'); });
             fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
@@ -452,6 +468,7 @@ HTML_SKELETON_FINAL = """
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
 def dashboard(): return render_template_string(HTML_SKELETON_FINAL)
+
 @app.route('/api/data')
 def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
@@ -465,12 +482,14 @@ def get_api_data():
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl}
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
+
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
     global is_autopilot_running
     is_autopilot_running = not is_autopilot_running
     print_colored(f"Autopilot {'diaktifkan' if is_autopilot_running else 'dimatikan'} dari Web UI.", Fore.YELLOW)
     return jsonify(success=True)
+
 @app.route('/trade/manual', methods=['POST'])
 def trade_manual():
     data = request.form; pair = data.get('pair'); trade_type = data.get('type')
@@ -483,34 +502,63 @@ def trade_manual():
         trades.insert(0, new_trade)
         print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
+
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
+    trade_to_close = None
+    # Cari trade di luar lock untuk menghindari menahan lock terlalu lama
     with state_lock:
         trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
-        if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
-        pair = trade_to_close['instrumentId']
-        current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
-        if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
-        asyncio.run(analyze_and_close_trade(trade_to_close, current_price, "Manual Close"))
+    
+    if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
+    
+    pair = trade_to_close['instrumentId']
+    current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
+    
+    if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
+    
+    # Panggil fungsi sinkron yang aman
+    close_trade_sync(trade_to_close, current_price, "Manual Close")
     return jsonify(success=True)
+
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
     global current_settings
-    for key, value in request.form.items():
-        if key in current_settings and key != 'watched_pairs':
-            try: current_settings[key] = float(value) if '.' in value else int(value)
-            except ValueError: pass # Abaikan jika konversi gagal
-    save_settings(); print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
+    with state_lock:
+        for key, value in request.form.items():
+            if key in current_settings and key != 'watched_pairs':
+                try:
+                    # Coba konversi ke float jika ada titik, jika tidak coba ke int.
+                    if '.' in value:
+                        current_settings[key] = float(value)
+                    else:
+                        current_settings[key] = int(value)
+                except ValueError:
+                    # Jika gagal, biarkan sebagai string (berguna untuk API key jika ada di masa depan)
+                    current_settings[key] = value
+        save_settings()
+    print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN)
+    return jsonify(success=True)
+
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
     pair = request.form.get('pair'); tf = request.form.get('tf', '1H')
-    if pair: current_settings['watched_pairs'][pair] = tf; save_settings(); print_colored(f"{pair} ditambahkan ke watchlist.", Fore.GREEN)
+    if pair:
+        with state_lock:
+            current_settings['watched_pairs'][pair] = tf
+            save_settings()
+        print_colored(f"{pair} ({tf}) ditambahkan ke watchlist.", Fore.GREEN)
     return jsonify(success=True)
+
 @app.route('/api/watchlist/remove', methods=['POST'])
 def remove_watchlist():
     pair = request.form.get('pair')
-    if pair in current_settings['watched_pairs']: del current_settings['watched_pairs'][pair]; save_settings(); print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
+    with state_lock:
+        if pair in current_settings['watched_pairs']:
+            del current_settings['watched_pairs'][pair]
+            save_settings()
+            print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
 
 # --- MAIN EXECUTION ---
