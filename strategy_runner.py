@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- DUAL EXCHANGE CHART EDITION --         ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- FINAL PRO CHART EDITION --             ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -415,11 +415,12 @@ HTML_SKELETON_TRADINGVIEW = """
                     "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark",
                     "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true,
                     "hide_side_toolbar": false, "allow_symbol_change": true,
-                    "disabled_features": ["header_widget"], // Sembunyikan toolbar atas
+                    "disabled_features": ["header_widget"],
+                    // --- PERUBAHAN DI SINI: Menggunakan "options" untuk styling yang benar ---
                     "studies": [
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 }, "styles": [{ "plot_0": { "color": "#60A5FA" } }] },
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 50 }, "styles": [{ "plot_0": { "color": "#FBBF24" } }] },
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 100 }, "styles": [{ "plot_0": { "color": "#C4B5FD" } }] }
+                        { id: "MAExp@tv-basicstudies", inputs: { length: 9 }, options: { "plot.color": "#60A5FA" } },
+                        { id: "MAExp@tv-basicstudies", inputs: { length: 50 }, options: { "plot.color": "#FBBF24" } },
+                        { id: "MAExp@tv-basicstudies", inputs: { length: 100 }, options: { "plot.color": "#C4B5FD" } }
                     ]
                 };
 
@@ -498,10 +499,7 @@ def get_api_data():
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        market_data_view[pair_id] = {
-            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), 
-            "timeframe": timeframe, "open_position": open_pos, "pnl": pnl
-        }
+        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
 @app.route('/toggle-ai', methods=['POST'])
