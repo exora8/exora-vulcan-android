@@ -65,7 +65,8 @@ def load_settings():
         "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10, 
         "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
-        "max_trades_in_history": 80, "refresh_interval_seconds": 0.5, "chart_candle_limit": 80
+        "max_trades_in_history": 80, "refresh_interval_seconds": 0.5, "chart_candle_limit": 80,
+        "similarity_threshold_win": 4, "similarity_threshold_loss": 3
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -98,7 +99,7 @@ def save_trades():
             with open(TRADES_FILE, 'w') as f: json.dump(trades, f, indent=4)
         except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
 
-# --- FUNGSI API, KALKULASI, AI, THREAD WORKERS (Tidak diubah) ---
+# --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
 def fetch_funding_rate(instId):
     bybit_symbol = instId.replace('-', '')
     try:
@@ -191,7 +192,7 @@ class LocalAI:
     def check_for_winning_setup(self, current_analysis):
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) > 0]
         if not winning_trades: return (False, None, None)
-        SIMILARITY_THRESHOLD = 4 # Lebih ketat untuk win
+        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_win", 4)
         for win in winning_trades:
             score = self.compare_setups(current_analysis, win.get("entry_snapshot"))
             if score >= SIMILARITY_THRESHOLD:
@@ -202,7 +203,7 @@ class LocalAI:
     def check_for_repeated_mistake(self, current_analysis):
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) < 0]
         if not losing_trades: return (False, None)
-        SIMILARITY_THRESHOLD = 3
+        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_loss", 3)
         for loss in losing_trades:
             score = self.compare_setups(current_analysis, loss.get("entry_snapshot"))
             if score >= SIMILARITY_THRESHOLD:
@@ -215,12 +216,10 @@ class LocalAI:
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
         
-        # 1. Prioritas utama: Cek apakah setup ini adalah setup kemenangan
         is_win_setup, win_reason, trade_type_from_win = self.check_for_winning_setup(analysis)
         if is_win_setup:
             return {"action": "BUY" if trade_type_from_win == 'LONG' else "SELL", "reason": win_reason, "snapshot": analysis}
         
-        # 2. Jika bukan setup kemenangan, lanjutkan ke strategi standar
         max_funding_rate = self.settings.get("max_allowed_funding_rate_pct", 0.075)
         potential_trade_type = None
         if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
@@ -233,7 +232,6 @@ class LocalAI:
             caution_level = self.settings.get("caution_level", 0.5); avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 3
             if avg_solidity < caution_level: return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f} < Caution: {caution_level:.2f})"}
             
-            # 3. Pengecekan terakhir: hindari kesalahan berulang
             is_repeated_mistake, mistake_reason = self.check_for_repeated_mistake(analysis)
             if is_repeated_mistake: return {"action": "HOLD", "reason": mistake_reason}
             
@@ -246,7 +244,6 @@ def close_trade_sync(trade, exit_price, reason):
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
-        # PERUBAHAN KRUSIAL: Snapshot tidak lagi dihapus, baik win maupun loss
     save_trades()
     pnl_net = pnl_gross - current_settings.get('fee_pct', 0.1)
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
@@ -412,6 +409,11 @@ HTML_SKELETON_TRADINGVIEW = """
                     <div class="form-group"><label>TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
                     <div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div>
                     <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
+                </div>
+                <h3>AI Learning Parameters</h3>
+                <div class="form-grid">
+                    <div class="form-group"><label>Win Similarity Threshold (Higher=Stricter)</label><input type="number" step="1" min="1" max="5" name="similarity_threshold_win" id="s-similarity_threshold_win"></div>
+                    <div class="form-group"><label>Loss Similarity Threshold (Higher=Stricter)</label><input type="number" step="1" min="1" max="5" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div>
                 </div>
                 <h3>System Parameters</h3>
                 <div class="form-grid">
@@ -603,7 +605,7 @@ def update_settings():
     with state_lock:
         for key, value in request.form.items():
             if key in current_settings and key != 'watched_pairs':
-                try: current_settings[key] = float(value) if '.' in value else int(value)
+                try: current_settings[key] = float(value) if '.' in value or key == "caution_level" else int(value)
                 except ValueError: pass
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
