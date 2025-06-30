@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("         -- FINAL CHART COLOR FIX --              ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- TREND INDICATOR ON WATCHLIST --        ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -346,7 +346,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .watchlist-manage ul { list-style: none; padding: 0; }
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
-        .text-green { color: var(--green); } .text-red { color: var(--red); }
+        .text-green { color: var(--green); } .text-red { color: var(--red); } .text-yellow { color: var(--yellow); }
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
@@ -399,7 +399,7 @@ HTML_SKELETON_TRADINGVIEW = """
             const API_ENDPOINT = '/api/data'; const REFRESH_INTERVAL_MS = 3000;
             const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
-            const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
+            const getColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
             let currentChartPair = null; let lastData = {};
@@ -417,15 +417,10 @@ HTML_SKELETON_TRADINGVIEW = """
                     "hide_side_toolbar": false, "allow_symbol_change": true,
                     "disabled_features": ["header_widget"],
                     "studies": [
-                        { id: "MAExp@tv-basicstudies", inputs: { length: 9 } },
-                        { id: "MAExp@tv-basicstudies", inputs: { length: 50 } },
-                        { id: "MAExp@tv-basicstudies", inputs: { length: 100 } }
+                        { id: "MAExp@tv-basicstudies", inputs: { length: 9 } }
                     ],
-                    // --- PERUBAHAN DI SINI: Menggunakan 'overrides' untuk styling yang benar ---
                     "overrides": {
-                        "study.Moving Average Exponential.0.plot.color": "#60A5FA", // EMA 9 - Biru
-                        "study.Moving Average Exponential.1.plot.color": "#FBBF24", // EMA 50 - Kuning
-                        "study.Moving Average Exponential.2.plot.color": "#C4B5FD"  // EMA 100 - Ungu
+                        "study.Moving Average Exponential.plot.color": "#60A5FA" // EMA 9 - Biru
                     }
                 };
 
@@ -441,17 +436,17 @@ HTML_SKELETON_TRADINGVIEW = """
 
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
-                document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
+                document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getColorClass(data.pnl_today > 0 ? 'Bullish' : (data.pnl_today < 0 ? 'Bearish' : 'Ranging'))}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getColorClass(data.pnl_this_week > 0 ? 'Bullish' : (data.pnl_this_week < 0 ? 'Bearish' : 'Ranging'))}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getColorClass(data.pnl_last_week > 0 ? 'Bullish' : (data.pnl_last_week < 0 ? 'Bearish' : 'Ranging'))}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
                     card.dataset.pair = p;
-                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getColorClass(d.pnl > 0 ? 'Bullish' : 'Bearish')}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
+                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
-                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?t.pl_percent-data.settings.fee_pct:null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getColorClass(t.status==='CLOSED'?(t.pl_percent-data.settings.fee_pct > 0 ? 'Bullish' : 'Bearish'):'Ranging')}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 
                 Object.entries(data.settings).forEach(([k, v]) => {
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
@@ -497,6 +492,8 @@ def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
+    ai_analyzer_instance = LocalAI(settings_copy, []) 
+
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
@@ -504,9 +501,27 @@ def get_api_data():
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+        
+        # --- LOGIKA BARU UNTUK MENENTUKAN TREN ---
+        trend = "N/A"
+        if len(full_candle_data) > 100:
+            ema50_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 50)
+            ema100_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 100)
+            if ema50_raw and ema100_raw:
+                last_ema50 = ema50_raw[-1]
+                last_ema100 = ema100_raw[-1]
+                # Threshold 0.2% untuk dianggap ranging/sideways
+                if abs(last_ema50 - last_ema100) / last_ema50 < 0.002:
+                    trend = "Ranging"
+                elif last_ema50 > last_ema100:
+                    trend = "Bullish"
+                else:
+                    trend = "Bearish"
+
         market_data_view[pair_id] = {
             "price": current_price, "funding": pair_state.get("funding_rate", 0.0), 
-            "timeframe": timeframe, "open_position": open_pos, "pnl": pnl
+            "timeframe": timeframe, "open_position": open_pos, "pnl": pnl,
+            "trend": trend # Menambahkan info tren
         }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
