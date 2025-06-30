@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- FINAL PRO CHART EDITION --             ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- DUAL EXCHANGE CHART EDITION --         ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -360,8 +360,10 @@ HTML_SKELETON_TRADINGVIEW = """
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <h2>Analysis Chart</h2>
-        <div id="tradingview_chart_container" class="tradingview-widget-container"></div>
+        <h2>Bybit Perp Chart</h2>
+        <div id="tradingview_chart_bybit" class="tradingview-widget-container"></div>
+        <h2>Binance Perp Chart</h2>
+        <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
         <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
         <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
     </div>
@@ -400,42 +402,35 @@ HTML_SKELETON_TRADINGVIEW = """
             const getColorClass = v => v > 0 ? 'text-green' : (v < 0 ? 'text-red' : '');
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let tvWidget = null; let currentChartPair = null; let lastData = {};
+            let currentChartPair = null; let lastData = {};
 
-            const createTradingViewWidget = (pair, timeframe) => {
-                if (tvWidget) { tvWidget = null; }
-                document.getElementById('tradingview_chart_container').innerHTML = '';
+            const createChartWidgets = (pair, timeframe) => {
+                document.getElementById('tradingview_chart_bybit').innerHTML = '';
+                document.getElementById('tradingview_chart_binance').innerHTML = '';
                 
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
 
-                tvWidget = new TradingView.widget({
-                    "autosize": true,
-                    "symbol": `BYBIT:${pair.replace('-', '')}.P`,
-                    "interval": interval,
-                    "timezone": "Etc/UTC",
-                    "theme": "dark",
-                    "style": "1",
-                    "locale": "en",
-                    "enable_publishing": false,
-                    "withdateranges": true,
-                    "hide_side_toolbar": false,
-                    "allow_symbol_change": true,
-                    "container_id": "tradingview_chart_container",
-                    // --- PERUBAHAN DI SINI ---
+                const commonSettings = {
+                    "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark",
+                    "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true,
+                    "hide_side_toolbar": false, "allow_symbol_change": true,
                     "disabled_features": ["header_widget"], // Sembunyikan toolbar atas
                     "studies": [
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 }, "styles": [{ "plot_0": { "color": "#60A5FA" } }] }, // EMA 9 - Biru
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 50 }, "styles": [{ "plot_0": { "color": "#FBBF24" } }] }, // EMA 50 - Kuning
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 100 }, "styles": [{ "plot_0": { "color": "#C4B5FD" } }] } // EMA 100 - Ungu
+                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 }, "styles": [{ "plot_0": { "color": "#60A5FA" } }] },
+                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 50 }, "styles": [{ "plot_0": { "color": "#FBBF24" } }] },
+                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 100 }, "styles": [{ "plot_0": { "color": "#C4B5FD" } }] }
                     ]
-                });
+                };
+
+                new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
+                new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
 
             const updateUI = data => {
                 if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) {
                     currentChartPair = Object.keys(data.settings.watched_pairs)[0];
-                    createTradingViewWidget(currentChartPair, data.settings.watched_pairs[currentChartPair]);
+                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
                 }
 
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
@@ -460,7 +455,7 @@ HTML_SKELETON_TRADINGVIEW = """
             const fetchData = async () => {
                 try {
                     const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json();
-                    if(JSON.stringify(data.trades) !== JSON.stringify(lastData.trades) || JSON.stringify(data.market_data) !== JSON.stringify(lastData.market_data)) { updateUI(data); }
+                    if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); }
                     lastData = data;
                 } catch(e) { console.error("Update failed:", e); }
             };
@@ -468,7 +463,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 const card = e.target.closest('.pair-card');
                 if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
                     currentChartPair = card.dataset.pair;
-                    createTradingViewWidget(currentChartPair, lastData.settings.watched_pairs[currentChartPair]);
+                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]);
                     document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart');
                 }
             });
