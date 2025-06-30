@@ -54,7 +54,7 @@ def send_termux_notification(title, content):
 def display_welcome_message():
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("     Strategic AI Analyst (Full Vulcan's Logic)   ", Fore.CYAN, Style.BRIGHT)
-    print_colored("        -- PRO CHARTING & EMA SUITE --            ", Fore.YELLOW, Style.BRIGHT)
+    print_colored("        -- PROFESSIONAL TA CHART EDITION --       ", Fore.YELLOW, Style.BRIGHT)
     print_colored("==================================================", Fore.CYAN, Style.BRIGHT)
     print_colored("Bot berjalan. Akses dashboard di:", Fore.GREEN, Style.BRIGHT)
     print_colored("http://127.0.0.1:5000 atau http://[IP_LOKAL_ANDA]:5000", Fore.GREEN, Style.BRIGHT)
@@ -417,13 +417,15 @@ HTML_SKELETON_TRADINGVIEW = """
                     "theme": "dark",
                     "style": "1",
                     "locale": "en",
-                    "hide_top_toolbar": true, // <-- Sembunyikan toolbar atas
-                    "hide_side_toolbar": false, // <-- Tampilkan toolbar gambar
-                    "allow_symbol_change": false, // <-- Cegah ganti simbol manual
-                    "studies": [ // <-- Tambahkan EMA di sini
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 }, "styles": { "plot_0": { "color": "#60A5FA" } } },
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 50 }, "styles": { "plot_0": { "color": "#FBBF24" } } },
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 100 }, "styles": { "plot_0": { "color": "#C4B5FD" } } }
+                    "enable_publishing": false,
+                    "withdateranges": true,
+                    "hide_side_toolbar": false, // Keep drawing tools visible
+                    "hide_top_toolbar": true, // Hide the top toolbar
+                    "allow_symbol_change": false, // Disable symbol change from chart UI
+                    "studies": [ // Pre-load EMAs
+                        { "id": "Moving Average Exponential@tv-basicstudies", "inputs": { "length": 9 }, "styles": [{ "name": "Plot", "props": { "color": "#FFFFFF", "linewidth": 2 } }] },
+                        { "id": "Moving Average Exponential@tv-basicstudies", "inputs": { "length": 50 }, "styles": [{ "name": "Plot", "props": { "color": "#FFFFFF", "linewidth": 1, "linestyle": 2 } }] }, // Dashed white
+                        { "id": "Moving Average Exponential@tv-basicstudies", "inputs": { "length": 100 }, "styles": [{ "name": "Plot", "props": { "color": "#60A5FA", "linewidth": 2 } }] } // Light blue
                     ],
                     "container_id": "tradingview_chart_container"
                 });
