@@ -131,7 +131,8 @@ def calculate_todays_pnl(all_trades):
     for trade in all_trades:
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
-                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc: total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
+                # Fee is charged on open and close, so total fee is 2 * fee_pct
+                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
 def calculate_this_weeks_pnl(all_trades):
@@ -141,7 +142,8 @@ def calculate_this_weeks_pnl(all_trades):
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                if start_of_week_utc <= exit_date <= today_utc: total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
+                # Fee is charged on open and close, so total fee is 2 * fee_pct
+                if start_of_week_utc <= exit_date <= today_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
 def calculate_last_weeks_pnl(all_trades):
@@ -152,7 +154,8 @@ def calculate_last_weeks_pnl(all_trades):
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pl_percent', 0.0) - fee_pct)
+                # Fee is charged on open and close, so total fee is 2 * fee_pct
+                if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
 class LocalAI:
@@ -190,7 +193,8 @@ class LocalAI:
         return similarity_score
 
     def check_for_winning_setup(self, current_analysis):
-        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) > 0]
+        # A win is when gross PnL > total round-trip fee (2 * fee_pct)
+        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         if not winning_trades: return (False, None, None)
         SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_win", 4)
         for win in winning_trades:
@@ -201,7 +205,8 @@ class LocalAI:
         return (False, None, None)
 
     def check_for_repeated_mistake(self, current_analysis):
-        losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - self.settings.get('fee_pct', 0.1)) < 0]
+        # A loss is when gross PnL < total round-trip fee (2 * fee_pct)
+        losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
         if not losing_trades: return (False, None)
         SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_loss", 3)
         for loss in losing_trades:
@@ -245,7 +250,8 @@ def close_trade_sync(trade, exit_price, reason):
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
     save_trades()
-    pnl_net = pnl_gross - current_settings.get('fee_pct', 0.1)
+    # Net PnL = Gross PnL - (Open Fee + Close Fee)
+    pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
     send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
@@ -403,7 +409,7 @@ HTML_SKELETON_TRADINGVIEW = """
             <form id="settings-form">
                 <h3>Trading Parameters</h3>
                 <div class="form-grid">
-                    <div class="form-group"><label>Fee (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
+                    <div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
                     <div class="form-group"><label>Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div>
                     <div class="form-group"><label>TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
                     <div class="form-group"><label>TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
@@ -487,7 +493,7 @@ HTML_SKELETON_TRADINGVIEW = """
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
-                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent-data.settings.fee_pct):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent-data.settings.fee_pct):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 
                 Object.entries(data.settings).forEach(([k, v]) => {
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
@@ -532,7 +538,7 @@ def dashboard(): return render_template_string(HTML_SKELETON_TRADINGVIEW)
 def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
-    fee_pct = settings_copy.get('fee_pct', 0.1)
+    fee_pct = settings_copy.get('fee_pct', 0.1) # This is the one-way fee
     ai_analyzer_instance = LocalAI(settings_copy, []) 
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
@@ -540,7 +546,9 @@ def get_api_data():
         current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
-        if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+        if open_pos and current_price > 0:
+            # PnL for an open position is Gross PnL minus the entry fee
+            pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         
         trend = "N/A"
         if len(full_candle_data) > 100:
@@ -607,6 +615,11 @@ def update_settings():
             if key in current_settings and key != 'watched_pairs':
                 try: current_settings[key] = float(value) if '.' in value or key == "caution_level" else int(value)
                 except ValueError: pass
+        # Also update the label text for clarity
+        if 'fee_pct' in request.form:
+            # This is a bit of a hack to demonstrate the change, as we can't permanently change the HTML label from here easily.
+            # The label is already changed in the HTML string itself.
+            pass
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
 
