@@ -265,79 +265,50 @@ def autopilot_worker():
             time.sleep(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
 
-# --- PERBAIKAN TOTAL: LOGIKA MANAJEMEN POSISI YANG 100% AMAN ---
 async def check_realtime_position_management(trade_obj, current_candle_data):
-    # Guard clause: Hanya proses trade yang valid dan terbuka
-    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN':
-        return
-
-    # Ambil variabel penting untuk kemudahan membaca
-    trade_type = trade_obj.get('type')
-    entry_price = trade_obj['entryPrice']
-    candle_low = current_candle_data['low']
-    candle_high = current_candle_data['high']
-
-    # --- 1. Logika Stop Loss (Prioritas Utama & Paling Aman) ---
-    # Menggunakan PnL-based check untuk menghindari bug dari data tick yang aneh.
+    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
+    trade_type = trade_obj.get('type'); entry_price = trade_obj['entryPrice']
+    candle_low = current_candle_data['low']; candle_high = current_candle_data['high']
     sl_pct = current_settings.get('stop_loss_pct', 0)
     if sl_pct > 0:
         if trade_type == 'LONG':
-            # PnL dihitung dari titik terendah candle (worst case)
             pnl_at_low = calculate_pnl(entry_price, candle_low, 'LONG')
             if pnl_at_low <= -sl_pct:
                 sl_price = entry_price * (1 - sl_pct / 100)
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%")
-                return  # Posisi sudah ditutup, hentikan pengecekan lebih lanjut
-        
+                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
         elif trade_type == 'SHORT':
-            # PnL dihitung dari titik tertinggi candle (worst case)
             pnl_at_high = calculate_pnl(entry_price, candle_high, 'SHORT')
             if pnl_at_high <= -sl_pct:
                 sl_price = entry_price * (1 + sl_pct / 100)
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%")
-                return  # Posisi sudah ditutup, hentikan pengecekan lebih lanjut
-
-    # --- 2. Logika Take Profit (Hanya jika posisi belum di-close oleh SL) ---
+                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
     if current_settings.get('use_trailing_tp', True):
-        # --- MODE TRAILING TP (Checkbox Dicentang) ---
         activation_pct = current_settings.get("trailing_tp_activation_pct", 0); gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
-        if activation_pct <= 0 or gap_pct <= 0: return # Jangan jalankan jika setting tidak valid
-
-        # PnL dihitung dari titik tertinggi (untuk long) atau terendah (untuk short)
+        if activation_pct <= 0 or gap_pct <= 0: return
         pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type)
-        
         ts_price = None
         with state_lock:
             if pnl_at_best >= activation_pct:
                 current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
                 if current_cp == 0.0: current_cp = activation_pct
-                
                 steps_passed = math.floor((pnl_at_best - current_cp) / gap_pct)
                 if steps_passed >= 0:
                     new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
                     new_ts_level = new_cp - gap_pct
                     if trade_type == 'LONG': trade_obj['trailing_stop_price'] = entry_price * (1 + new_ts_level / 100)
                     else: trade_obj['trailing_stop_price'] = entry_price * (1 - new_ts_level / 100)
-            
             ts_price = trade_obj.get('trailing_stop_price')
-
         if ts_price is not None:
             if (trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price):
                 close_trade_sync(trade_obj, ts_price, "Trailing TP")
-
     else:
-        # --- MODE STATIC TP (Checkbox Tidak Dicentang) ---
         static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
-        if static_tp_pct <= 0: return # Jangan jalankan jika tidak ada target TP
-        
+        if static_tp_pct <= 0: return
         if trade_type == 'LONG':
             tp_price = entry_price * (1 + static_tp_pct / 100)
-            if candle_high >= tp_price:
-                close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+            if candle_high >= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
         elif trade_type == 'SHORT':
             tp_price = entry_price * (1 - static_tp_pct / 100)
-            if candle_low <= tp_price:
-                close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+            if candle_low <= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
 
 def data_refresh_worker():
     while not stop_event.is_set():
@@ -357,7 +328,7 @@ def data_refresh_worker():
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
-# --- TEMPLATE HTML (Tidak ada perubahan, sama seperti sebelumnya) ---
+# --- TEMPLATE HTML DENGAN PERUBAHAN ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -497,7 +468,14 @@ HTML_SKELETON_TRADINGVIEW = """
                 document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
-                const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
+                const commonSettings = { 
+                    "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", 
+                    "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, 
+                    "hide_side_toolbar": false, "allow_symbol_change": true, 
+                    "fullscreen": true, "countdown": true,
+                    "disabled_features": ["header_widget"], 
+                    "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], 
+                    "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
