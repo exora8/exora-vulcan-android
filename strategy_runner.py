@@ -365,7 +365,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
-        .pair-countdown { font-size: 1.25rem; color: var(--text-muted); } /* Ganti dari pair-price */
+        .pair-countdown { font-size: 1.25rem; color: var(--text-muted); }
         .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
         .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
@@ -463,7 +463,9 @@ HTML_SKELETON_TRADINGVIEW = """
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             
-            let currentChartPair = null; let lastData = {};
+            let currentChartPair = null; 
+            let lastData = {};
+            let candleStartTimes = {}; // PERBAIKAN: "Memori" untuk data countdown
 
             const TIMEFRAME_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
 
@@ -477,35 +479,53 @@ HTML_SKELETON_TRADINGVIEW = """
             };
 
             const updateCountdowns = () => {
-                document.querySelectorAll('.pair-countdown').forEach(el => {
-                    const startTimeMs = parseInt(el.dataset.startTimeMs, 10);
-                    const timeframe = el.dataset.timeframe;
+                // Iterasi melalui "memori", bukan elemen HTML
+                for (const pair in candleStartTimes) {
+                    const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
+                    const el = document.getElementById(`countdown-${safePairId}`);
+                    if (!el) continue; 
+
+                    const { startTimeMs, timeframe } = candleStartTimes[pair];
                     const durationSeconds = TIMEFRAME_SECONDS[timeframe];
 
-                    if (!startTimeMs || !durationSeconds) { el.textContent = '--:--'; return; }
+                    if (!startTimeMs || !durationSeconds) {
+                        continue; // Jika data tidak valid, JANGAN ubah teksnya, biarkan "beku"
+                    }
                     
                     const endTimeMs = startTimeMs + (durationSeconds * 1000);
                     const remainingMs = Math.max(0, endTimeMs - Date.now());
-                    
                     const totalSeconds = Math.floor(remainingMs / 1000);
                     const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
                     const seconds = String(totalSeconds % 60).padStart(2, '0');
 
                     el.textContent = `${minutes}:${seconds}`;
-                });
+                }
             };
 
             const updateUI = data => {
                 if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
+                
+                const newCandleStartTimes = {};
+                const watchlistEl = document.getElementById('watchlist');
+                watchlistEl.innerHTML = ''; // Tetap clear untuk rebuild
+                
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; card.dataset.pair = p;
+                    // PERBAIKAN: Simpan data ke "memori"
+                    newCandleStartTimes[p] = { startTimeMs: d.current_candle_start_time_ms, timeframe: d.timeframe };
+                    
+                    const safePairId = p.replace(/[^a-zA-Z0-9]/g, '');
+                    const card = document.createElement('div'); 
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; 
+                    card.dataset.pair = p;
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-countdown" data-start-time-ms="${d.current_candle_start_time_ms}" data-timeframe="${d.timeframe}">--:--</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Harga: <strong>${formatPrice(d.price)}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-countdown" id="countdown-${safePairId}">--:--</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Harga: <strong>${formatPrice(d.price)}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
+
+                candleStartTimes = newCandleStartTimes; // Update "memori" secara atomik
+                
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
@@ -526,7 +546,7 @@ HTML_SKELETON_TRADINGVIEW = """
             
             fetchData(); 
             setInterval(fetchData, REFRESH_INTERVAL_MS);
-            setInterval(updateCountdowns, 1000); // Start the 1-second countdown timer
+            setInterval(updateCountdowns, 1000);
         });
     </script>
 </body>
@@ -545,22 +565,16 @@ def get_api_data():
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
-        current_price = 0.0
-        current_candle_start_time_ms = 0
+        current_price = 0.0; current_candle_start_time_ms = 0
         if full_candle_data:
             current_price = full_candle_data[-1].get('close', 0.0)
             current_candle_start_time_ms = full_candle_data[-1].get('time', 0)
-
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-
         market_data_view[pair_id] = {
-            "price": current_price,
-            "funding": pair_state.get("funding_rate", 0.0),
-            "timeframe": timeframe,
-            "open_position": open_pos,
-            "pnl": pnl,
+            "price": current_price, "funding": pair_state.get("funding_rate", 0.0),
+            "timeframe": timeframe, "open_position": open_pos, "pnl": pnl,
             "current_candle_start_time_ms": current_candle_start_time_ms
         }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
