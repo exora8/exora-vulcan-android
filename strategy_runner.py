@@ -72,7 +72,6 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f: loaded_settings = json.load(f)
-            if 'cryptocompare_api_key' in loaded_settings: del loaded_settings['cryptocompare_api_key']
             for key, value in default_settings.items():
                 if key not in loaded_settings: loaded_settings[key] = value
             current_settings = loaded_settings
@@ -265,67 +264,74 @@ def autopilot_worker():
             for pair_id in list(current_settings.get("watched_pairs", {})): asyncio.run(run_autopilot_analysis(pair_id))
             time.sleep(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
-async def check_realtime_position_management(trade_obj, current_candle_data):
-    if not trade_obj or not trade_obj.get('type'): return
-    sl_pct = current_settings.get('stop_loss_pct')
-    if trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= trade_obj['entryPrice'] * (1 - sl_pct / 100):
-        close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
-    elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
-        close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
-    if not current_settings.get('use_trailing_tp', True): return
-    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
-    pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
-    ts_price = None
-    with state_lock:
-        if pnl_now >= activation_pct:
-            current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
-            if current_cp == 0.0: current_cp = activation_pct
-            steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
-            if steps_passed >= 0:
-                new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
-                new_ts_level = new_cp - gap_pct
-                if trade_obj.get('type') == 'LONG': trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100)
-                else: trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - new_ts_level / 100)
-        ts_price = trade_obj.get('trailing_stop_price')
-    if ts_price is not None:
-        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
-            close_trade_sync(trade_obj, ts_price, "Trailing TP")
 
-# --- PERBAIKAN: WORKER DATA YANG LEBIH EFISIEN ---
+# --- PERBAIKAN UTAMA: LOGIKA TP STATIS & TRAILING ---
+async def check_realtime_position_management(trade_obj, current_candle_data):
+    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
+
+    # --- 1. Logika Stop Loss (Selalu Aktif) ---
+    sl_pct = current_settings.get('stop_loss_pct')
+    if sl_pct > 0:
+        if trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= trade_obj['entryPrice'] * (1 - sl_pct / 100):
+            close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
+        elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
+            close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
+
+    # --- 2. Logika Take Profit (Berdasarkan Mode) ---
+    if current_settings.get('use_trailing_tp', True):
+        # --- MODE TRAILING TP (Checkbox Dicentang) ---
+        activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+        if activation_pct <= 0 or gap_pct <= 0: return # Jangan jalankan jika setting tidak valid
+        
+        pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
+        ts_price = None
+        with state_lock:
+            if pnl_now >= activation_pct:
+                current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
+                if current_cp == 0.0: current_cp = activation_pct
+                steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
+                if steps_passed >= 0:
+                    new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
+                    new_ts_level = new_cp - gap_pct
+                    if trade_obj.get('type') == 'LONG': trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100)
+                    else: trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+            ts_price = trade_obj.get('trailing_stop_price')
+        if ts_price is not None:
+            if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+                close_trade_sync(trade_obj, ts_price, "Trailing TP")
+    else:
+        # --- MODE STATIC TP (Checkbox Tidak Dicentang) ---
+        static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
+        if static_tp_pct <= 0: return # Jangan jalankan jika tidak ada target TP
+        
+        if trade_obj.get('type') == 'LONG':
+            tp_price = trade_obj['entryPrice'] * (1 + static_tp_pct / 100)
+            if current_candle_data['high'] >= tp_price:
+                close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+        elif trade_obj.get('type') == 'SHORT':
+            tp_price = trade_obj['entryPrice'] * (1 - static_tp_pct / 100)
+            if current_candle_data['low'] <= tp_price:
+                close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+
 def data_refresh_worker():
     while not stop_event.is_set():
         start_time = time.time()
-        
-        # Ambil daftar pair saat ini untuk diiterasi
         watched_pairs_copy = list(current_settings.get("watched_pairs", {}).items())
-
-        # Iterasi dan ambil data untuk semua pair secepat mungkin
         for pair_id, timeframe in watched_pairs_copy:
             if pair_id not in market_state: market_state[pair_id] = {}
-            
-            # Ambil data candle dan funding rate
             candle_data = fetch_recent_candles(pair_id, timeframe)
-            funding_rate = fetch_funding_rate(pair_id) # Sebaiknya ada jeda kecil jika banyak pair
-            
+            funding_rate = fetch_funding_rate(pair_id)
             market_state[pair_id]['funding_rate'] = funding_rate if funding_rate is not None else market_state[pair_id].get('funding_rate', 0.0)
-            
             if candle_data:
                 market_state[pair_id]["candle_data"] = candle_data
-                with state_lock: 
-                    open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                if open_pos: 
-                    asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
-            
-            # Beri jeda sangat kecil agar tidak membanjiri API dalam satu burst
+                with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
             time.sleep(0.1) 
-
-        # Hitung waktu yang berlalu dan tidur selama sisa interval
         elapsed_time = time.time() - start_time
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
-
-# --- TEMPLATE HTML DENGAN PERUBAHAN ---
+# --- TEMPLATE HTML (Tidak ada perubahan, sama seperti sebelumnya) ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -422,8 +428,8 @@ HTML_SKELETON_TRADINGVIEW = """
                     <div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div>
                     <div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div>
                     <div class="form-group checkbox-group"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp">Enable Trailing TP</label></div>
-                    <div class="form-group"><label>TP Activation (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
-                    <div class="form-group"><label>TP Gap (%)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
+                    <div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
+                    <div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
                     <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
                 </div>
                 <h3>AI Learning Parameters</h3>
@@ -454,39 +460,28 @@ HTML_SKELETON_TRADINGVIEW = """
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT = '/api/data';
-            // --- PERBAIKAN: Ambil interval dari setting, bukan hardcode ---
             const REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
-            
             const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
             const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
-            
             let currentChartPair = null; let lastData = {};
-
             const createChartWidgets = (pair, timeframe) => {
-                document.getElementById('tradingview_chart_bybit').innerHTML = '';
-                document.getElementById('tradingview_chart_binance').innerHTML = '';
+                document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
-
             const updateUI = data => {
-                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) {
-                    currentChartPair = Object.keys(data.settings.watched_pairs)[0];
-                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
-                }
-                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
-                document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
+                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
+                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
-                    card.dataset.pair = p;
+                    const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; card.dataset.pair = p;
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
@@ -517,9 +512,7 @@ HTML_SKELETON_TRADINGVIEW = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): 
-    # Kirim settings ke template agar bisa digunakan oleh JavaScript
-    return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
+def dashboard(): return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
 
 @app.route('/api/data')
 def get_api_data():
@@ -536,8 +529,7 @@ def get_api_data():
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         trend = "N/A"
         if len(full_candle_data) > 100:
-            ema50_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 50)
-            ema100_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 100)
+            ema50_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 50); ema100_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 100)
             if ema50_raw and ema100_raw:
                 last_ema50 = ema50_raw[-1]; last_ema100 = ema100_raw[-1]
                 if abs(last_ema50 - last_ema100) / last_ema50 < 0.002: trend = "Ranging"
