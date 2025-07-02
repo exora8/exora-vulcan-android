@@ -264,7 +264,6 @@ def autopilot_worker():
             for pair_id in list(current_settings.get("watched_pairs", {})): asyncio.run(run_autopilot_analysis(pair_id))
             time.sleep(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
-
 async def check_realtime_position_management(trade_obj, current_candle_data):
     if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
     trade_type = trade_obj.get('type'); entry_price = trade_obj['entryPrice']
@@ -309,7 +308,6 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
         elif trade_type == 'SHORT':
             tp_price = entry_price * (1 - static_tp_pct / 100)
             if candle_low <= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
-
 def data_refresh_worker():
     while not stop_event.is_set():
         start_time = time.time()
@@ -344,9 +342,9 @@ HTML_SKELETON_TRADINGVIEW = """
         html { scroll-behavior: smooth; font-size: 16px; }
         body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
         .container { max-width: 1200px; margin: 0 auto; }
-        h1, h2 { font-weight: 600; letter-spacing: -0.5px; }
         h1 { margin: 0; font-size: 1.75rem; }
-        h2 { margin-top: 2.5rem; margin-bottom: 1.5rem; font-size: 1.25rem; color: var(--text-muted); }
+        h2 { margin-top: 2.5rem; margin-bottom: 1rem; font-size: 1.25rem; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center; }
+        h1, h2 { font-weight: 600; letter-spacing: -0.5px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
         .header-actions { display: flex; gap: 1rem; }
         .action-btn { background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease; }
@@ -358,6 +356,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .stat-item:hover { transform: translateY(-3px); }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
+        .chart-wrapper { margin-bottom: 2rem; }
         .tradingview-widget-container { height: 450px; }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
         .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
@@ -396,6 +395,11 @@ HTML_SKELETON_TRADINGVIEW = """
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
         .text-green { color: var(--green); } .text-red { color: var(--red); } .text-yellow { color: var(--yellow); }
+        .fullscreen-btn { background: none; border: none; cursor: pointer; padding: 0.25rem; color: var(--text-muted); transition: color 0.2s ease; }
+        .fullscreen-btn:hover { color: var(--text-color); }
+        .fullscreen-btn svg { width: 18px; height: 18px; }
+        .chart-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5000; background: var(--bg-color); padding: 1rem; }
+        .is-hidden { display: none !important; }
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
@@ -409,12 +413,29 @@ HTML_SKELETON_TRADINGVIEW = """
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <h2>Bybit Perp Chart</h2>
-        <div id="tradingview_chart_bybit" class="tradingview-widget-container"></div>
-        <h2>Binance Perp Chart</h2>
-        <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
-        <h2>Watchlist</h2><section id="watchlist" class="watchlist"></section>
-        <h2>Recent History</h2><ul id="history-list" class="history-list"></ul>
+        
+        <div class="chart-wrapper">
+            <h2 id="bybit-chart-title">Bybit Perp Chart 
+                <button class="fullscreen-btn" data-target="#bybit-chart-wrapper" aria-label="Toggle Fullscreen">
+                    <svg class="icon-expand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+                </button>
+            </h2>
+            <div id="tradingview_chart_bybit" class="tradingview-widget-container"></div>
+        </div>
+
+        <div class="chart-wrapper">
+             <h2 id="binance-chart-title">Binance Perp Chart
+                <button class="fullscreen-btn" data-target="#binance-chart-wrapper" aria-label="Toggle Fullscreen">
+                     <svg class="icon-expand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+                </button>
+            </h2>
+            <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
+        </div>
+        
+        <h2 id="watchlist-title">Watchlist</h2>
+        <section id="watchlist" class="watchlist"></section>
+        <h2 id="history-title">Recent History</h2>
+        <ul id="history-list" class="history-list"></ul>
     </div>
     <div id="settings-modal" class="settings-modal">
         <div class="settings-content">
@@ -464,21 +485,20 @@ HTML_SKELETON_TRADINGVIEW = """
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             let currentChartPair = null; let lastData = {};
+            
             const createChartWidgets = (pair, timeframe) => {
+                const bybitWrapper = document.getElementById('bybit-chart-wrapper');
+                const binanceWrapper = document.getElementById('binance-chart-wrapper');
+                if (bybitWrapper) bybitWrapper.querySelector('.tradingview-widget-container').id = "tradingview_chart_bybit";
+                if (binanceWrapper) binanceWrapper.querySelector('.tradingview-widget-container').id = "tradingview_chart_binance";
                 document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
-                const commonSettings = { 
-                    "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", 
-                    "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, 
-                    "hide_side_toolbar": false, "allow_symbol_change": true, 
-                    "fullscreen": true, "countdown": true,
-                    "disabled_features": ["header_widget"], 
-                    "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], 
-                    "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
+                const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
+            
             const updateUI = data => {
                 if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
@@ -498,6 +518,39 @@ HTML_SKELETON_TRADINGVIEW = """
                 });
             };
             const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); } lastData = data; } catch(e) { console.error("Update failed:", e); } };
+            
+            // --- FULLSCREEN LOGIC ---
+            const iconExpand = '<svg class="icon-expand" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
+            const iconCollapse = '<svg class="icon-collapse" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
+            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+
+            document.querySelectorAll('.fullscreen-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const targetWrapper = document.querySelector(button.dataset.target);
+                    const isAlreadyFullscreen = targetWrapper.classList.contains('chart-fullscreen');
+                    
+                    // Reset any existing fullscreen state first
+                    document.querySelectorAll('.chart-fullscreen').forEach(el => el.classList.remove('chart-fullscreen'));
+                    document.querySelectorAll('.is-hidden').forEach(el => el.classList.remove('is-hidden'));
+                    document.querySelectorAll('.fullscreen-btn').forEach(btn => btn.innerHTML = iconExpand);
+
+                    if (!isAlreadyFullscreen) {
+                        // Enter fullscreen
+                        targetWrapper.classList.add('chart-fullscreen');
+                        UIElementsToHide.forEach(selector => {
+                            document.querySelectorAll(selector).forEach(el => {
+                                if (el !== targetWrapper) {
+                                    el.classList.add('is-hidden');
+                                }
+                            });
+                        });
+                        button.innerHTML = iconCollapse;
+                    }
+                });
+            });
+
+            // --- Event Listeners & Initial Fetch ---
             document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { currentChartPair = card.dataset.pair; createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart'); } });
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
