@@ -340,61 +340,257 @@ stop_event.wait(sleep_duration)
 HTML_SKELETON_TRADINGVIEW = """
 
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
-    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vulcan AI Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vulcan AI Dashboard - Enhanced UI</title>
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root { --bg-color: #121212; --card-color: #1E1E1E; --border-color: #333; --text-color: #EAEAEA; --text-muted: #888; --green: #34D399; --red: #F87171; --yellow: #FBBF24; --accent-primary: #60A5FA; }
+        /* [MODERN UI] Keyframe animations for dynamic effects */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        @keyframes pulseGlow {
+            0%, 100% { box-shadow: 0 0 10px -2px var(--accent-primary); }
+            50% { box-shadow: 0 0 18px 0px var(--accent-primary); }
+        }
+
+        :root { 
+            --bg-color: #121212; 
+            --card-color: #1E1E1E; 
+            --border-color: #2c2c2c; /* Softer border color */
+            --text-color: #EAEAEA; 
+            --text-muted: #888; 
+            --green: #34D399; 
+            --red: #F87171; 
+            --yellow: #FBBF24; 
+            --accent-primary: #60A5FA; 
+            --shadow-color: rgba(0, 0, 0, 0.2);
+        }
+
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; font-size: 16px; }
-        body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-        .container { max-width: 1200px; margin: 0 auto; }
+
+        body { 
+            background-color: var(--bg-color); 
+            /* [MODERN UI] Subtle gradient for a more premium feel */
+            background-image: radial-gradient(ellipse at top, #1a1a1a, var(--bg-color) 70%);
+            color: var(--text-color); 
+            font-family: 'Inter', sans-serif; 
+            margin: 0; 
+            padding: 1rem; 
+            -webkit-font-smoothing: antialiased; 
+            -moz-osx-font-smoothing: grayscale; 
+        }
+        
+        /* [MODERN UI] Animation will apply to all main containers */
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            animation: fadeInUp 0.6s ease-out;
+        }
+
         h1, h2 { font-weight: 600; letter-spacing: -0.5px; }
         h1 { margin: 0; font-size: 1.75rem; }
         h2 { margin-top: 2.5rem; margin-bottom: 1.5rem; font-size: 1.25rem; color: var(--text-muted); }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
         .header-actions { display: flex; gap: 1rem; }
-        .action-btn { background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease; }
-        .action-btn:hover { background-color: var(--border-color); }
+
+        /* [MODERN UI] Enhanced button styles with smoother transitions and feedback */
+        .action-btn { 
+            background-color: var(--card-color); 
+            border: 1px solid var(--border-color); 
+            color: var(--text-color); 
+            padding: 0.5rem 1rem; 
+            border-radius: 8px; 
+            font-weight: 500; 
+            cursor: pointer; 
+            transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), 
+                        background-color 0.2s ease, 
+                        box-shadow 0.2s ease;
+            will-change: transform;
+        }
+        .action-btn:hover { 
+            background-color: var(--border-color); 
+            transform: translateY(-3px);
+            box-shadow: 0 4px 10px var(--shadow-color);
+        }
+        .action-btn:active {
+            transform: translateY(0) scale(0.98);
+            box-shadow: none;
+        }
         .action-btn.ai-status.running { color: var(--green); }
         .action-btn.ai-status.stopped { color: var(--red); }
+
         .pnl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; }
-        .stat-item { background-color: var(--card-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; transition: transform 0.2s ease; }
-        .stat-item:hover { transform: translateY(-3px); }
+        
+        /* [MODERN UI] Base card style for stats, watchlist, and history */
+        .stat-item, .pair-card, .history-item {
+            background-color: var(--card-color);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            /* [MODERN UI] Softer shadow instead of just a border */
+            box-shadow: 0 4px 12px var(--shadow-color);
+            opacity: 0; /* Start hidden for animation */
+            animation: fadeInUp 0.5s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            will-change: transform, box-shadow;
+        }
+        
+        /* [MODERN UI] Staggered animation delays for a nice loading effect */
+        .pnl-stats .stat-item:nth-child(1), .watchlist .pair-card:nth-child(1), .history-list .history-item:nth-child(1) { animation-delay: 0.1s; }
+        .pnl-stats .stat-item:nth-child(2), .watchlist .pair-card:nth-child(2), .history-list .history-item:nth-child(2) { animation-delay: 0.15s; }
+        .pnl-stats .stat-item:nth-child(3), .watchlist .pair-card:nth-child(3), .history-list .history-item:nth-child(3) { animation-delay: 0.2s; }
+        .watchlist .pair-card:nth-child(4), .history-list .history-item:nth-child(4) { animation-delay: 0.25s; }
+        .watchlist .pair-card:nth-child(5), .history-list .history-item:nth-child(5) { animation-delay: 0.3s; }
+        .watchlist .pair-card:nth-child(6), .history-list .history-item:nth-child(6) { animation-delay: 0.35s; }
+        
+        .stat-item { padding: 1.5rem; }
+        .stat-item:hover, .pair-card:hover { 
+            transform: translateY(-5px); 
+            box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+        }
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
+        
         .tradingview-widget-container { height: 450px; }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
-        .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
-        .pair-card.active-chart { border-color: var(--accent-primary); }
+        
+        .pair-card { 
+            padding: 1.5rem; 
+            display: flex; 
+            flex-direction: column; 
+            cursor: pointer; 
+        }
+        /* [MODERN UI] Glowing effect for active chart instead of a simple border */
+        .pair-card.active-chart { 
+            border-color: var(--accent-primary);
+            animation: pulseGlow 1.5s infinite alternate, fadeInUp 0.5s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+        }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
-        .pair-countdown { font-size: 1.25rem; color: var(--text-muted); }
+
+        /* [MODERN UI] ANIMATED TIMER CONTAINER */
+        .pair-countdown {
+            position: relative;
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            background-color: rgba(0,0,0,0.2);
+            padding: 0.2rem 0.6rem;
+            border-radius: 6px;
+            overflow: hidden; /* This is key for the bar effect */
+            transition: color 0.3s ease;
+        }
+        .countdown-bar {
+            position: absolute;
+            top: 0; left: 0; bottom: 0;
+            background-color: var(--accent-primary);
+            opacity: 0.15;
+            border-radius: 6px;
+            /* The width will be updated by JS. Transition makes it smooth. */
+            transition: width 1s linear; 
+        }
+        .countdown-text {
+            position: relative; /* To appear above the bar */
+            z-index: 1;
+        }
+
         .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
-        .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
-        .btn:hover { transform: scale(1.03); opacity: 0.9; }
+        
+        /* [MODERN UI] Enhanced button styles */
+        .btn { 
+            flex-grow: 1; 
+            padding: 0.75rem; 
+            border-radius: 8px; 
+            border: none; 
+            font-size: 1rem; 
+            font-weight: 600; 
+            cursor: pointer; 
+            transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.2s ease, box-shadow 0.2s ease;
+            will-change: transform;
+        }
+        .btn:hover { 
+            transform: scale(1.03) translateY(-2px); 
+            opacity: 0.95; 
+            box-shadow: 0 4px 10px var(--shadow-color);
+        }
+        .btn:active {
+            transform: scale(1) translateY(0);
+            box-shadow: none;
+        }
+
         .btn-long { background-color: var(--green); color: #fff; }
         .btn-short { background-color: var(--red); color: #fff; }
         .btn-close { background-color: var(--yellow); color: var(--bg-color); }
+        
         .position-info { border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; text-align: center; margin-top: auto;}
         .position-header { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
         .position-pnl { font-size: 1.75rem; font-weight: 700; margin-bottom: 1rem; }
+        
         .history-list { list-style: none; padding: 0; }
-        .history-item { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; }
+        .history-item { 
+            padding: 1rem 1.5rem; 
+            margin-bottom: 1rem; 
+            display: flex; 
+            flex-wrap: wrap; 
+            justify-content: space-between; 
+            align-items: center; 
+            gap: 1rem; 
+        }
         .history-main { display: flex; align-items: center; gap: 1rem; }
         .history-type { font-weight: 600; font-size: 1.1rem; }
         .history-pair { color: var(--text-muted); }
         .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
         .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
-        .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
-        .settings-modal.visible { display: flex; opacity: 1; }
-        .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+        
+        /* [MODERN UI] Animated Settings Modal */
+        .settings-modal { 
+            position: fixed; 
+            top: 0; left: 0; 
+            width: 100%; height: 100%; 
+            background-color: rgba(0,0,0,0.7); 
+            backdrop-filter: blur(5px); 
+            display: flex; /* Changed from none to flex */
+            justify-content: center; 
+            align-items: center; 
+            z-index: 1000; 
+            opacity: 0; 
+            pointer-events: none; /* Can't interact when hidden */
+            transition: opacity 0.4s ease, backdrop-filter 0.4s ease;
+        }
+        .settings-modal.visible { 
+            opacity: 1; 
+            pointer-events: auto; /* Can interact when visible */
+        }
+        .settings-content { 
+            background-color: var(--card-color); 
+            border: 1px solid var(--border-color); 
+            border-radius: 12px; 
+            padding: 2rem; 
+            width: 90%; 
+            max-width: 600px; 
+            max-height: 90vh; 
+            overflow-y: auto;
+            /* [MODERN UI] Pop-out effect */
+            transform: scale(0.95) translateY(20px);
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .settings-modal.visible .settings-content {
+            transform: scale(1) translateY(0);
+        }
+
         .settings-content h3 { margin-top: 2rem; margin-bottom: 1rem; font-size: 1.1rem; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
@@ -406,6 +602,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
         .text-green { color: var(--green); } .text-red { color: var(--red); } .text-yellow { color: var(--yellow); }
+
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
@@ -467,100 +664,124 @@ HTML_SKELETON_TRADINGVIEW = """
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT = '/api/data';
-            const REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
+            // Fallback refresh interval jika variabel tidak diset
+            const REFRESH_INTERVAL_MS = ({{ current_settings.refresh_interval_seconds if current_settings else 5 }} || 5) * 1000;
+            
             const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
 
-Generated code
-let currentChartPair = null; 
-        let lastData = {};
-        let candleStartTimes = {}; // PERBAIKAN: "Memori" untuk data countdown
+            let currentChartPair = null; 
+            let lastData = {};
+            let candleStartTimes = {}; // "Memory" for countdown data
 
-        const TIMEFRAME_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
+            const TIMEFRAME_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
 
-        const createChartWidgets = (pair, timeframe) => {
-            document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
-            const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
-            const interval = tfMap[timeframe] || "60";
-            const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-            new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
-            new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
-        };
+            const createChartWidgets = (pair, timeframe) => {
+                document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
+                const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
+                const interval = tfMap[timeframe] || "60";
+                const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
+                new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
+                new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
+            };
 
-        const updateCountdowns = () => {
-            // Iterasi melalui "memori", bukan elemen HTML
-            for (const pair in candleStartTimes) {
-                const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
-                const el = document.getElementById(`countdown-${safePairId}`);
-                if (!el) continue; 
+            const updateCountdowns = () => {
+                for (const pair in candleStartTimes) {
+                    const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
+                    const textEl = document.getElementById(`countdown-text-${safePairId}`);
+                    const barEl = document.getElementById(`countdown-bar-${safePairId}`);
+                    if (!textEl || !barEl) continue; 
 
-                const { startTimeMs, timeframe } = candleStartTimes[pair];
-                const durationSeconds = TIMEFRAME_SECONDS[timeframe];
+                    const { startTimeMs, timeframe } = candleStartTimes[pair];
+                    const durationSeconds = TIMEFRAME_SECONDS[timeframe];
 
-                if (!startTimeMs || !durationSeconds) {
-                    continue; // Jika data tidak valid, JANGAN ubah teksnya, biarkan "beku"
+                    if (!startTimeMs || !durationSeconds) continue; 
+                    
+                    const endTimeMs = startTimeMs + (durationSeconds * 1000);
+                    const remainingMs = Math.max(0, endTimeMs - Date.now());
+                    const totalSeconds = Math.floor(remainingMs / 1000);
+                    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+                    const seconds = String(totalSeconds % 60).padStart(2, '0');
+                    
+                    // Update text
+                    textEl.textContent = `${minutes}:${seconds}`;
+
+                    // [MODERN UI] Update a width of the countdown bar
+                    const remainingPercentage = (remainingMs / (durationSeconds * 1000)) * 100;
+                    barEl.style.width = `${remainingPercentage}%`;
+                }
+            };
+
+            const updateUI = data => {
+                if (!data || !data.settings || !data.market_data) {
+                    console.error("Received invalid data from API:", data);
+                    return;
                 }
                 
-                const endTimeMs = startTimeMs + (durationSeconds * 1000);
-                const remainingMs = Math.max(0, endTimeMs - Date.now());
-                const totalSeconds = Math.floor(remainingMs / 1000);
-                const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
-                const seconds = String(totalSeconds % 60).padStart(2, '0');
-
-                el.textContent = `${minutes}:${seconds}`;
-            }
-        };
-
-        const updateUI = data => {
-            if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
-            document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
-            document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-            
-            const newCandleStartTimes = {};
-            const watchlistEl = document.getElementById('watchlist');
-            watchlistEl.innerHTML = ''; // Tetap clear untuk rebuild
-            
-            Object.entries(data.market_data).forEach(([p, d]) => {
-                // PERBAIKAN: Simpan data ke "memori"
-                newCandleStartTimes[p] = { startTimeMs: d.current_candle_start_time_ms, timeframe: d.timeframe };
+                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
+                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
+                document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 
-                const safePairId = p.replace(/[^a-zA-Z0-9]/g, '');
-                const card = document.createElement('div'); 
-                card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; 
-                card.dataset.pair = p;
-                const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-countdown" id="countdown-${safePairId}">--:--</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Harga: <strong>${formatPrice(d.price)}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
-                watchlistEl.appendChild(card);
-            });
+                const newCandleStartTimes = {};
+                const watchlistEl = document.getElementById('watchlist');
+                let watchlistHTML = ''; // Build HTML string first
+                
+                Object.entries(data.market_data).forEach(([p, d]) => {
+                    newCandleStartTimes[p] = { startTimeMs: d.current_candle_start_time_ms, timeframe: d.timeframe };
+                    
+                    const safePairId = p.replace(/[^a-zA-Z0-9]/g, '');
+                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
+                    
+                    // [MODERN UI] Added new structure for animated timer
+                    watchlistHTML += `
+                        <div class="pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}" data-pair="${p}">
+                            <div class="pair-header">
+                                <span class="pair-name">${p}</span>
+                                <div class="pair-countdown">
+                                    <div class="countdown-bar" id="countdown-bar-${safePairId}"></div>
+                                    <span class="countdown-text" id="countdown-text-${safePairId}">--:--</span>
+                                </div>
+                            </div>
+                            <div class="pair-info">
+                                <span>TF: <strong>${d.timeframe}</strong></span>
+                                <span>Harga: <strong>${formatPrice(d.price)}</strong></span>
+                                <span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span>
+                            </div>
+                            ${actionHTML}
+                        </div>`;
+                });
 
-            candleStartTimes = newCandleStartTimes; // Update "memori" secara atomik
+                watchlistEl.innerHTML = watchlistHTML; // Update DOM once
+                candleStartTimes = newCandleStartTimes;
+                
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                Object.entries(data.settings).forEach(([k, v]) => {
+                    const i = document.getElementById(`s-${k}`);
+                    if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
+                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
+                });
+            };
+
+            const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); } lastData = data; } catch(e) { console.error("Update failed:", e); } };
             
-            document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
-            Object.entries(data.settings).forEach(([k, v]) => {
-                const i = document.getElementById(`s-${k}`);
-                if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
-                if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
-            });
-        };
-        const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); } lastData = data; } catch(e) { console.error("Update failed:", e); } };
-        document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { currentChartPair = card.dataset.pair; createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart'); } });
-        document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
-        document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
-        const modal=document.getElementById('settings-modal');
-        document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
-        document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
-        document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
-        document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
-        document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-        
-        fetchData(); 
-        setInterval(fetchData, REFRESH_INTERVAL_MS);
-        setInterval(updateCountdowns, 1000);
-    });
-</script>
-
+            document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { currentChartPair = card.dataset.pair; createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart'); } });
+            document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
+            document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
+            
+            const modal=document.getElementById('settings-modal');
+            document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
+            document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
+            document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
+            document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
+            document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
+            
+            fetchData(); 
+            setInterval(fetchData, REFRESH_INTERVAL_MS);
+            setInterval(updateCountdowns, 1000);
+        });
+    </script>
 </body>
 </html>
 """
