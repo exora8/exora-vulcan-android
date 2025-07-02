@@ -265,79 +265,50 @@ def autopilot_worker():
             time.sleep(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
 
-# --- PERBAIKAN TOTAL: LOGIKA MANAJEMEN POSISI YANG 100% AMAN ---
 async def check_realtime_position_management(trade_obj, current_candle_data):
-    # Guard clause: Hanya proses trade yang valid dan terbuka
-    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN':
-        return
-
-    # Ambil variabel penting untuk kemudahan membaca
-    trade_type = trade_obj.get('type')
-    entry_price = trade_obj['entryPrice']
-    candle_low = current_candle_data['low']
-    candle_high = current_candle_data['high']
-
-    # --- 1. Logika Stop Loss (Prioritas Utama & Paling Aman) ---
-    # Menggunakan PnL-based check untuk menghindari bug dari data tick yang aneh.
+    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
+    trade_type = trade_obj.get('type'); entry_price = trade_obj['entryPrice']
+    candle_low = current_candle_data['low']; candle_high = current_candle_data['high']
     sl_pct = current_settings.get('stop_loss_pct', 0)
     if sl_pct > 0:
         if trade_type == 'LONG':
-            # PnL dihitung dari titik terendah candle (worst case)
             pnl_at_low = calculate_pnl(entry_price, candle_low, 'LONG')
             if pnl_at_low <= -sl_pct:
                 sl_price = entry_price * (1 - sl_pct / 100)
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%")
-                return  # Posisi sudah ditutup, hentikan pengecekan lebih lanjut
-        
+                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
         elif trade_type == 'SHORT':
-            # PnL dihitung dari titik tertinggi candle (worst case)
             pnl_at_high = calculate_pnl(entry_price, candle_high, 'SHORT')
             if pnl_at_high <= -sl_pct:
                 sl_price = entry_price * (1 + sl_pct / 100)
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%")
-                return  # Posisi sudah ditutup, hentikan pengecekan lebih lanjut
-
-    # --- 2. Logika Take Profit (Hanya jika posisi belum di-close oleh SL) ---
+                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
     if current_settings.get('use_trailing_tp', True):
-        # --- MODE TRAILING TP (Checkbox Dicentang) ---
         activation_pct = current_settings.get("trailing_tp_activation_pct", 0); gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
-        if activation_pct <= 0 or gap_pct <= 0: return # Jangan jalankan jika setting tidak valid
-
-        # PnL dihitung dari titik tertinggi (untuk long) atau terendah (untuk short)
+        if activation_pct <= 0 or gap_pct <= 0: return
         pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type)
-        
         ts_price = None
         with state_lock:
             if pnl_at_best >= activation_pct:
                 current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
                 if current_cp == 0.0: current_cp = activation_pct
-                
                 steps_passed = math.floor((pnl_at_best - current_cp) / gap_pct)
                 if steps_passed >= 0:
                     new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
                     new_ts_level = new_cp - gap_pct
                     if trade_type == 'LONG': trade_obj['trailing_stop_price'] = entry_price * (1 + new_ts_level / 100)
                     else: trade_obj['trailing_stop_price'] = entry_price * (1 - new_ts_level / 100)
-            
             ts_price = trade_obj.get('trailing_stop_price')
-
         if ts_price is not None:
             if (trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price):
                 close_trade_sync(trade_obj, ts_price, "Trailing TP")
-
     else:
-        # --- MODE STATIC TP (Checkbox Tidak Dicentang) ---
         static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
-        if static_tp_pct <= 0: return # Jangan jalankan jika tidak ada target TP
-        
+        if static_tp_pct <= 0: return
         if trade_type == 'LONG':
             tp_price = entry_price * (1 + static_tp_pct / 100)
-            if candle_high >= tp_price:
-                close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+            if candle_high >= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
         elif trade_type == 'SHORT':
             tp_price = entry_price * (1 - static_tp_pct / 100)
-            if candle_low <= tp_price:
-                close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+            if candle_low <= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
 
 def data_refresh_worker():
     while not stop_event.is_set():
@@ -357,7 +328,7 @@ def data_refresh_worker():
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
-# --- TEMPLATE HTML (Tidak ada perubahan, sama seperti sebelumnya) ---
+# --- TEMPLATE HTML DENGAN PERUBAHAN ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -394,7 +365,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); }
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
-        .pair-price { font-size: 1.25rem; color: var(--text-muted); }
+        .pair-countdown { font-size: 1.25rem; color: var(--text-muted); } /* Ganti dari pair-price */
         .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
         .btn { flex-grow: 1; padding: 0.75rem; border-radius: 8px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; }
         .btn:hover { transform: scale(1.03); opacity: 0.9; }
@@ -489,10 +460,13 @@ HTML_SKELETON_TRADINGVIEW = """
             const REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
             const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
-            const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
+            
             let currentChartPair = null; let lastData = {};
+
+            const TIMEFRAME_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
+
             const createChartWidgets = (pair, timeframe) => {
                 document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
@@ -501,6 +475,26 @@ HTML_SKELETON_TRADINGVIEW = """
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
+
+            const updateCountdowns = () => {
+                document.querySelectorAll('.pair-countdown').forEach(el => {
+                    const startTimeMs = parseInt(el.dataset.startTimeMs, 10);
+                    const timeframe = el.dataset.timeframe;
+                    const durationSeconds = TIMEFRAME_SECONDS[timeframe];
+
+                    if (!startTimeMs || !durationSeconds) { el.textContent = '--:--'; return; }
+                    
+                    const endTimeMs = startTimeMs + (durationSeconds * 1000);
+                    const remainingMs = Math.max(0, endTimeMs - Date.now());
+                    
+                    const totalSeconds = Math.floor(remainingMs / 1000);
+                    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+                    const seconds = String(totalSeconds % 60).padStart(2, '0');
+
+                    el.textContent = `${minutes}:${seconds}`;
+                });
+            };
+
             const updateUI = data => {
                 if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
@@ -509,7 +503,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; card.dataset.pair = p;
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-countdown" data-start-time-ms="${d.current_candle_start_time_ms}" data-timeframe="${d.timeframe}">--:--</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Harga: <strong>${formatPrice(d.price)}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
@@ -529,7 +523,10 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-            fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
+            
+            fetchData(); 
+            setInterval(fetchData, REFRESH_INTERVAL_MS);
+            setInterval(updateCountdowns, 1000); // Start the 1-second countdown timer
         });
     </script>
 </body>
@@ -545,23 +542,27 @@ def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
-    ai_analyzer_instance = LocalAI(settings_copy, []) 
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
-        current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
+        current_price = 0.0
+        current_candle_start_time_ms = 0
+        if full_candle_data:
+            current_price = full_candle_data[-1].get('close', 0.0)
+            current_candle_start_time_ms = full_candle_data[-1].get('time', 0)
+
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        trend = "N/A"
-        if len(full_candle_data) > 100:
-            ema50_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 50); ema100_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 100)
-            if ema50_raw and ema100_raw:
-                last_ema50 = ema50_raw[-1]; last_ema100 = ema100_raw[-1]
-                if abs(last_ema50 - last_ema100) / last_ema50 < 0.002: trend = "Ranging"
-                elif last_ema50 > last_ema100: trend = "Bullish"
-                else: trend = "Bearish"
-        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend }
+
+        market_data_view[pair_id] = {
+            "price": current_price,
+            "funding": pair_state.get("funding_rate", 0.0),
+            "timeframe": timeframe,
+            "open_position": open_pos,
+            "pnl": pnl,
+            "current_candle_start_time_ms": current_candle_start_time_ms
+        }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
 @app.route('/toggle-ai', methods=['POST'])
