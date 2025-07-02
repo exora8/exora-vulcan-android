@@ -66,7 +66,7 @@ def load_settings():
         "use_trailing_tp": True, "trailing_tp_activation_pct": 0.30, 
         "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
-        "max_trades_in_history": 80, "refresh_interval_seconds": 0.5, "chart_candle_limit": 80,
+        "max_trades_in_history": 80, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
         "similarity_threshold_win": 4, "similarity_threshold_loss": 3
     }
     if os.path.exists(SETTINGS_FILE):
@@ -267,62 +267,63 @@ def autopilot_worker():
         else: time.sleep(1)
 async def check_realtime_position_management(trade_obj, current_candle_data):
     if not trade_obj or not trade_obj.get('type'): return
-    
-    # --- Stop Loss Logic ---
     sl_pct = current_settings.get('stop_loss_pct')
     if trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= trade_obj['entryPrice'] * (1 - sl_pct / 100):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
-    
-    # --- Trailing Take Profit Logic (with toggle) ---
-    if not current_settings.get('use_trailing_tp', True):
-        return # Skip TTP if disabled in settings
-
-    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
-    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+    if not current_settings.get('use_trailing_tp', True): return
+    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
-    
     ts_price = None
     with state_lock:
         if pnl_now >= activation_pct:
             current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
             if current_cp == 0.0: current_cp = activation_pct
-            
-            # Calculate how many 'gap' steps have been passed since the last checkpoint
             steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
-            
             if steps_passed >= 0:
-                new_cp = current_cp + (steps_passed * gap_pct)
-                trade_obj['current_tp_checkpoint_level'] = new_cp
-                
-                # Set new trailing stop price, one 'gap' below the new checkpoint
+                new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
                 new_ts_level = new_cp - gap_pct
-                if trade_obj.get('type') == 'LONG':
-                    trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100)
-                else: # SHORT
-                    trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - new_ts_level / 100)
-        
+                if trade_obj.get('type') == 'LONG': trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100)
+                else: trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - new_ts_level / 100)
         ts_price = trade_obj.get('trailing_stop_price')
-
     if ts_price is not None:
-        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price):
-            close_trade_sync(trade_obj, ts_price, "Trailing TP")
-        elif (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
             close_trade_sync(trade_obj, ts_price, "Trailing TP")
 
+# --- PERBAIKAN: WORKER DATA YANG LEBIH EFISIEN ---
 def data_refresh_worker():
     while not stop_event.is_set():
-        for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
+        start_time = time.time()
+        
+        # Ambil daftar pair saat ini untuk diiterasi
+        watched_pairs_copy = list(current_settings.get("watched_pairs", {}).items())
+
+        # Iterasi dan ambil data untuk semua pair secepat mungkin
+        for pair_id, timeframe in watched_pairs_copy:
             if pair_id not in market_state: market_state[pair_id] = {}
-            candle_data = fetch_recent_candles(pair_id, timeframe); funding_rate = fetch_funding_rate(pair_id)
+            
+            # Ambil data candle dan funding rate
+            candle_data = fetch_recent_candles(pair_id, timeframe)
+            funding_rate = fetch_funding_rate(pair_id) # Sebaiknya ada jeda kecil jika banyak pair
+            
             market_state[pair_id]['funding_rate'] = funding_rate if funding_rate is not None else market_state[pair_id].get('funding_rate', 0.0)
+            
             if candle_data:
                 market_state[pair_id]["candle_data"] = candle_data
-                with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
-            time.sleep(current_settings.get("refresh_interval_seconds", 0.5))
-        time.sleep(1)
+                with state_lock: 
+                    open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                if open_pos: 
+                    asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
+            
+            # Beri jeda sangat kecil agar tidak membanjiri API dalam satu burst
+            time.sleep(0.1) 
+
+        # Hitung waktu yang berlalu dan tidur selama sisa interval
+        elapsed_time = time.time() - start_time
+        sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
+        stop_event.wait(sleep_duration)
+
 
 # --- TEMPLATE HTML DENGAN PERUBAHAN ---
 HTML_SKELETON_TRADINGVIEW = """
@@ -452,7 +453,10 @@ HTML_SKELETON_TRADINGVIEW = """
     </div>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const API_ENDPOINT = '/api/data'; const REFRESH_INTERVAL_MS = 3000;
+            const API_ENDPOINT = '/api/data';
+            // --- PERBAIKAN: Ambil interval dari setting, bukan hardcode ---
+            const REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
+            
             const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
             const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
@@ -490,13 +494,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
-                    if(i && document.activeElement !== i) {
-                        if (i.type === 'checkbox') {
-                            i.checked = v;
-                        } else {
-                            i.value = v;
-                        }
-                    }
+                    if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
                 });
             };
@@ -509,7 +507,7 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
-            document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())); modal.classList.remove('visible'); });
+            document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
             fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
@@ -519,7 +517,9 @@ HTML_SKELETON_TRADINGVIEW = """
 
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
-def dashboard(): return render_template_string(HTML_SKELETON_TRADINGVIEW)
+def dashboard(): 
+    # Kirim settings ke template agar bisa digunakan oleh JavaScript
+    return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
 
 @app.route('/api/data')
 def get_api_data():
@@ -591,22 +591,16 @@ def trade_close():
 def update_settings():
     global current_settings
     with state_lock:
-        # Handle checkbox first
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
-
-        # Handle other values
         for key, value in request.form.items():
             if key in current_settings and isinstance(current_settings[key], (int, float)):
                 try:
-                    # Try to convert to float if it contains a decimal, else int
-                    if '.' in value:
-                        current_settings[key] = float(value)
-                    else:
-                        current_settings[key] = int(value)
-                except (ValueError, TypeError):
-                    print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
+                    if '.' in value: current_settings[key] = float(value)
+                    else: current_settings[key] = int(value)
+                except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
         save_settings()
-    print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
+    print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
+    return jsonify(success=True)
 
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
