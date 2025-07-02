@@ -265,52 +265,78 @@ def autopilot_worker():
             time.sleep(current_settings.get("analysis_interval_sec", 10))
         else: time.sleep(1)
 
-# --- PERBAIKAN UTAMA: LOGIKA TP STATIS & TRAILING ---
+# --- PERBAIKAN TOTAL: LOGIKA MANAJEMEN POSISI YANG 100% AMAN ---
 async def check_realtime_position_management(trade_obj, current_candle_data):
-    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
+    # Guard clause: Hanya proses trade yang valid dan terbuka
+    if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN':
+        return
 
-    # --- 1. Logika Stop Loss (Selalu Aktif) ---
-    sl_pct = current_settings.get('stop_loss_pct')
+    # Ambil variabel penting untuk kemudahan membaca
+    trade_type = trade_obj.get('type')
+    entry_price = trade_obj['entryPrice']
+    candle_low = current_candle_data['low']
+    candle_high = current_candle_data['high']
+
+    # --- 1. Logika Stop Loss (Prioritas Utama & Paling Aman) ---
+    # Menggunakan PnL-based check untuk menghindari bug dari data tick yang aneh.
+    sl_pct = current_settings.get('stop_loss_pct', 0)
     if sl_pct > 0:
-        if trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= trade_obj['entryPrice'] * (1 - sl_pct / 100):
-            close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
-        elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
-            close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
+        if trade_type == 'LONG':
+            # PnL dihitung dari titik terendah candle (worst case)
+            pnl_at_low = calculate_pnl(entry_price, candle_low, 'LONG')
+            if pnl_at_low <= -sl_pct:
+                sl_price = entry_price * (1 - sl_pct / 100)
+                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%")
+                return  # Posisi sudah ditutup, hentikan pengecekan lebih lanjut
+        
+        elif trade_type == 'SHORT':
+            # PnL dihitung dari titik tertinggi candle (worst case)
+            pnl_at_high = calculate_pnl(entry_price, candle_high, 'SHORT')
+            if pnl_at_high <= -sl_pct:
+                sl_price = entry_price * (1 + sl_pct / 100)
+                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%")
+                return  # Posisi sudah ditutup, hentikan pengecekan lebih lanjut
 
-    # --- 2. Logika Take Profit (Berdasarkan Mode) ---
+    # --- 2. Logika Take Profit (Hanya jika posisi belum di-close oleh SL) ---
     if current_settings.get('use_trailing_tp', True):
         # --- MODE TRAILING TP (Checkbox Dicentang) ---
-        activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+        activation_pct = current_settings.get("trailing_tp_activation_pct", 0); gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
         if activation_pct <= 0 or gap_pct <= 0: return # Jangan jalankan jika setting tidak valid
+
+        # PnL dihitung dari titik tertinggi (untuk long) atau terendah (untuk short)
+        pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type)
         
-        pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
         ts_price = None
         with state_lock:
-            if pnl_now >= activation_pct:
+            if pnl_at_best >= activation_pct:
                 current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
                 if current_cp == 0.0: current_cp = activation_pct
-                steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
+                
+                steps_passed = math.floor((pnl_at_best - current_cp) / gap_pct)
                 if steps_passed >= 0:
                     new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
                     new_ts_level = new_cp - gap_pct
-                    if trade_obj.get('type') == 'LONG': trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100)
-                    else: trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+                    if trade_type == 'LONG': trade_obj['trailing_stop_price'] = entry_price * (1 + new_ts_level / 100)
+                    else: trade_obj['trailing_stop_price'] = entry_price * (1 - new_ts_level / 100)
+            
             ts_price = trade_obj.get('trailing_stop_price')
+
         if ts_price is not None:
-            if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+            if (trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price):
                 close_trade_sync(trade_obj, ts_price, "Trailing TP")
+
     else:
         # --- MODE STATIC TP (Checkbox Tidak Dicentang) ---
         static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
         if static_tp_pct <= 0: return # Jangan jalankan jika tidak ada target TP
         
-        if trade_obj.get('type') == 'LONG':
-            tp_price = trade_obj['entryPrice'] * (1 + static_tp_pct / 100)
-            if current_candle_data['high'] >= tp_price:
+        if trade_type == 'LONG':
+            tp_price = entry_price * (1 + static_tp_pct / 100)
+            if candle_high >= tp_price:
                 close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
-        elif trade_obj.get('type') == 'SHORT':
-            tp_price = trade_obj['entryPrice'] * (1 - static_tp_pct / 100)
-            if current_candle_data['low'] <= tp_price:
+        elif trade_type == 'SHORT':
+            tp_price = entry_price * (1 - static_tp_pct / 100)
+            if candle_low <= tp_price:
                 close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
 
 def data_refresh_worker():
