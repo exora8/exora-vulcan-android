@@ -101,9 +101,9 @@ def save_trades():
         trades.sort(key=lambda x: x['entryTimestamp'], reverse=True)
         max_trades = current_settings.get("max_trades_in_history", 80)
         if len(trades) > max_trades: trades = trades[:max_trades]
-    try:
-        with open(TRADES_FILE, 'w') as f: json.dump(trades, f, indent=4)
-    except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
+        try:
+            with open(TRADES_FILE, 'w') as f: json.dump(trades, f, indent=4)
+        except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
 
 # --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
 
@@ -241,10 +241,10 @@ def close_trade_sync(trade, exit_price, reason):
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
         save_trades()
-    pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
-    notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
-    notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
-    send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
+        pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
+        notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
+        notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
+        send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
@@ -481,7 +481,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .pair-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
         .pair-name { font-size: 1.5rem; font-weight: 600; }
 
-        /* [PERBAIKAN TIMER] CSS BARU UNTUK TIMER YANG LEBIH BAIK */
+        /* ========= [PERUBAHAN CSS TIMER DIMULAI] ========= */
         .pair-countdown {
             position: relative;
             font-size: 1.25rem;
@@ -489,9 +489,8 @@ HTML_SKELETON_TRADINGVIEW = """
             background-color: rgba(0,0,0,0.2);
             padding: 0.2rem 0.6rem;
             border-radius: 6px;
-            overflow: hidden; /* Penting untuk efek bar */
+            overflow: hidden; /* Ini kunci agar barnya terpotong rapi */
             transition: color 0.3s ease;
-            font-variant-numeric: tabular-nums; /* Membuat angka tidak 'goyang' */
         }
         .countdown-bar {
             position: absolute;
@@ -499,13 +498,14 @@ HTML_SKELETON_TRADINGVIEW = """
             background-color: var(--accent-primary);
             opacity: 0.15;
             border-radius: 6px;
-            /* Lebar bar akan diupdate oleh JS. Transisi membuatnya mulus. */
+            /* Lebarnya akan di-update oleh JS. Transisi ini membuatnya smooth. */
             transition: width 1s linear; 
         }
         .countdown-text {
             position: relative; /* Agar muncul di atas bar */
             z-index: 1;
         }
+        /* ========= [PERUBAHAN CSS TIMER SELESAI] ========= */
 
         .pair-info { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; }
         
@@ -687,16 +687,21 @@ HTML_SKELETON_TRADINGVIEW = """
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
 
-            // [PERBAIKAN TIMER] Logika countdown diupdate untuk mengontrol bar juga
+            // ========= [PERUBAHAN JAVASCRIPT TIMER DIMULAI] =========
             const updateCountdowns = () => {
+                // Loop melalui setiap pair yang datanya kita simpan
                 for (const pair in candleStartTimes) {
                     const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
+                    // Cari elemen teks dan bar berdasarkan ID yang unik
                     const textEl = document.getElementById(`countdown-text-${safePairId}`);
                     const barEl = document.getElementById(`countdown-bar-${safePairId}`);
+                    // Jika elemen tidak ditemukan, lanjut ke pair berikutnya
                     if (!textEl || !barEl) continue; 
 
                     const { startTimeMs, timeframe } = candleStartTimes[pair];
                     const durationSeconds = TIMEFRAME_SECONDS[timeframe];
+
+                    // Jika data waktu tidak valid, lanjut
                     if (!startTimeMs || !durationSeconds) continue; 
                     
                     const endTimeMs = startTimeMs + (durationSeconds * 1000);
@@ -705,18 +710,19 @@ HTML_SKELETON_TRADINGVIEW = """
                     const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
                     const seconds = String(totalSeconds % 60).padStart(2, '0');
                     
-                    // Update teks
+                    // Update teks waktu
                     textEl.textContent = `${minutes}:${seconds}`;
 
-                    // Update lebar dari bar kemajuan
+                    // Update lebar bar progress
                     const remainingPercentage = (remainingMs / (durationSeconds * 1000)) * 100;
                     barEl.style.width = `${remainingPercentage}%`;
                 }
             };
+            // ========= [PERUBAHAN JAVASCRIPT TIMER SELESAI] =========
 
             const updateUI = data => {
                 if (!data || !data.settings || !data.market_data) {
-                    console.error("Menerima data tidak valid dari API:", data);
+                    console.error("Received invalid data from API:", data);
                     return;
                 }
                 
@@ -729,12 +735,14 @@ HTML_SKELETON_TRADINGVIEW = """
                 let watchlistHTML = ''; // Build HTML string dulu
                 
                 Object.entries(data.market_data).forEach(([p, d]) => {
+                    // Simpan data waktu candle untuk fungsi updateCountdowns
                     newCandleStartTimes[p] = { startTimeMs: d.current_candle_start_time_ms, timeframe: d.timeframe };
                     
                     const safePairId = p.replace(/[^a-zA-Z0-9]/g, '');
                     const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     
-                    // [PERBAIKAN TIMER] Menggunakan struktur HTML baru untuk timer
+                    // ========= [PERUBAHAN HTML TIMER DIMULAI] =========
+                    // Menambahkan struktur HTML baru untuk timer yang lebih smooth
                     watchlistHTML += `
                         <div class="pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}" data-pair="${p}">
                             <div class="pair-header">
@@ -751,13 +759,11 @@ HTML_SKELETON_TRADINGVIEW = """
                             </div>
                             ${actionHTML}
                         </div>`;
+                    // ========= [PERUBAHAN HTML TIMER SELESAI] =========
                 });
 
-                watchlistEl.innerHTML = watchlistHTML; // Update DOM sekali
-                candleStartTimes = newCandleStartTimes;
-                
-                // [PERBAIKAN TIMER] Panggil updateCountdowns() segera untuk menghilangkan kedipan
-                updateCountdowns();
+                watchlistEl.innerHTML = watchlistHTML; // Update DOM sekali saja
+                candleStartTimes = newCandleStartTimes; // Update 'memory' waktu
                 
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
@@ -782,7 +788,7 @@ HTML_SKELETON_TRADINGVIEW = """
             
             fetchData(); 
             setInterval(fetchData, REFRESH_INTERVAL_MS);
-            // Interval ini tetap ada untuk terus meng-update timer setiap detik
+            // Jalankan fungsi update countdown setiap detik
             setInterval(updateCountdowns, 1000);
         });
     </script>
@@ -843,8 +849,8 @@ def trade_manual():
         if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
         new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot }
         trades.insert(0, new_trade)
-    print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
-    save_trades(); return jsonify(success=True)
+        print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
+        save_trades(); return jsonify(success=True)
 
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
@@ -869,7 +875,7 @@ def update_settings():
                     if '.' in value: current_settings[key] = float(value)
                     else: current_settings[key] = int(value)
                 except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-    save_settings()
+        save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
 
@@ -887,7 +893,7 @@ def remove_watchlist():
     with state_lock:
         if pair in current_settings['watched_pairs']:
             del current_settings['watched_pairs'][pair]; save_settings()
-    print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
+            print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
 
 # --- MAIN EXECUTION ---
