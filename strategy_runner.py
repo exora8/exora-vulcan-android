@@ -63,7 +63,8 @@ def load_settings():
     global current_settings
     default_settings = { 
         "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10, 
-        "trailing_tp_activation_pct": 0.30, "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
+        "use_trailing_tp": True, "trailing_tp_activation_pct": 0.30, 
+        "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
         "max_trades_in_history": 80, "refresh_interval_seconds": 0.5, "chart_candle_limit": 80,
         "similarity_threshold_win": 4, "similarity_threshold_loss": 3
@@ -131,7 +132,6 @@ def calculate_todays_pnl(all_trades):
     for trade in all_trades:
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
-                # Fee is charged on open and close, so total fee is 2 * fee_pct
                 if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
@@ -142,7 +142,6 @@ def calculate_this_weeks_pnl(all_trades):
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                # Fee is charged on open and close, so total fee is 2 * fee_pct
                 if start_of_week_utc <= exit_date <= today_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
@@ -154,7 +153,6 @@ def calculate_last_weeks_pnl(all_trades):
         if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                # Fee is charged on open and close, so total fee is 2 * fee_pct
                 if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
@@ -178,7 +176,6 @@ class LocalAI:
         analysis["pre_entry_candle_solidity"] = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
         analysis["pre_entry_candle_direction"] = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
         return analysis
-    
     def compare_setups(self, current_analysis, past_snapshot):
         if not past_snapshot or not past_snapshot.get('bias') or past_snapshot.get('bias') != current_analysis['bias']: return 0
         similarity_score = 1
@@ -191,9 +188,7 @@ class LocalAI:
             past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', [0,0,0]); avg_solidity_past = sum(past_solidity_list) / 3 if past_solidity_list else 0
             if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
         return similarity_score
-
     def check_for_winning_setup(self, current_analysis):
-        # A win is when gross PnL > total round-trip fee (2 * fee_pct)
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         if not winning_trades: return (False, None, None)
         SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_win", 4)
@@ -203,9 +198,7 @@ class LocalAI:
                 reason = f"High Confidence: Setup mirip win (ID: {win.get('id', 'N/A')})"
                 return (True, reason, win.get('type'))
         return (False, None, None)
-
     def check_for_repeated_mistake(self, current_analysis):
-        # A loss is when gross PnL < total round-trip fee (2 * fee_pct)
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
         if not losing_trades: return (False, None)
         SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_loss", 3)
@@ -215,34 +208,26 @@ class LocalAI:
                 reason = (f"Peringatan: Mirip loss ID {loss.get('id', 'N/A')}. Bias: {current_analysis['bias']}")
                 return (True, reason)
         return (False, None)
-
     def get_decision(self, candle_data, open_position, funding_rate=0.0):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
-        
         is_win_setup, win_reason, trade_type_from_win = self.check_for_winning_setup(analysis)
         if is_win_setup:
             return {"action": "BUY" if trade_type_from_win == 'LONG' else "SELL", "reason": win_reason, "snapshot": analysis}
-        
         max_funding_rate = self.settings.get("max_allowed_funding_rate_pct", 0.075)
         potential_trade_type = None
         if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
         elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
-        
         if potential_trade_type:
             if potential_trade_type == 'LONG' and funding_rate > max_funding_rate: return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
             if potential_trade_type == 'SHORT' and funding_rate < -max_funding_rate: return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
-            
             caution_level = self.settings.get("caution_level", 0.5); avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 3
             if avg_solidity < caution_level: return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f} < Caution: {caution_level:.2f})"}
-            
             is_repeated_mistake, mistake_reason = self.check_for_repeated_mistake(analysis)
             if is_repeated_mistake: return {"action": "HOLD", "reason": mistake_reason}
-            
             ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
-            
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
 def close_trade_sync(trade, exit_price, reason):
     with state_lock:
@@ -250,7 +235,6 @@ def close_trade_sync(trade, exit_price, reason):
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
     save_trades()
-    # Net PnL = Gross PnL - (Open Fee + Close Fee)
     pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
     notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
@@ -283,27 +267,50 @@ def autopilot_worker():
         else: time.sleep(1)
 async def check_realtime_position_management(trade_obj, current_candle_data):
     if not trade_obj or not trade_obj.get('type'): return
+    
+    # --- Stop Loss Logic ---
     sl_pct = current_settings.get('stop_loss_pct')
     if trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= trade_obj['entryPrice'] * (1 - sl_pct / 100):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     elif trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= trade_obj['entryPrice'] * (1 + sl_pct / 100):
         close_trade_sync(trade_obj, trade_obj['entryPrice'] * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     
-    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30); gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
+    # --- Trailing Take Profit Logic (with toggle) ---
+    if not current_settings.get('use_trailing_tp', True):
+        return # Skip TTP if disabled in settings
+
+    activation_pct = current_settings.get("trailing_tp_activation_pct", 0.30)
+    gap_pct = current_settings.get("trailing_tp_gap_pct", 0.05)
     pnl_now = calculate_pnl(trade_obj['entryPrice'], current_candle_data['high' if trade_obj.get('type') == 'LONG' else 'low'], trade_obj.get('type'))
+    
     ts_price = None
     with state_lock:
         if pnl_now >= activation_pct:
             current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
             if current_cp == 0.0: current_cp = activation_pct
+            
+            # Calculate how many 'gap' steps have been passed since the last checkpoint
             steps_passed = math.floor((pnl_now - current_cp) / gap_pct)
+            
             if steps_passed >= 0:
-                new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
-                new_ts_level = new_cp - gap_pct; trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100) if trade_obj.get('type') == 'LONG' else trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+                new_cp = current_cp + (steps_passed * gap_pct)
+                trade_obj['current_tp_checkpoint_level'] = new_cp
+                
+                # Set new trailing stop price, one 'gap' below the new checkpoint
+                new_ts_level = new_cp - gap_pct
+                if trade_obj.get('type') == 'LONG':
+                    trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 + new_ts_level / 100)
+                else: # SHORT
+                    trade_obj['trailing_stop_price'] = trade_obj['entryPrice'] * (1 - new_ts_level / 100)
+        
         ts_price = trade_obj.get('trailing_stop_price')
+
     if ts_price is not None:
-        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price) or (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+        if (trade_obj.get('type') == 'LONG' and current_candle_data['low'] <= ts_price):
             close_trade_sync(trade_obj, ts_price, "Trailing TP")
+        elif (trade_obj.get('type') == 'SHORT' and current_candle_data['high'] >= ts_price):
+            close_trade_sync(trade_obj, ts_price, "Trailing TP")
+
 def data_refresh_worker():
     while not stop_event.is_set():
         for pair_id, timeframe in list(current_settings.get("watched_pairs", {}).items()):
@@ -379,6 +386,8 @@ HTML_SKELETON_TRADINGVIEW = """
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
         .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
+        .form-group.checkbox-group { flex-direction: row; align-items: center; gap: 0.5rem; }
+        .form-group.checkbox-group label { margin-bottom: 0; }
         .watchlist-manage ul { list-style: none; padding: 0; }
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
@@ -409,23 +418,24 @@ HTML_SKELETON_TRADINGVIEW = """
             <form id="settings-form">
                 <h3>Trading Parameters</h3>
                 <div class="form-grid">
-                    <div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="0.01" name="fee_pct" id="s-fee_pct"></div>
-                    <div class="form-group"><label>Stop Loss (%)</label><input type="number" step="0.01" name="stop_loss_pct" id="s-stop_loss_pct"></div>
-                    <div class="form-group"><label>TP Activation (%)</label><input type="number" step="0.01" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
-                    <div class="form-group"><label>TP Gap (%)</label><input type="number" step="0.01" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
-                    <div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="0.1" name="caution_level" id="s-caution_level"></div>
-                    <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="0.001" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
+                    <div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div>
+                    <div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div>
+                    <div class="form-group checkbox-group"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp">Enable Trailing TP</label></div>
+                    <div class="form-group"><label>TP Activation (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
+                    <div class="form-group"><label>TP Gap (%)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
+                    <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
                 </div>
                 <h3>AI Learning Parameters</h3>
                 <div class="form-grid">
-                    <div class="form-group"><label>Win Similarity Threshold (Higher=Stricter)</label><input type="number" step="1" min="1" max="5" name="similarity_threshold_win" id="s-similarity_threshold_win"></div>
-                    <div class="form-group"><label>Loss Similarity Threshold (Higher=Stricter)</label><input type="number" step="1" min="1" max="5" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div>
+                    <div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="any" name="caution_level" id="s-caution_level"></div>
+                    <div class="form-group"><label>Win Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_win" id="s-similarity_threshold_win"></div>
+                    <div class="form-group"><label>Loss Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div>
                 </div>
                 <h3>System Parameters</h3>
                 <div class="form-grid">
                     <div class="form-group"><label>AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
                     <div class="form-group"><label>Max Trade History</label><input type="number" step="10" name="max_trades_in_history" id="s-max_trades_in_history"></div>
-                    <div class="form-group"><label>Data Refresh (s)</label><input type="number" step="0.1" name="refresh_interval_seconds" id="s-refresh_interval_seconds"></div>
+                    <div class="form-group"><label>Data Refresh (s)</label><input type="number" step="any" name="refresh_interval_seconds" id="s-refresh_interval_seconds"></div>
                 </div>
                 <h3>Watchlist</h3>
                 <div class="watchlist-manage"><ul id="watchlist-list"></ul>
@@ -454,23 +464,9 @@ HTML_SKELETON_TRADINGVIEW = """
             const createChartWidgets = (pair, timeframe) => {
                 document.getElementById('tradingview_chart_bybit').innerHTML = '';
                 document.getElementById('tradingview_chart_binance').innerHTML = '';
-                
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
-
-                const commonSettings = {
-                    "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark",
-                    "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true,
-                    "hide_side_toolbar": false, "allow_symbol_change": true,
-                    "disabled_features": ["header_widget"],
-                    "studies": [
-                        { "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }
-                    ],
-                    "overrides": {
-                        "study.Moving Average Exponential.plot.color": "#60A5FA" 
-                    }
-                };
-
+                const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
@@ -480,11 +476,9 @@ HTML_SKELETON_TRADINGVIEW = """
                     currentChartPair = Object.keys(data.settings.watched_pairs)[0];
                     createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
                 }
-
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
@@ -494,27 +488,20 @@ HTML_SKELETON_TRADINGVIEW = """
                     watchlistEl.appendChild(card);
                 });
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
-                
                 Object.entries(data.settings).forEach(([k, v]) => {
+                    const i = document.getElementById(`s-${k}`);
+                    if(i && document.activeElement !== i) {
+                        if (i.type === 'checkbox') {
+                            i.checked = v;
+                        } else {
+                            i.value = v;
+                        }
+                    }
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
-                    else { const i = document.getElementById(`s-${k}`); if(i && document.activeElement!==i) i.value=v; }
                 });
             };
-            const fetchData = async () => {
-                try {
-                    const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json();
-                    if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); }
-                    lastData = data;
-                } catch(e) { console.error("Update failed:", e); }
-            };
-            document.getElementById('watchlist').addEventListener('click', e => {
-                const card = e.target.closest('.pair-card');
-                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
-                    currentChartPair = card.dataset.pair;
-                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]);
-                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart');
-                }
-            });
+            const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); } lastData = data; } catch(e) { console.error("Update failed:", e); } };
+            document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { currentChartPair = card.dataset.pair; createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart'); } });
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
             const modal=document.getElementById('settings-modal');
@@ -538,7 +525,7 @@ def dashboard(): return render_template_string(HTML_SKELETON_TRADINGVIEW)
 def get_api_data():
     with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
     market_data_view = {}
-    fee_pct = settings_copy.get('fee_pct', 0.1) # This is the one-way fee
+    fee_pct = settings_copy.get('fee_pct', 0.1)
     ai_analyzer_instance = LocalAI(settings_copy, []) 
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
@@ -546,10 +533,7 @@ def get_api_data():
         current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
-        if open_pos and current_price > 0:
-            # PnL for an open position is Gross PnL minus the entry fee
-            pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-        
+        if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         trend = "N/A"
         if len(full_candle_data) > 100:
             ema50_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 50)
@@ -559,11 +543,7 @@ def get_api_data():
                 if abs(last_ema50 - last_ema100) / last_ema50 < 0.002: trend = "Ranging"
                 elif last_ema50 > last_ema100: trend = "Bullish"
                 else: trend = "Bearish"
-
-        market_data_view[pair_id] = {
-            "price": current_price, "funding": pair_state.get("funding_rate", 0.0), 
-            "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend
-        }
+        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend }
     return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
 
 @app.route('/toggle-ai', methods=['POST'])
@@ -611,15 +591,20 @@ def trade_close():
 def update_settings():
     global current_settings
     with state_lock:
+        # Handle checkbox first
+        current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
+
+        # Handle other values
         for key, value in request.form.items():
-            if key in current_settings and key != 'watched_pairs':
-                try: current_settings[key] = float(value) if '.' in value or key == "caution_level" else int(value)
-                except ValueError: pass
-        # Also update the label text for clarity
-        if 'fee_pct' in request.form:
-            # This is a bit of a hack to demonstrate the change, as we can't permanently change the HTML label from here easily.
-            # The label is already changed in the HTML string itself.
-            pass
+            if key in current_settings and isinstance(current_settings[key], (int, float)):
+                try:
+                    # Try to convert to float if it contains a decimal, else int
+                    if '.' in value:
+                        current_settings[key] = float(value)
+                    else:
+                        current_settings[key] = int(value)
+                except (ValueError, TypeError):
+                    print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI.", Fore.GREEN); return jsonify(success=True)
 
