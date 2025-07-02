@@ -340,7 +340,9 @@ HTML_SKELETON_TRADINGVIEW = """
         :root { --bg-color: #121212; --card-color: #1E1E1E; --border-color: #333; --text-color: #EAEAEA; --text-muted: #888; --green: #34D399; --red: #F87171; --yellow: #FBBF24; --accent-primary: #60A5FA; }
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; font-size: 16px; }
-        body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+        body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
+            overscroll-behavior-y: contain; /* Mencegah pull-to-refresh */
+        }
         .container { max-width: 1200px; margin: 0 auto; }
         h1 { margin: 0; font-size: 1.75rem; }
         h2 { margin-top: 2.5rem; margin-bottom: 1rem; font-size: 1.25rem; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center; }
@@ -357,7 +359,9 @@ HTML_SKELETON_TRADINGVIEW = """
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
         .chart-wrapper { margin-bottom: 2rem; }
-        .tradingview-widget-container { height: 450px; }
+        .tradingview-widget-container { height: 450px; 
+            touch-action: none; /* Memberi kontrol sentuhan penuh ke widget */
+        }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
         .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
         .pair-card.active-chart { border-color: var(--accent-primary); }
