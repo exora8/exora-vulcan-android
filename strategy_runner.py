@@ -61,10 +61,10 @@ def display_welcome_message():
 # --- MANAJEMEN DATA & PENGATURAN ---
 def load_settings():
     global current_settings
-    default_settings = {
-        "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10,
-        "use_trailing_tp": True, "trailing_tp_activation_pct": 0.30,
-        "trailing_tp_gap_pct": 0.05, "caution_level": 0.5,
+    default_settings = { 
+        "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10, 
+        "use_trailing_tp": True, "trailing_tp_activation_pct": 0.30, 
+        "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
         "max_trades_in_history": 80, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
         "similarity_threshold_win": 4, "similarity_threshold_loss": 3
@@ -323,12 +323,12 @@ def data_refresh_worker():
                 market_state[pair_id]["candle_data"] = candle_data
                 with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
                 if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
-            time.sleep(0.1)
+            time.sleep(0.1) 
         elapsed_time = time.time() - start_time
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
-# --- TEMPLATE HTML DENGAN UI MEWAH & ANIMASI ---
+# --- TEMPLATE HTML DENGAN UI PROFESIONAL, ANTI-FLICKER, DAN FUNGSI LENGKAP ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -372,7 +372,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .tradingview-widget-container { height: 500px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }
         
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1.5rem; }
-        .pair-card { opacity: 0; animation: fadeInUp 0.6s ease-out forwards; background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; transition: all 0.3s ease-in-out; }
+        .pair-card { opacity: 0; animation: fadeInUp 0.6s ease-out forwards; background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; transition: all 0.3s ease-in-out; cursor: pointer; }
         .pair-card:hover { transform: translateY(-5px); box-shadow: 0 8px 30px var(--shadow-color); }
         .pair-card.active-chart { border-color: var(--accent-primary); box-shadow: 0 0 15px rgba(59, 130, 246, 0.2); }
         .pair-card.position-open { border-left: 4px solid var(--accent-primary); padding-left: calc(1.5rem - 3px); }
@@ -416,6 +416,8 @@ HTML_SKELETON_TRADINGVIEW = """
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
         .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
+        .form-group.checkbox-group { flex-direction: row; align-items: center; gap: 0.5rem; }
+        .form-group.checkbox-group label { margin: 0; }
         .watchlist-manage ul { list-style: none; padding: 0; }
         .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); }
         .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
@@ -453,7 +455,7 @@ HTML_SKELETON_TRADINGVIEW = """
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
                 <h3>Trading Parameters</h3>
-                <div class="form-grid"><div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div><div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div><div class="form-group checkbox-group" style="flex-direction: row; align-items: center; gap: 0.5rem;"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp" style="margin:0;">Enable Trailing TP</label></div><div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div><div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div><div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div></div>
+                <div class="form-grid"><div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div><div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div><div class="form-group checkbox-group"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp">Enable Trailing TP</label></div><div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div><div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div><div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div></div>
                 <h3>AI Learning Parameters</h3>
                 <div class="form-grid"><div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="any" name="caution_level" id="s-caution_level"></div><div class="form-group"><label>Win Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_win" id="s-similarity_threshold_win"></div><div class="form-group"><label>Loss Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div></div>
                 <h3>System Parameters</h3>
@@ -477,7 +479,6 @@ HTML_SKELETON_TRADINGVIEW = """
         
         let currentChartPair = null; 
         let candleStartTimes = {};
-        let activeTradeIds = new Set();
         const TIMEFRAME_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
         const SVG_CIRCLE_RADIUS = 22; // Adjusted for better look
         const SVG_CIRCUMFERENCE = 2 * Math.PI * SVG_CIRCLE_RADIUS;
@@ -515,19 +516,15 @@ HTML_SKELETON_TRADINGVIEW = """
             }
         };
         
-        // --- Core Update Logic ---
         const updateUI = (data) => {
-            // Update AI status button
             const aiBtn = document.getElementById('ai-status-btn');
             if (aiBtn) {
                 aiBtn.className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 aiBtn.textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
             }
-
-            // Update simple stats
-            updateText(document.getElementById('pnl-today'), formatPercent(data.pnl_today), data.pnl_today > 0 ? 'update-g' : 'update-r');
-            updateText(document.getElementById('pnl-this-week'), formatPercent(data.pnl_this_week), data.pnl_this_week > 0 ? 'update-g' : 'update-r');
-            updateText(document.getElementById('pnl-last-week'), formatPercent(data.pnl_last_week), data.pnl_last_week > 0 ? 'update-g' : 'update-r');
+            updateText(document.getElementById('pnl-today'), formatPercent(data.pnl_today), data.pnl_today >= 0 ? 'update-g' : 'update-r');
+            updateText(document.getElementById('pnl-this-week'), formatPercent(data.pnl_this_week), data.pnl_this_week >= 0 ? 'update-g' : 'update-r');
+            updateText(document.getElementById('pnl-last-week'), formatPercent(data.pnl_last_week), data.pnl_last_week >= 0 ? 'update-g' : 'update-r');
             document.getElementById('pnl-today').className = 'value ' + getPnlColorClass(data.pnl_today);
             document.getElementById('pnl-this-week').className = 'value ' + getPnlColorClass(data.pnl_this_week);
             document.getElementById('pnl-last-week').className = 'value ' + getPnlColorClass(data.pnl_last_week);
@@ -535,7 +532,6 @@ HTML_SKELETON_TRADINGVIEW = """
             const watchlistEl = document.getElementById('watchlist');
             const incomingPairs = new Set(Object.keys(data.market_data));
             
-            // Update or Add Watchlist Cards
             Object.entries(data.market_data).forEach(([pair, d], index) => {
                 const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
                 candleStartTimes[pair] = { startTimeMs: d.current_candle_start_time_ms, timeframe: d.timeframe };
@@ -546,38 +542,23 @@ HTML_SKELETON_TRADINGVIEW = """
                     card.dataset.pair = pair;
                     card.className = 'pair-card';
                     card.style.animationDelay = `${index * 50}ms`;
-                    card.innerHTML = getPairCardHTML(pair, d);
                     watchlistEl.appendChild(card);
                 }
-                updateText(document.getElementById(`price-${safePairId}`), formatPrice(d.price));
-                updateText(document.getElementById(`funding-${safePairId}`), formatPercent(d.funding));
-                document.getElementById(`funding-${safePairId}`).className = Math.abs(d.funding) > 0.05 ? 'text-red' : '';
+                card.innerHTML = getPairCardHTML(pair, d); // Re-render card content to handle position open/close
+                
                 const actionArea = document.getElementById(`action-area-${safePairId}`);
-                const hasPositionNow = !!d.open_position;
-                const wasPositionOpen = actionArea.querySelector('.position-info') !== null;
-                if (hasPositionNow !== wasPositionOpen) { actionArea.innerHTML = getActionAreaHTML(pair, d); }
-                if (hasPositionNow) { const pnlEl = document.getElementById(`pnl-${safePairId}`); updateText(pnlEl, formatPercent(d.pnl), d.pnl > 0 ? 'update-g' : 'update-r'); if (pnlEl) pnlEl.className = 'position-pnl ' + getPnlColorClass(d.pnl); }
-                card.classList.toggle('position-open', hasPositionNow);
+                actionArea.innerHTML = getActionAreaHTML(pair, d);
+                
+                card.classList.toggle('position-open', !!d.open_position);
                 card.classList.toggle('active-chart', pair === currentChartPair);
             });
-             [...watchlistEl.children].forEach(card => { if (!incomingPairs.has(card.dataset.pair)) card.remove(); });
+            [...watchlistEl.children].forEach(card => { if (!incomingPairs.has(card.dataset.pair)) card.remove(); });
             
-            // Update history (only add new items)
-            const historyEl = document.getElementById('history-list');
-            const currentHistoryIds = new Set([...historyEl.children].map(el => el.dataset.id));
-            data.trades.forEach((t, i) => {
-                if (!currentHistoryIds.has(String(t.id))) {
-                    const item = document.createElement('li');
-                    item.className = 'history-item';
-                    item.dataset.id = t.id;
-                    item.style.animationDelay = `${i * 50}ms`;
-                    const pnlNet = t.status === 'CLOSED' ? (t.pl_percent - (2 * data.settings.fee_pct)) : null;
-                    item.innerHTML = `<div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(pnlNet)}">${t.status==='CLOSED'?formatPercent(pnlNet):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div>`;
-                    historyEl.prepend(item);
-                }
-            });
-
-            // Update settings form if visible
+            document.getElementById('history-list').innerHTML = data.trades.map((t, i) => {
+                const pnlNet = t.status === 'CLOSED' ? (t.pl_percent - (2 * data.settings.fee_pct)) : null;
+                return `<li class="history-item" style="animation-delay: ${i*50}ms"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(pnlNet)}">${t.status==='CLOSED'?formatPercent(pnlNet):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`;
+            }).join('');
+            
             Object.entries(data.settings).forEach(([k, v]) => {
                 const i = document.getElementById(`s-${k}`);
                 if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
@@ -615,20 +596,33 @@ HTML_SKELETON_TRADINGVIEW = """
             const card = e.target.closest('.pair-card'); 
             if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { 
                 currentChartPair = card.dataset.pair;
-                const tf = document.getElementById(`tf-${currentChartPair.replace(/[^a-zA-Z0-9]/g, '')}`).textContent;
-                createChartWidgets(currentChartPair, tf);
-                document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); 
-                card.classList.add('active-chart'); 
+                fetch(API_ENDPOINT).then(res=>res.json()).then(data => {
+                    const tf = data.settings.watched_pairs[currentChartPair];
+                    createChartWidgets(currentChartPair, tf);
+                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); 
+                    card.classList.add('active-chart'); 
+                });
             }
         });
-        document.body.addEventListener('submit', async e => { if(e.target.matches('.trade-form') || e.target.id === 'settings-form') { e.preventDefault(); const f = e.target; if(f.id === 'settings-form'){ postRequest('/api/settings', Object.fromEntries(new FormData(f).entries())).then(() => window.location.reload()); } else { await postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); await fetchData(); } }});
+        document.body.addEventListener('submit', async e => { 
+            if(e.target.matches('.trade-form')) {
+                e.preventDefault(); 
+                const f = e.target; 
+                await postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"')));
+                await fetchData();
+            } else if (e.target.id === 'settings-form') {
+                e.preventDefault();
+                await postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries()));
+                window.location.reload();
+            }
+        });
         
         const modal = document.getElementById('settings-modal');
         document.getElementById('settings-btn').addEventListener('click', () => modal.classList.add('visible'));
         document.getElementById('close-settings-btn').addEventListener('click', () => modal.classList.remove('visible'));
         document.getElementById('ai-status-btn').addEventListener('click', async () => { await postRequest('/toggle-ai', {}); await fetchData(); });
         document.getElementById('add-pair-btn').addEventListener('click', async () => { const p = document.getElementById('new-pair-input').value.toUpperCase(); const tf = document.getElementById('new-tf-input').value; if(p){ await postRequest('/api/watchlist/add', {pair:p, tf:tf}); await fetchData(); document.getElementById('new-pair-input').value = ''; }});
-        document.getElementById('settings-modal').addEventListener('click', async e => { if (e.target.matches('.btn-remove')) { e.preventDefault(); await postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); await fetchData(); }});
+        document.getElementById('watchlist-list').addEventListener('click', async e => { if (e.target.matches('.btn-remove')) { e.preventDefault(); await postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); await fetchData(); }});
         
         // --- Initial Load ---
         const initialLoad = async () => {
@@ -732,10 +726,6 @@ def update_settings():
                     if '.' in value: current_settings[key] = float(value)
                     else: current_settings[key] = int(value)
                 except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-            elif key == 'use_trailing_tp' and isinstance(current_settings[key], bool):
-                 current_settings[key] = True # This will be set anyway, but good to be explicit
-        if 'use_trailing_tp' not in request.form:
-            current_settings['use_trailing_tp'] = False
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
