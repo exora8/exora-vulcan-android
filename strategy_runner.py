@@ -351,9 +351,10 @@ HTML_SKELETON_TRADINGVIEW = """
         body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1.5rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
         .container { max-width: 1400px; margin: 0 auto; }
         
-        h1, h2 { font-weight: 700; letter-spacing: -0.5px; }
+        h1, h2, h3 { font-weight: 700; letter-spacing: -0.5px; }
         h1 { margin: 0; font-size: 2rem; }
         h2 { margin-top: 3.5rem; margin-bottom: 1.5rem; font-size: 1.25rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;}
+        h3 { margin-top: 2rem; margin-bottom: 1rem; font-size: 1.1rem; }
         
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2.5rem; animation: fadeInUp 0.5s ease-out; }
         .header-actions { display: flex; gap: 1rem; }
@@ -380,12 +381,12 @@ HTML_SKELETON_TRADINGVIEW = """
         .pair-name-section .pair-name { font-size: 1.75rem; font-weight: 700; line-height: 1; }
         .pair-name-section .pair-tf { font-size: 0.85rem; color: var(--text-muted); font-weight: 500; }
         
-        .timer-container { position: relative; width: 44px; height: 44px; }
+        .timer-container { position: relative; width: 52px; height: 52px; }
         .timer-svg { transform: rotate(-90deg); width: 100%; height: 100%; }
-        .timer-circle { fill: none; stroke-width: 3; }
-        .timer-circle-bg { stroke: var(--border-color); }
-        .timer-circle-progress { stroke: var(--accent-primary); transition: stroke-dashoffset 0.25s linear; }
-        .timer-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 0.9rem; color: var(--text-muted); font-weight: 600; }
+        .timer-circle { fill: none; stroke-linecap: round; }
+        .timer-circle-bg { stroke: var(--border-color); stroke-width: 3; }
+        .timer-circle-progress { stroke: var(--accent-primary); stroke-width: 4; transition: stroke-dashoffset 0.25s linear; }
+        .timer-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 1rem; color: var(--text-muted); font-weight: 600; }
 
         .pair-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1rem; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color); }
         .pair-info-grid strong { color: var(--text-color); font-weight: 600; }
@@ -401,17 +402,28 @@ HTML_SKELETON_TRADINGVIEW = """
 
         .history-list { list-style: none; padding: 0; }
         .history-item { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; transition: background-color 0.2s ease; opacity: 0; animation: fadeInUp 0.5s ease-out forwards; }
+        .history-main { display: flex; align-items: center; gap: 1rem; }
+        .history-type { font-weight: 600; font-size: 1.1rem; }
+        .history-pair { color: var(--text-muted); }
+        .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
+        .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
         
-        /* Modal Styles are mostly fine, just minor tweaks */
-        .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
-        .settings-modal.visible { display: flex; opacity: 1; }
+        .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; pointer-events: none; }
+        .settings-modal.visible { opacity: 1; pointer-events: all; }
         .settings-modal.visible .settings-content { transform: scale(1) translateY(0); opacity: 1; }
         .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; transform: scale(0.95) translateY(20px); opacity: 0; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
-        
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
+        .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
+        .watchlist-manage ul { list-style: none; padding: 0; }
+        .watchlist-manage li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); }
+        .btn-remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 1.25rem; }
+
         .text-green { color: var(--green) !important; } .text-red { color: var(--red) !important; } .text-yellow { color: var(--yellow); }
         .update-g { animation: value-update-green 0.5s ease-out; } .update-r { animation: value-update-red 0.5s ease-out; } .update-n { animation: value-update-neutral 0.5s ease-out; }
 
-        @media (max-width: 768px) { .pnl-stats, .watchlist { grid-template-columns: 1fr; } }
+        @media (max-width: 768px) { .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -436,7 +448,22 @@ HTML_SKELETON_TRADINGVIEW = """
         <ul id="history-list" class="history-list"></ul>
     </div>
     
-    <div id="settings-modal" class="settings-modal"> <!-- Settings modal HTML is unchanged --> </div>
+    <div id="settings-modal" class="settings-modal">
+        <div class="settings-content">
+            <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
+            <form id="settings-form">
+                <h3>Trading Parameters</h3>
+                <div class="form-grid"><div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div><div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div><div class="form-group checkbox-group" style="flex-direction: row; align-items: center; gap: 0.5rem;"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp" style="margin:0;">Enable Trailing TP</label></div><div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div><div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div><div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div></div>
+                <h3>AI Learning Parameters</h3>
+                <div class="form-grid"><div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="any" name="caution_level" id="s-caution_level"></div><div class="form-group"><label>Win Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_win" id="s-similarity_threshold_win"></div><div class="form-group"><label>Loss Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div></div>
+                <h3>System Parameters</h3>
+                <div class="form-grid"><div class="form-group"><label>AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div><div class="form-group"><label>Max Trade History</label><input type="number" step="10" name="max_trades_in_history" id="s-max_trades_in_history"></div><div class="form-group"><label>Data Refresh (s)</label><input type="number" step="any" name="refresh_interval_seconds" id="s-refresh_interval_seconds"></div></div>
+                <h3>Watchlist</h3>
+                <div class="watchlist-manage"><ul id="watchlist-list"></ul><div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label><div style="display:flex; gap:1rem;"><input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;"><button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button></div></div></div>
+                <button type="submit" class="action-btn" style="width:100%; margin-top: 2rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Settings</button>
+            </form>
+        </div>
+    </div>
 
     <script>
     document.addEventListener('DOMContentLoaded', () => {
@@ -452,7 +479,7 @@ HTML_SKELETON_TRADINGVIEW = """
         let candleStartTimes = {};
         let activeTradeIds = new Set();
         const TIMEFRAME_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1H': 3600, '2H': 7200, '4H': 14400, '1D': 86400, '1W': 604800 };
-        const SVG_CIRCLE_RADIUS = 19;
+        const SVG_CIRCLE_RADIUS = 22; // Adjusted for better look
         const SVG_CIRCUMFERENCE = 2 * Math.PI * SVG_CIRCLE_RADIUS;
 
         // --- UI Helper Functions ---
@@ -466,7 +493,7 @@ HTML_SKELETON_TRADINGVIEW = """
         };
 
         const createChartWidgets = (pair, timeframe) => {
-            if (!pair) return;
+            if (!pair || !timeframe) return;
             ['tradingview_chart_bybit', 'tradingview_chart_binance'].forEach(id => document.getElementById(id).innerHTML = '');
             const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
             const interval = tfMap[timeframe] || "60";
@@ -477,48 +504,26 @@ HTML_SKELETON_TRADINGVIEW = """
         
         const getPairCardHTML = (pair, data) => {
             const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
-            return `
-                <div class="pair-header">
-                    <div class="pair-name-section">
-                        <div class="pair-name">${pair}</div>
-                        <div class="pair-tf" id="tf-${safePairId}">${data.timeframe}</div>
-                    </div>
-                    <div class="timer-container">
-                        <svg class="timer-svg" viewBox="0 0 44 44">
-                            <circle class="timer-circle timer-circle-bg" cx="22" cy="22" r="${SVG_CIRCLE_RADIUS}"></circle>
-                            <circle class="timer-circle timer-circle-progress" id="timer-progress-${safePairId}" cx="22" cy="22" r="${SVG_CIRCLE_RADIUS}" stroke-dasharray="${SVG_CIRCUMFERENCE}" stroke-dashoffset="0"></circle>
-                        </svg>
-                        <div id="timer-text-${safePairId}" class="timer-text">--:--</div>
-                    </div>
-                </div>
-                <div class="pair-info-grid">
-                    <span>Price</span><strong id="price-${safePairId}">${formatPrice(data.price)}</strong>
-                    <span>Funding</span><strong id="funding-${safePairId}">${formatPercent(data.funding)}</strong>
-                </div>
-                <div id="action-area-${safePairId}" class="action-area"></div>
-            `;
+            return `<div class="pair-header"><div class="pair-name-section"><div class="pair-name">${pair}</div><div class="pair-tf" id="tf-${safePairId}">${data.timeframe}</div></div><div class="timer-container"><svg class="timer-svg" viewBox="0 0 52 52"><circle class="timer-circle timer-circle-bg" cx="26" cy="26" r="${SVG_CIRCLE_RADIUS}"></circle><circle class="timer-circle timer-circle-progress" id="timer-progress-${safePairId}" cx="26" cy="26" r="${SVG_CIRCLE_RADIUS}" stroke-dasharray="${SVG_CIRCUMFERENCE}" stroke-dashoffset="0"></circle></svg><div id="timer-text-${safePairId}" class="timer-text">--:--</div></div></div><div class="pair-info-grid"><span>Price</span><strong id="price-${safePairId}">${formatPrice(data.price)}</strong><span>Funding</span><strong id="funding-${safePairId}">${formatPercent(data.funding)}</strong></div><div id="action-area-${safePairId}" class="action-area"></div>`;
         };
 
         const getActionAreaHTML = (pair, data) => {
             if (data.open_position) {
-                return `
-                    <div class="position-info">
-                        <div class="position-header">${data.open_position.type} POSITION</div>
-                        <div class="position-pnl" id="pnl-${pair.replace(/[^a-zA-Z0-9]/g, '')}">${formatPercent(data.pnl)}</div>
-                        <div class="position-entry">Entry @ ${formatPrice(data.open_position.entryPrice)}</div>
-                        <form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${data.open_position.id}"}'><button type="submit" class="btn btn-close">Close Position</button></form>
-                    </div>`;
+                return `<div class="position-info"><div class="position-header">${data.open_position.type} POSITION</div><div class="position-pnl" id="pnl-${pair.replace(/[^a-zA-Z0-9]/g, '')}">${formatPercent(data.pnl)}</div><div class="position-entry">Entry @ ${formatPrice(data.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${data.open_position.id}"}'><button type="submit" class="btn btn-close">Close Position</button></form></div>`;
             } else {
-                return `
-                    <div style="display:flex; gap:1rem; margin-top:auto;">
-                        <form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${pair}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form>
-                        <form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${pair}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form>
-                    </div>`;
+                return `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${pair}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${pair}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
             }
         };
         
         // --- Core Update Logic ---
         const updateUI = (data) => {
+            // Update AI status button
+            const aiBtn = document.getElementById('ai-status-btn');
+            if (aiBtn) {
+                aiBtn.className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
+                aiBtn.textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
+            }
+
             // Update simple stats
             updateText(document.getElementById('pnl-today'), formatPercent(data.pnl_today), data.pnl_today > 0 ? 'update-g' : 'update-r');
             updateText(document.getElementById('pnl-this-week'), formatPercent(data.pnl_this_week), data.pnl_this_week > 0 ? 'update-g' : 'update-r');
@@ -534,7 +539,6 @@ HTML_SKELETON_TRADINGVIEW = """
             Object.entries(data.market_data).forEach(([pair, d], index) => {
                 const safePairId = pair.replace(/[^a-zA-Z0-9]/g, '');
                 candleStartTimes[pair] = { startTimeMs: d.current_candle_start_time_ms, timeframe: d.timeframe };
-                
                 let card = document.getElementById(`card-${safePairId}`);
                 if (!card) {
                     card = document.createElement('div');
@@ -545,54 +549,42 @@ HTML_SKELETON_TRADINGVIEW = """
                     card.innerHTML = getPairCardHTML(pair, d);
                     watchlistEl.appendChild(card);
                 }
-                
-                // Update dynamic content within the card
                 updateText(document.getElementById(`price-${safePairId}`), formatPrice(d.price));
                 updateText(document.getElementById(`funding-${safePairId}`), formatPercent(d.funding));
                 document.getElementById(`funding-${safePairId}`).className = Math.abs(d.funding) > 0.05 ? 'text-red' : '';
-                
-                // Smartly update action area to avoid re-rendering buttons
                 const actionArea = document.getElementById(`action-area-${safePairId}`);
                 const hasPositionNow = !!d.open_position;
                 const wasPositionOpen = actionArea.querySelector('.position-info') !== null;
-                
-                if (hasPositionNow !== wasPositionOpen) {
-                    actionArea.innerHTML = getActionAreaHTML(pair, d);
-                }
-                
-                if (hasPositionNow) {
-                    const pnlEl = document.getElementById(`pnl-${safePairId}`);
-                    updateText(pnlEl, formatPercent(d.pnl), d.pnl > 0 ? 'update-g' : 'update-r');
-                    if (pnlEl) pnlEl.className = 'position-pnl ' + getPnlColorClass(d.pnl);
-                }
-
-                // Update card state classes
+                if (hasPositionNow !== wasPositionOpen) { actionArea.innerHTML = getActionAreaHTML(pair, d); }
+                if (hasPositionNow) { const pnlEl = document.getElementById(`pnl-${safePairId}`); updateText(pnlEl, formatPercent(d.pnl), d.pnl > 0 ? 'update-g' : 'update-r'); if (pnlEl) pnlEl.className = 'position-pnl ' + getPnlColorClass(d.pnl); }
                 card.classList.toggle('position-open', hasPositionNow);
                 card.classList.toggle('active-chart', pair === currentChartPair);
             });
-
-            // Remove old cards
-             [...watchlistEl.children].forEach(card => {
-                if (!incomingPairs.has(card.dataset.pair)) {
-                    card.remove();
+             [...watchlistEl.children].forEach(card => { if (!incomingPairs.has(card.dataset.pair)) card.remove(); });
+            
+            // Update history (only add new items)
+            const historyEl = document.getElementById('history-list');
+            const currentHistoryIds = new Set([...historyEl.children].map(el => el.dataset.id));
+            data.trades.forEach((t, i) => {
+                if (!currentHistoryIds.has(String(t.id))) {
+                    const item = document.createElement('li');
+                    item.className = 'history-item';
+                    item.dataset.id = t.id;
+                    item.style.animationDelay = `${i * 50}ms`;
+                    const pnlNet = t.status === 'CLOSED' ? (t.pl_percent - (2 * data.settings.fee_pct)) : null;
+                    item.innerHTML = `<div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(pnlNet)}">${t.status==='CLOSED'?formatPercent(pnlNet):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div>`;
+                    historyEl.prepend(item);
                 }
             });
 
-            // Update history (only add new items)
-            const historyEl = document.getElementById('history-list');
-            data.trades.forEach((t, i) => {
-                if (!activeTradeIds.has(t.id)) {
-                    const item = document.createElement('li');
-                    item.className = 'history-item';
-                    item.style.animationDelay = `${i * 50}ms`;
-                    const pnlNet = t.status === 'CLOSED' ? (t.pl_percent - (2 * data.settings.fee_pct)) : null;
-                    item.innerHTML = `
-                        <div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div>
-                        <div class="history-pnl ${getPnlColorClass(pnlNet)}">${t.status==='CLOSED'?formatPercent(pnlNet):'OPEN'}</div>
-                        <div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div>`;
-                    historyEl.prepend(item);
-                    activeTradeIds.add(t.id);
-                }
+            // Update settings form if visible
+            Object.entries(data.settings).forEach(([k, v]) => {
+                const i = document.getElementById(`s-${k}`);
+                if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
+                if (k === 'watched_pairs') { 
+                    const listEl = document.getElementById('watchlist-list');
+                    if (listEl) listEl.innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); 
+                } 
             });
         };
         
@@ -602,16 +594,13 @@ HTML_SKELETON_TRADINGVIEW = """
                 const textEl = document.getElementById(`timer-text-${safePairId}`);
                 const progressEl = document.getElementById(`timer-progress-${safePairId}`);
                 if (!textEl || !progressEl) continue; 
-                
                 const { startTimeMs, timeframe } = candleStartTimes[pair];
                 const durationSeconds = TIMEFRAME_SECONDS[timeframe];
                 if (!startTimeMs || !durationSeconds) continue; 
-                
                 const endTimeMs = startTimeMs + (durationSeconds * 1000);
                 const remainingMs = Math.max(0, endTimeMs - Date.now());
                 const progress = remainingMs / (durationSeconds * 1000);
                 progressEl.style.strokeDashoffset = SVG_CIRCUMFERENCE * (1 - progress);
-
                 const totalSeconds = Math.floor(remainingMs / 1000);
                 const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
                 const seconds = String(totalSeconds % 60).padStart(2, '0');
@@ -619,23 +608,10 @@ HTML_SKELETON_TRADINGVIEW = """
             }
         };
         
-        // --- Initial Load & Event Listeners ---
-        const initialLoad = async () => {
-            try {
-                const res = await fetch(API_ENDPOINT);
-                const data = await res.json();
-                if (Object.keys(data.settings.watched_pairs).length > 0) {
-                    currentChartPair = Object.keys(data.settings.watched_pairs)[0];
-                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
-                }
-                updateUI(data);
-                // Settings modal is not included in this logic as it's static
-            } catch (e) {
-                console.error("Initial load failed:", e);
-            }
-        };
-
-        watchlist.addEventListener('click', e => { 
+        // --- Event Listeners ---
+        const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); updateUI(data); } catch(e) { console.error("Update failed:", e); } };
+        
+        document.getElementById('watchlist').addEventListener('click', e => { 
             const card = e.target.closest('.pair-card'); 
             if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { 
                 currentChartPair = card.dataset.pair;
@@ -645,10 +621,30 @@ HTML_SKELETON_TRADINGVIEW = """
                 card.classList.add('active-chart'); 
             }
         });
-        document.body.addEventListener('submit', async e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; await postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); await fetchData(); }});
+        document.body.addEventListener('submit', async e => { if(e.target.matches('.trade-form') || e.target.id === 'settings-form') { e.preventDefault(); const f = e.target; if(f.id === 'settings-form'){ postRequest('/api/settings', Object.fromEntries(new FormData(f).entries())).then(() => window.location.reload()); } else { await postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); await fetchData(); } }});
         
-        const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); updateUI(data); } catch(e) { console.error("Update failed:", e); } };
+        const modal = document.getElementById('settings-modal');
+        document.getElementById('settings-btn').addEventListener('click', () => modal.classList.add('visible'));
+        document.getElementById('close-settings-btn').addEventListener('click', () => modal.classList.remove('visible'));
+        document.getElementById('ai-status-btn').addEventListener('click', async () => { await postRequest('/toggle-ai', {}); await fetchData(); });
+        document.getElementById('add-pair-btn').addEventListener('click', async () => { const p = document.getElementById('new-pair-input').value.toUpperCase(); const tf = document.getElementById('new-tf-input').value; if(p){ await postRequest('/api/watchlist/add', {pair:p, tf:tf}); await fetchData(); document.getElementById('new-pair-input').value = ''; }});
+        document.getElementById('settings-modal').addEventListener('click', async e => { if (e.target.matches('.btn-remove')) { e.preventDefault(); await postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); await fetchData(); }});
         
+        // --- Initial Load ---
+        const initialLoad = async () => {
+            try {
+                const res = await fetch(API_ENDPOINT);
+                const data = await res.json();
+                if (Object.keys(data.settings.watched_pairs).length > 0) {
+                    currentChartPair = Object.keys(data.settings.watched_pairs)[0];
+                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
+                }
+                updateUI(data);
+            } catch (e) {
+                console.error("Initial load failed:", e);
+            }
+        };
+
         initialLoad();
         setInterval(fetchData, REFRESH_INTERVAL_MS);
         setInterval(updateCountdowns, 250);
@@ -736,6 +732,10 @@ def update_settings():
                     if '.' in value: current_settings[key] = float(value)
                     else: current_settings[key] = int(value)
                 except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
+            elif key == 'use_trailing_tp' and isinstance(current_settings[key], bool):
+                 current_settings[key] = True # This will be set anyway, but good to be explicit
+        if 'use_trailing_tp' not in request.form:
+            current_settings['use_trailing_tp'] = False
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
@@ -752,7 +752,7 @@ def add_watchlist():
 def remove_watchlist():
     pair = request.form.get('pair')
     with state_lock:
-        if pair in current_settings['watched_pairs']:
+        if pair and pair in current_settings['watched_pairs']:
             del current_settings['watched_pairs'][pair]; save_settings()
             print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
