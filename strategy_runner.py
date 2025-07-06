@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import asyncio
 import math
 from flask import Flask, render_template_string, jsonify, request
+import traceback
 
 # --- Dummy Colorama for environments where it's not installed ---
 class DummyColor:
@@ -35,6 +36,10 @@ is_autopilot_running = True
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
 state_lock = threading.Lock()
+# --- STATE BARU UNTUK BACKTESTING ---
+backtest_state = {"is_running": False, "progress": 0, "message": "Idle", "total_trades": 0, "max_trades": 0}
+backtest_lock = threading.Lock()
+
 
 # --- INISIALISASI FLASK ---
 app = Flask(__name__)
@@ -109,15 +114,19 @@ def fetch_funding_rate(instId):
             return float(data['result']['list'][0].get('fundingRate', '0')) * 100
         return None
     except (requests.exceptions.RequestException, ValueError, KeyError): return None
-def fetch_recent_candles(instId, timeframe, limit=300):
+def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
     timeframe_map = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
     bybit_interval = timeframe_map.get(timeframe, '60'); bybit_symbol = instId.replace('-', '')
     try:
         url = f"{BYBIT_API_URL}/kline?category=linear&symbol={bybit_symbol}&interval={bybit_interval}&limit={limit}"
+        if end_time_ms:
+            url += f"&end={end_time_ms}"
         response = requests.get(url, timeout=15); response.raise_for_status(); data = response.json()
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
-            if len(candle_list) < 100 + 15: return None
+            if not candle_list:
+                return None
+            # Bybit returns newest first (descending order), so we reverse to get chronological order (oldest first)
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
         return None
     except (requests.exceptions.RequestException, Exception): return None
@@ -323,14 +332,12 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
     sl_pct = current_settings.get('stop_loss_pct', 0)
     if sl_pct > 0:
         if trade_type == 'LONG':
-            pnl_at_low = calculate_pnl(entry_price, candle_low, 'LONG')
-            if pnl_at_low <= -sl_pct:
-                sl_price = entry_price * (1 - sl_pct / 100)
+            sl_price = entry_price * (1 - sl_pct / 100)
+            if candle_low <= sl_price:
                 close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
         elif trade_type == 'SHORT':
-            pnl_at_high = calculate_pnl(entry_price, candle_high, 'SHORT')
-            if pnl_at_high <= -sl_pct:
-                sl_price = entry_price * (1 + sl_pct / 100)
+            sl_price = entry_price * (1 + sl_pct / 100)
+            if candle_high >= sl_price:
                 close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
     if current_settings.get('use_trailing_tp', True):
         activation_pct = current_settings.get("trailing_tp_activation_pct", 0); gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
@@ -378,6 +385,123 @@ def data_refresh_worker():
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
+# --- FUNGSI BACKTESTING BARU ---
+def backtest_worker():
+    with backtest_lock:
+        if backtest_state["is_running"]:
+            return
+        load_trades()
+        with state_lock:
+            trades_copy = list(trades)
+        if not trades_copy:
+            backtest_state.update({"is_running": False, "message": "Error: No trades in history to start backtest from."})
+            return
+        backtest_state.update({"is_running": True, "message": "Initializing backtest...", "progress": 0})
+
+    try:
+        trades_copy.sort(key=lambda x: x['entryTimestamp'])
+        oldest_trade = trades_copy[0]
+        instrument_id = oldest_trade['instrumentId']
+        timeframe = current_settings.get("watched_pairs", {}).get(instrument_id, "1H")
+        start_dt = datetime.fromisoformat(oldest_trade['entryTimestamp'].replace('Z', ''))
+        end_timestamp_ms = int(start_dt.timestamp() * 1000)
+        max_trades = current_settings.get("max_trades_in_history", 80)
+        
+        with backtest_lock:
+            backtest_state["max_trades"] = max_trades
+            backtest_state["total_trades"] = len(trades_copy)
+
+        print_colored(f"--- Starting Backtest for {instrument_id} from {start_dt.strftime('%Y-%m-%d %H:%M')} ---", Fore.CYAN)
+        
+        backtest_open_pos = None
+        newly_found_trades = []
+
+        while True:
+            with state_lock:
+                current_total_trades = len(trades)
+            if current_total_trades >= max_trades:
+                with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: Max trade history reached."})
+                print_colored("Backtest complete: Max trade history reached.", Fore.GREEN)
+                break
+            
+            candle_batch = fetch_recent_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+            if not candle_batch or len(candle_batch) <= 1:
+                with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: No more historical data."})
+                print_colored("Backtest complete: No more historical data available.", Fore.YELLOW)
+                break
+
+            next_end_timestamp_ms = candle_batch[0]['time']
+            
+            for i in range(100 + 15, len(candle_batch)):
+                if len(trades) + len(newly_found_trades) >= max_trades: break
+
+                current_simulation_time_ms = candle_batch[i]['time']
+                candle_window = candle_batch[i - (100 + 15) : i + 1]
+                current_candle = candle_window[-1]
+
+                if backtest_open_pos:
+                    entry_price = backtest_open_pos['entryPrice']
+                    trade_type = backtest_open_pos['type']
+                    exit_price, exit_reason = None, ""
+                    
+                    sl_pct = current_settings.get('stop_loss_pct', 0)
+                    if sl_pct > 0:
+                        if trade_type == 'LONG' and current_candle['low'] <= entry_price * (1 - sl_pct / 100):
+                            exit_price, exit_reason = entry_price * (1 - sl_pct / 100), f"Backtest SL @ {-sl_pct:.2f}%"
+                        elif trade_type == 'SHORT' and current_candle['high'] >= entry_price * (1 + sl_pct / 100):
+                            exit_price, exit_reason = entry_price * (1 + sl_pct / 100), f"Backtest SL @ {-sl_pct:.2f}%"
+                    
+                    if not exit_price and not current_settings.get('use_trailing_tp', True):
+                        static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
+                        if static_tp_pct > 0:
+                            if trade_type == 'LONG' and current_candle['high'] >= entry_price * (1 + static_tp_pct/100):
+                                exit_price, exit_reason = entry_price * (1 + static_tp_pct/100), f"Backtest Static TP @ {static_tp_pct:.2f}%"
+                            elif trade_type == 'SHORT' and current_candle['low'] <= entry_price * (1 - static_tp_pct/100):
+                                exit_price, exit_reason = entry_price * (1 - static_tp_pct/100), f"Backtest Static TP @ {static_tp_pct:.2f}%"
+
+                    if exit_price:
+                        pnl_gross = calculate_pnl(backtest_open_pos['entryPrice'], exit_price, backtest_open_pos['type'])
+                        exit_dt = datetime.utcfromtimestamp(current_simulation_time_ms / 1000)
+                        backtest_open_pos.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross})
+                        print_colored(f"Backtest Close: {exit_reason} at {exit_dt.strftime('%Y-%m-%d %H:%M')}, PnL: {pnl_gross:.2f}%", Fore.MAGENTA)
+                        newly_found_trades.append(backtest_open_pos)
+                        backtest_open_pos = None
+
+                if not backtest_open_pos:
+                    with state_lock: current_trade_history = [t for t in trades if t['instrumentId'] == instrument_id] + newly_found_trades
+                    ai = LocalAI(current_settings, current_trade_history)
+                    decision = ai.get_decision(candle_window, None, 0.0)
+
+                    if decision.get('action') in ["BUY", "SELL"]:
+                        entry_price = current_candle['close']
+                        entry_dt = datetime.utcfromtimestamp(current_simulation_time_ms / 1000)
+                        new_trade = {"id": int(entry_dt.timestamp()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": entry_dt.isoformat() + 'Z', "entryPrice": entry_price, "entryReason": f"Backtest: {decision.get('reason')}", "status": 'OPEN', "entry_snapshot": decision.get("snapshot", {}), "exitPrice": None, "pl_percent": None}
+                        backtest_open_pos = new_trade
+                        print_colored(f"Backtest Open: {new_trade['type']} @ {entry_price:.4f} on {entry_dt.strftime('%Y-%m-%d %H:%M')}", Fore.GREEN)
+
+            end_timestamp_ms = next_end_timestamp_ms
+            with backtest_lock:
+                backtest_state["total_trades"] = len(trades) + len(newly_found_trades)
+                backtest_state["message"] = f"Backtesting... currently at {datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d')}"
+            
+            if newly_found_trades:
+                with state_lock: trades.extend(newly_found_trades)
+                save_trades()
+                newly_found_trades = []
+            time.sleep(1)
+            
+    except Exception as e:
+        print_colored(f"An error occurred during backtest: {e}", Fore.RED)
+        traceback.print_exc()
+        with backtest_lock: backtest_state.update({"is_running": False, "message": f"Error: {e}"})
+    finally:
+        if newly_found_trades:
+            with state_lock: trades.extend(newly_found_trades)
+            save_trades()
+        with backtest_lock:
+            if backtest_state["is_running"]:
+                backtest_state.update({"is_running": False, "message": "Backtest stopped."})
+
 # --- TEMPLATE HTML DENGAN FUNGSI CHART BARU ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
@@ -402,7 +526,8 @@ HTML_SKELETON_TRADINGVIEW = """
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
         .header-actions { display: flex; gap: 1rem; }
         .action-btn { background-color: var(--card-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease, border-color 0.2s ease; }
-        .action-btn:hover { background-color: var(--border-color); }
+        .action-btn:hover:not(:disabled) { background-color: var(--border-color); }
+        .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .action-btn.ai-status.running { color: var(--green); }
         .action-btn.ai-status.stopped { color: var(--red); }
         .pnl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; }
@@ -456,7 +581,6 @@ HTML_SKELETON_TRADINGVIEW = """
         .chart-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5000; background: var(--bg-color); padding: 1rem; }
         .chart-fullscreen .tradingview-widget-container { height: 100% !important; }
         .is-hidden { display: none !important; }
-        
         #ai-global-analysis-wrapper { margin-bottom: 2rem; }
         .analysis-container { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .analysis-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; }
@@ -472,6 +596,10 @@ HTML_SKELETON_TRADINGVIEW = """
         .pa-body.red { background-color: var(--red); }
         .pa-ema-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; }
         .pa-ema-path { stroke: var(--accent-primary); stroke-width: 1.5; fill: none; }
+        progress {-webkit-appearance: none; appearance: none; width: 100%; height: 8px; border: none; border-radius: 4px; background-color: var(--bg-color);}
+        progress::-webkit-progress-bar { background-color: var(--bg-color); border-radius: 4px; }
+        progress::-webkit-progress-value { background-color: var(--accent-primary); border-radius: 4px; transition: width 0.3s ease;}
+        progress::-moz-progress-bar { background-color: var(--accent-primary); border-radius: 4px; transition: width 0.3s ease;}
         
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
@@ -484,7 +612,24 @@ HTML_SKELETON_TRADINGVIEW = """
 </head>
 <body>
     <div class="container">
-        <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
+        <header class="header">
+            <h1>Vulcan AI</h1>
+            <div class="header-actions">
+                <button id="ai-status-btn" class="action-btn ai-status"></button>
+                <button id="backtest-btn" class="action-btn">Backtest</button>
+                <button id="settings-btn" class="action-btn">Settings</button>
+            </div>
+        </header>
+
+        <section id="backtest-status-wrapper" class="is-hidden" style="margin-bottom: 2rem; background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem;">
+            <h3 style="margin:0 0 1rem 0; font-size: 1.1rem; color: var(--accent-primary);">Backtest in Progress</h3>
+            <p id="backtest-message" style="margin: 0 0 1rem 0; color: var(--text-muted);"></p>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <progress id="backtest-progress" value="0" max="100"></progress>
+                <span id="backtest-trade-count" style="white-space: nowrap; font-weight: 500;">0 / 80</span>
+            </div>
+        </section>
+
         <section id="pnl-stats" class="pnl-stats"></section>
         
         <div class="chart-wrapper" id="bybit-chart-wrapper">
@@ -647,8 +792,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 html += matchCardHtml + '</div>';
                 container.innerHTML = html;
             };
-
-            // ## DIKEMBALIKAN: Fungsi ini sekarang membuat kedua chart lagi
+            
             const createChartWidgets = (pair, timeframe) => {
                 document.getElementById('tradingview_chart_bybit').innerHTML = ''; 
                 document.getElementById('tradingview_chart_binance').innerHTML = '';
@@ -686,6 +830,24 @@ HTML_SKELETON_TRADINGVIEW = """
 
                 updateGlobalAnalysisPanel(data.global_ai_analysis);
 
+                // --- Backtest Status UI Update ---
+                const backtestState = data.backtest_state;
+                const backtestWrapper = document.getElementById('backtest-status-wrapper');
+                const backtestBtn = document.getElementById('backtest-btn');
+                if (backtestState && backtestState.is_running) {
+                    backtestWrapper.classList.remove('is-hidden');
+                    document.getElementById('backtest-message').textContent = backtestState.message;
+                    const progress = backtestState.max_trades > 0 ? (backtestState.total_trades / backtestState.max_trades) * 100 : 0;
+                    document.getElementById('backtest-progress').value = progress;
+                    document.getElementById('backtest-trade-count').textContent = `${backtestState.total_trades} / ${backtestState.max_trades}`;
+                    backtestBtn.disabled = true;
+                    backtestBtn.textContent = 'Backtesting...';
+                } else {
+                    backtestWrapper.classList.add('is-hidden');
+                    backtestBtn.disabled = false;
+                    backtestBtn.textContent = 'Backtest';
+                }
+
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
@@ -708,7 +870,7 @@ HTML_SKELETON_TRADINGVIEW = """
 
             const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
             const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
-            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+            const UIElementsToHide = ['.header', '#backtest-status-wrapper', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
             document.querySelectorAll('.fullscreen-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -746,6 +908,11 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
             document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
+            document.getElementById('backtest-btn').addEventListener('click', () => {
+                if (confirm('This will start a backtest from your oldest trade, adding new trades to your history. This process cannot be stopped once started. Continue?')) {
+                    postRequest('/start-backtest', {});
+                }
+            });
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
             
@@ -760,7 +927,6 @@ HTML_SKELETON_TRADINGVIEW = """
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
 def dashboard():
-    # ## DIKEMBALIKAN: Merender template HTML lengkap tanpa menyembunyikan chart Binance
     return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
 
 @app.route('/api/data')
@@ -769,29 +935,27 @@ def get_api_data():
         trades_copy = list(trades)
         market_state_copy = dict(market_state)
         settings_copy = dict(current_settings)
+    with backtest_lock:
+        backtest_state_copy = dict(backtest_state)
 
     active_chart_pair = request.args.get('active_chart')
     market_data_view = {}
     global_ai_analysis = None
-
     fee_pct = settings_copy.get('fee_pct', 0.1)
 
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
         current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
-        
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0:
             pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
 
         trend = "N/A"
-        
         if len(full_candle_data) > 100 + 15:
             relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
             ai_instance = LocalAI(settings_copy, relevant_trades_history)
-            
             analysis_result = ai_instance.get_market_analysis(full_candle_data)
             if analysis_result:
                 trend = analysis_result.get('bias', 'N/A').title()
@@ -799,12 +963,8 @@ def get_api_data():
                     global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
         
         market_data_view[pair_id] = {
-            "price": current_price,
-            "funding": pair_state.get("funding_rate", 0.0),
-            "timeframe": timeframe,
-            "open_position": open_pos,
-            "pnl": pnl,
-            "trend": trend,
+            "price": current_price, "funding": pair_state.get("funding_rate", 0.0),
+            "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend,
         }
         
     return jsonify({
@@ -815,7 +975,8 @@ def get_api_data():
         "market_data": market_data_view,
         "trades": trades_copy,
         "settings": settings_copy,
-        "global_ai_analysis": global_ai_analysis
+        "global_ai_analysis": global_ai_analysis,
+        "backtest_state": backtest_state_copy
     })
 
 @app.route('/toggle-ai', methods=['POST'])
@@ -824,6 +985,15 @@ def toggle_ai():
     is_autopilot_running = not is_autopilot_running
     print_colored(f"Autopilot {'diaktifkan' if is_autopilot_running else 'dimatikan'} dari Web UI.", Fore.YELLOW)
     return jsonify(success=True)
+
+@app.route('/start-backtest', methods=['POST'])
+def start_backtest():
+    with backtest_lock:
+        if backtest_state["is_running"]:
+            return jsonify(success=False, message="Backtest is already running.")
+    backtest_thread = threading.Thread(target=backtest_worker, daemon=True)
+    backtest_thread.start()
+    return jsonify(success=True, message="Backtest started.")
 
 @app.route('/trade/manual', methods=['POST'])
 def trade_manual():
@@ -863,28 +1033,16 @@ def trade_close():
 def update_settings():
     global current_settings
     with state_lock:
-        # Handle checkbox separately
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
-
-        # Iterate over all submitted form data
         for key, value in request.form.items():
-            if key == 'use_trailing_tp':
-                continue # Already handled
-
-            # Check if the key exists in current settings to avoid adding new keys
+            if key == 'use_trailing_tp': continue
             if key in current_settings:
-                # Try to convert to float/int if the original is a number
                 if isinstance(current_settings[key], (int, float)):
                     try:
-                        if '.' in value:
-                            current_settings[key] = float(value)
-                        else:
-                            current_settings[key] = int(value)
-                    except (ValueError, TypeError):
-                        print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-                else:
-                    # Otherwise, just update the string value
-                    current_settings[key] = value
+                        if '.' in value: current_settings[key] = float(value)
+                        else: current_settings[key] = int(value)
+                    except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
+                else: current_settings[key] = value
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
