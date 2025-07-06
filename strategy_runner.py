@@ -242,7 +242,6 @@ class LocalAI:
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
         
     def get_similarity_analysis_for_dashboard(self, current_analysis):
-        # Fungsi baru khusus untuk dashboard, tidak membuat keputusan.
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
         
@@ -440,16 +439,21 @@ HTML_SKELETON_TRADINGVIEW = """
         .chart-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5000; background: var(--bg-color); padding: 1rem; }
         .chart-fullscreen .tradingview-widget-container { height: 100% !important; }
         .is-hidden { display: none !important; }
-        /* BARU: Style untuk visualisasi AI */
-        .ai-analysis { margin-top: auto; padding-top: 1rem; }
-        .ai-analysis-details { font-family: 'Courier New', Courier, monospace; font-size: 0.8rem; line-height: 1.4; background-color: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; margin-top: 0.5rem; }
-        .ai-analysis-details pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; }
-        .ai-analysis-title { font-size: 0.9rem; color: var(--text-muted); font-weight: 500;}
-        .ai-analysis-title.win { color: var(--green); }
-        .ai-analysis-title.loss { color: var(--red); }
+        
+        /* BARU: Style untuk panel analisis AI Global */
+        #ai-global-analysis-wrapper { margin-bottom: 2rem; }
+        .analysis-container { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        .analysis-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; }
+        .analysis-title { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem 0; }
+        .analysis-title.win { color: var(--green); }
+        .analysis-title.loss { color: var(--red); }
+        .analysis-details { font-family: 'Courier New', Courier, monospace; font-size: 0.9rem; line-height: 1.5; background-color: rgba(0,0,0,0.2); border-radius: 8px; padding: 0.75rem; }
+        .analysis-details pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; }
+        .analysis-placeholder { color: var(--text-muted); text-align: center; padding: 2rem; }
+        
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
-            .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
+            .pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
             .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
             .history-item { flex-direction: column; align-items: flex-start; }
             .history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
@@ -479,6 +483,12 @@ HTML_SKELETON_TRADINGVIEW = """
             <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
         </div>
         
+        <!-- BARU: Panel Analisis AI Global -->
+        <section id="ai-global-analysis-wrapper">
+            <h2>AI Pattern Analysis</h2>
+            <div id="ai-global-analysis-content"></div>
+        </section>
+
         <h2 id="watchlist-title">Watchlist</h2>
         <section id="watchlist" class="watchlist"></section>
         <h2 id="history-title">Recent History</h2>
@@ -524,8 +534,8 @@ HTML_SKELETON_TRADINGVIEW = """
     </div>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const API_ENDPOINT = '/api/data';
-            const REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
+            const API_ENDPOINT_BASE = '/api/data';
+            let REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
             const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
             const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
@@ -533,30 +543,62 @@ HTML_SKELETON_TRADINGVIEW = """
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             let currentChartPair = null; let lastData = {};
             
-            // BARU: Fungsi untuk membuat visualisasi perbandingan
             const renderAnalysisVisuals = (currentPattern, matchedPattern) => {
                 if (!currentPattern || !matchedPattern || currentPattern.length === 0 || matchedPattern.length === 0) return '';
                 const up = '▲'; const down = '▼';
                 const len = Math.min(currentPattern.length, matchedPattern.length);
-                let currentStr = 'Now  : ';
-                let matchedStr = 'Match: ';
-                let resultStr  = '     : ';
+                let currentStr = 'Now  : '; let matchedStr = 'Match: '; let resultStr  = '     : ';
                 for (let i = 0; i < len; i++) {
-                    currentStr += (currentPattern[i] === 'UP' ? up : down);
-                    matchedStr += (matchedPattern[i] === 'UP' ? up : down);
+                    currentStr += (currentPattern[i] === 'UP' ? up : down) + ' ';
+                    matchedStr += (matchedPattern[i] === 'UP' ? up : down) + ' ';
                 }
                 let matchCount = 0;
                 for (let i = 1; i <= len; i++) {
-                    if (currentPattern[len - i] === matchedPattern[len - i]) {
-                        matchCount++;
-                    } else {
-                        break;
-                    }
+                    if (currentPattern[len - i] === matchedPattern[len - i]) matchCount++;
+                    else break;
                 }
                 for (let i = 0; i < len; i++) {
-                    resultStr += ((len - i) <= matchCount) ? '<span class="text-green">✓</span>' : '<span class="text-red">✗</span>';
+                    resultStr += ((len - i) <= matchCount) ? '<span class="text-green">✓</span> ' : '<span class="text-red">✗</span> ';
                 }
-                return `<pre>${currentStr}\\n${matchedStr}\\n${resultStr}</pre>`;
+                return `<pre>${currentStr.trim()}\\n${matchedStr.trim()}\\n${resultStr.trim()}</pre>`;
+            };
+            
+            const updateGlobalAnalysisPanel = (analysisData) => {
+                const container = document.getElementById('ai-global-analysis-content');
+                if (!analysisData) {
+                    container.innerHTML = `<div class="analysis-placeholder">No active analysis for ${currentChartPair || 'selected pair'}.</div>`;
+                    return;
+                }
+                let html = '<div class="analysis-container">';
+                let contentFound = false;
+
+                if (analysisData.win_match) {
+                    contentFound = true;
+                    html += `<div class="analysis-card">
+                                <h3 class="analysis-title win">Best Win Match: ID #${analysisData.win_match.id} (Score: ${analysisData.win_match.score})</h3>
+                                <div class="analysis-details">${renderAnalysisVisuals(analysisData.current_pattern, analysisData.win_match.pattern)}</div>
+                             </div>`;
+                } else {
+                     html += `<div class="analysis-card"><h3 class="analysis-title">No Strong Win Match Found</h3></div>`;
+                }
+
+                if (analysisData.loss_match) {
+                    contentFound = true;
+                    html += `<div class="analysis-card">
+                                <h3 class="analysis-title loss">Best Loss Match: ID #${analysisData.loss_match.id} (Score: ${analysisData.loss_match.score})</h3>
+                                <div class="analysis-details">${renderAnalysisVisuals(analysisData.current_pattern, analysisData.loss_match.pattern)}</div>
+                             </div>`;
+                } else {
+                    html += `<div class="analysis-card"><h3 class="analysis-title">No Strong Loss Match Found</h3></div>`;
+                }
+
+                html += '</div>';
+                
+                if (!contentFound) {
+                     container.innerHTML = `<div class="analysis-placeholder">Not enough historical data for analysis on ${currentChartPair}.</div>`;
+                } else {
+                    container.innerHTML = html;
+                }
             };
 
             const createChartWidgets = (pair, timeframe) => {
@@ -569,34 +611,29 @@ HTML_SKELETON_TRADINGVIEW = """
             };
 
             const updateUI = data => {
-                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
+                // Inisialisasi chart pair jika belum ada
+                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { 
+                    currentChartPair = Object.keys(data.settings.watched_pairs)[0]; 
+                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); 
+                }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
+                
+                const watchlistEl = document.getElementById('watchlist'); 
+                watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; card.dataset.pair = p;
-                    
-                    let analysisHTML = '';
-                    if (!d.open_position && d.ai_analysis) {
-                        analysisHTML += '<div class="ai-analysis">';
-                        if (d.ai_analysis.win_match && d.ai_analysis.win_match.score > 0) {
-                            analysisHTML += `<div class="ai-analysis-title win">Best Win Match: ID #${d.ai_analysis.win_match.id} (Score: ${d.ai_analysis.win_match.score})</div>`;
-                            analysisHTML += `<div class="ai-analysis-details">${renderAnalysisVisuals(d.ai_analysis.current_pattern, d.ai_analysis.win_match.pattern)}</div>`;
-                        }
-                        if (d.ai_analysis.loss_match && d.ai_analysis.loss_match.score > 0) {
-                            analysisHTML += `<div class="ai-analysis-title loss" style="margin-top:0.5rem">Best Loss Match: ID #${d.ai_analysis.loss_match.id} (Score: ${d.ai_analysis.loss_match.score})</div>`;
-                            analysisHTML += `<div class="ai-analysis-details">${renderAnalysisVisuals(d.ai_analysis.current_pattern, d.ai_analysis.loss_match.pattern)}</div>`;
-                        }
-                        analysisHTML += '</div>';
-                    }
-                    
+                    const card = document.createElement('div'); 
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; 
+                    card.dataset.pair = p;
                     const actionHTML = d.open_position 
                         ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>`
-                        : (analysisHTML || `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`);
-
+                        : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
+
+                // Update panel analisis global
+                updateGlobalAnalysisPanel(data.global_ai_analysis);
 
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
@@ -605,10 +642,27 @@ HTML_SKELETON_TRADINGVIEW = """
                     if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
                 });
             };
-            const fetchData = async () => { try { const res = await fetch(API_ENDPOINT); if (!res.ok) return; const data = await res.json(); if(JSON.stringify(data) !== JSON.stringify(lastData)) { updateUI(data); } lastData = data; } catch(e) { console.error("Update failed:", e); } };
+            
+            // BARU: Fungsi fetchData sekarang mengirimkan pair chart yang aktif
+            const fetchData = async () => { 
+                let url = API_ENDPOINT_BASE;
+                if (currentChartPair) {
+                    url += `?active_chart=${currentChartPair}`;
+                }
+                try { 
+                    const res = await fetch(url); 
+                    if (!res.ok) return; 
+                    const data = await res.json(); 
+                    if(JSON.stringify(data) !== JSON.stringify(lastData)) { 
+                        updateUI(data); 
+                    } 
+                    lastData = data; 
+                } catch(e) { console.error("Update failed:", e); } 
+            };
+
             const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
             const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
-            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
             document.querySelectorAll('.fullscreen-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -627,7 +681,19 @@ HTML_SKELETON_TRADINGVIEW = """
                     }
                 });
             });
-            document.getElementById('watchlist').addEventListener('click', e => { const card = e.target.closest('.pair-card'); if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { currentChartPair = card.dataset.pair; createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart'); } });
+            
+            // BARU: Saat mengganti chart, panggil fetchData() untuk refresh panel analisis
+            document.getElementById('watchlist').addEventListener('click', e => { 
+                const card = e.target.closest('.pair-card'); 
+                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { 
+                    currentChartPair = card.dataset.pair; 
+                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); 
+                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); 
+                    card.classList.add('active-chart'); 
+                    fetchData(); // Panggil fetch data segera setelah chart diganti
+                } 
+            });
+
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
             const modal=document.getElementById('settings-modal');
@@ -636,7 +702,10 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-            fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS);
+            
+            // Inisialisasi interval
+            fetchData(); 
+            setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
 </body>
@@ -654,7 +723,10 @@ def get_api_data():
         market_state_copy = dict(market_state)
         settings_copy = dict(current_settings)
 
+    active_chart_pair = request.args.get('active_chart') # BARU: Ambil pair yg aktif dari query
     market_data_view = {}
+    global_ai_analysis = None # BARU: Siapkan variabel untuk analisis global
+
     fee_pct = settings_copy.get('fee_pct', 0.1)
 
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
@@ -668,7 +740,6 @@ def get_api_data():
             pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
 
         trend = "N/A"
-        ai_dashboard_analysis = None
         
         if len(full_candle_data) > 100 + 15:
             relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
@@ -676,12 +747,11 @@ def get_api_data():
             
             analysis_result = ai_instance.get_market_analysis(full_candle_data)
             if analysis_result:
-                # Dapatkan analisis tren dari hasil yang sudah dihitung
                 trend = analysis_result.get('bias', 'N/A').title()
                 
-                # Hanya jalankan analisis dashboard jika tidak ada posisi terbuka
-                if not open_pos:
-                    ai_dashboard_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
+                # BARU: Jika pair ini adalah yang aktif di chart, jalankan analisis untuk panel global
+                if pair_id == active_chart_pair:
+                    global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
         
         market_data_view[pair_id] = {
             "price": current_price,
@@ -690,7 +760,6 @@ def get_api_data():
             "open_position": open_pos,
             "pnl": pnl,
             "trend": trend,
-            "ai_analysis": ai_dashboard_analysis # Data baru untuk UI
         }
         
     return jsonify({
@@ -700,7 +769,8 @@ def get_api_data():
         "pnl_last_week": calculate_last_weeks_pnl(trades_copy),
         "market_data": market_data_view,
         "trades": trades_copy,
-        "settings": settings_copy
+        "settings": settings_copy,
+        "global_ai_analysis": global_ai_analysis # BARU: Kirim data analisis ke frontend
     })
 
 
