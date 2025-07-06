@@ -184,7 +184,6 @@ class LocalAI:
             "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING",
             "pre_entry_candle_solidity": [self.analyze_candle_solidity(c) for c in pre_entry_candles],
             "pre_entry_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles],
-            # BARU: Menyimpan data mentah untuk chart di 'details'
             "details": {
                 "candles": [{"open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in pre_entry_candles],
                 "ema9": pre_entry_ema9
@@ -216,7 +215,6 @@ class LocalAI:
         if not trade_list: return None, 0
         for trade in trade_list:
             snapshot = trade.get("entry_snapshot")
-            # Pastikan snapshot dan data chart ada
             if not snapshot or not snapshot.get('details'): continue
             score = self.compare_setups(current_analysis, snapshot)
             if score > highest_score:
@@ -257,7 +255,6 @@ class LocalAI:
 
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
 
-    # BARU: Fungsi untuk mengambil data analisis kemiripan untuk dashboard
     def get_similarity_analysis_for_dashboard(self, current_analysis):
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
@@ -459,8 +456,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .chart-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5000; background: var(--bg-color); padding: 1rem; }
         .chart-fullscreen .tradingview-widget-container { height: 100% !important; }
         .is-hidden { display: none !important; }
-
-        /* BARU: Style untuk panel analisis AI Global */
+        
         #ai-global-analysis-wrapper { margin-bottom: 2rem; }
         .analysis-container { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .analysis-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; }
@@ -476,7 +472,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .pa-body.red { background-color: var(--red); }
         .pa-ema-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; }
         .pa-ema-path { stroke: var(--accent-primary); stroke-width: 1.5; fill: none; }
-
+        
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
@@ -490,9 +486,9 @@ HTML_SKELETON_TRADINGVIEW = """
     <div class="container">
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
-
+        
         <div class="chart-wrapper" id="bybit-chart-wrapper">
-            <h2 id="bybit-chart-title">Bybit Perp Chart
+            <h2 id="bybit-chart-title">Bybit Perp Chart 
                 <button class="fullscreen-btn" data-target="#bybit-chart-wrapper" aria-label="Toggle Fullscreen">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
                 </button>
@@ -500,7 +496,15 @@ HTML_SKELETON_TRADINGVIEW = """
             <div id="tradingview_chart_bybit" class="tradingview-widget-container"></div>
         </div>
 
-        <!-- BARU: Panel Analisis AI Global -->
+        <div class="chart-wrapper" id="binance-chart-wrapper">
+             <h2 id="binance-chart-title">Binance Perp Chart
+                <button class="fullscreen-btn" data-target="#binance-chart-wrapper" aria-label="Toggle Fullscreen">
+                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+                </button>
+            </h2>
+            <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
+        </div>
+        
         <section id="ai-global-analysis-wrapper">
             <h2>AI Pattern Analysis</h2>
             <div id="ai-global-analysis-content"></div>
@@ -559,10 +563,8 @@ HTML_SKELETON_TRADINGVIEW = """
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             let currentChartPair = null; let lastData = {};
-
-            // BARU: Fungsi untuk merender chart mini dari data candle & EMA
+            
             const renderPriceActionChart = (details) => {
-                // Pemeriksaan yang kuat untuk data yang tidak lengkap atau flat
                 if (!details || !details.candles || !details.ema9 || details.candles.length === 0) {
                     return '<div class="analysis-placeholder" style="font-size:0.8rem;">Chart data not available<br>(likely an old trade record)</div>';
                 }
@@ -580,7 +582,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 let candlesHtml = '';
                 candles.forEach(c => {
                     const top = normalize(Math.max(c.open, c.close));
-                    const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange); // min height 0.5%
+                    const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange);
                     const wickTop = normalize(c.high);
                     const wickHeight = 100 * (c.high - c.low) / priceRange;
                     const colorClass = c.close >= c.open ? 'green' : 'red';
@@ -605,7 +607,6 @@ HTML_SKELETON_TRADINGVIEW = """
                 return `<div class="pa-chart-container">${candlesHtml}${svgHtml}</div>`;
             };
 
-            // BARU: Fungsi untuk memperbarui panel analisis AI global
             const updateGlobalAnalysisPanel = (analysisData) => {
                 const container = document.getElementById('ai-global-analysis-content');
                 if (!analysisData || !analysisData.current_details) {
@@ -613,14 +614,12 @@ HTML_SKELETON_TRADINGVIEW = """
                     return;
                 }
                 let html = '<div class="analysis-container">';
-
-                // Chart untuk kondisi saat ini
+                
                 html += `<div class="analysis-card">
                            <h3 class="analysis-title">Current Price Action</h3>
                            ${renderPriceActionChart(analysisData.current_details)}
                          </div>`;
 
-                // Logika untuk memilih match terbaik (Win atau Loss) berdasarkan skor tertinggi
                 let matchCardHtml = '';
                 const winMatch = analysisData.win_match;
                 const lossMatch = analysisData.loss_match;
@@ -628,7 +627,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 let isWin = false;
 
                 if (winMatch && lossMatch) {
-                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; }
+                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } 
                     else { bestMatch = lossMatch; isWin = false; }
                 } else if (winMatch) {
                     bestMatch = winMatch; isWin = true;
@@ -636,7 +635,6 @@ HTML_SKELETON_TRADINGVIEW = """
                     bestMatch = lossMatch; isWin = false;
                 }
 
-                // Render kartu untuk match terbaik jika ada
                 if (bestMatch) {
                      matchCardHtml = `<div class="analysis-card">
                                        <h3 class="analysis-title ${isWin ? 'win' : 'loss'}">Best Match: ${isWin ? 'Win' : 'Loss'} ID #${bestMatch.id} (Score: ${bestMatch.score})</h3>
@@ -650,65 +648,67 @@ HTML_SKELETON_TRADINGVIEW = """
                 container.innerHTML = html;
             };
 
-
+            // ## DIKEMBALIKAN: Fungsi ini sekarang membuat kedua chart lagi
             const createChartWidgets = (pair, timeframe) => {
-                // Hapus chart Binance yang tidak dipakai dari HTML dan JS ini
-                document.getElementById('tradingview_chart_bybit').innerHTML = '';
+                document.getElementById('tradingview_chart_bybit').innerHTML = ''; 
+                document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
+                
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
+                new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
+
                 document.getElementById('bybit-chart-title').childNodes[0].nodeValue = `${pair} Bybit Perp Chart `;
+                document.getElementById('binance-chart-title').childNodes[0].nodeValue = `${pair} Binance Perp Chart `;
             };
 
             const updateUI = data => {
-                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) {
-                    currentChartPair = Object.keys(data.settings.watched_pairs)[0];
-                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
+                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { 
+                    currentChartPair = Object.keys(data.settings.watched_pairs)[0]; 
+                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); 
                 }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-
-                const watchlistEl = document.getElementById('watchlist');
+                
+                const watchlistEl = document.getElementById('watchlist'); 
                 watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div');
-                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`;
+                    const card = document.createElement('div'); 
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; 
                     card.dataset.pair = p;
-                    const actionHTML = d.open_position
+                    const actionHTML = d.open_position 
                         ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>`
                         : `<div class="pair-actions"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
 
-                // BARU: Panggil fungsi update panel AI
                 updateGlobalAnalysisPanel(data.global_ai_analysis);
 
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
                     if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
-                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); }
+                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
                 });
             };
-
-            const fetchData = async () => {
-                // BARU: Kirim pair yang aktif ke backend
+            
+            const fetchData = async () => { 
                 let url = API_ENDPOINT_BASE;
                 if (currentChartPair) url += `?active_chart=${currentChartPair}`;
-                try {
-                    const res = await fetch(url);
-                    if (!res.ok) return;
-                    const data = await res.json();
-                    if(JSON.stringify(data) !== JSON.stringify(lastData)) updateUI(data);
-                    lastData = data;
-                } catch(e) { console.error("Update failed:", e); }
+                try { 
+                    const res = await fetch(url); 
+                    if (!res.ok) return; 
+                    const data = await res.json(); 
+                    if(JSON.stringify(data) !== JSON.stringify(lastData)) updateUI(data); 
+                    lastData = data; 
+                } catch(e) { console.error("Update failed:", e); } 
             };
 
             const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
             const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
-            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
             document.querySelectorAll('.fullscreen-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -725,20 +725,19 @@ HTML_SKELETON_TRADINGVIEW = """
                         });
                         button.innerHTML = iconCollapse;
                     }
-                    // Trigger a resize event to make TradingView chart resize
                     window.dispatchEvent(new Event('resize'));
                 });
             });
-
-            document.getElementById('watchlist').addEventListener('click', e => {
-                const card = e.target.closest('.pair-card');
-                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
-                    currentChartPair = card.dataset.pair;
-                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]);
-                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
-                    card.classList.add('active-chart');
-                    fetchData(); // Fetch data immediately on chart change
-                }
+            
+            document.getElementById('watchlist').addEventListener('click', e => { 
+                const card = e.target.closest('.pair-card'); 
+                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { 
+                    currentChartPair = card.dataset.pair; 
+                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); 
+                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); 
+                    card.classList.add('active-chart'); 
+                    fetchData();
+                } 
             });
 
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
@@ -749,8 +748,8 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-
-            fetchData();
+            
+            fetchData(); 
             setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
@@ -761,9 +760,8 @@ HTML_SKELETON_TRADINGVIEW = """
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
 def dashboard():
-    # Hapus chart binance dari template utama
-    modified_html = HTML_SKELETON_TRADINGVIEW.replace('<div class="chart-wrapper" id="binance-chart-wrapper">', '<div class="chart-wrapper is-hidden" id="binance-chart-wrapper">', 1)
-    return render_template_string(modified_html, current_settings=current_settings)
+    # ## DIKEMBALIKAN: Merender template HTML lengkap tanpa menyembunyikan chart Binance
+    return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
 
 @app.route('/api/data')
 def get_api_data():
@@ -772,10 +770,9 @@ def get_api_data():
         market_state_copy = dict(market_state)
         settings_copy = dict(current_settings)
 
-    # BARU: Dapatkan pair yang aktif dari request
     active_chart_pair = request.args.get('active_chart')
     market_data_view = {}
-    global_ai_analysis = None # BARU: Variabel untuk menyimpan hasil analisis
+    global_ai_analysis = None
 
     fee_pct = settings_copy.get('fee_pct', 0.1)
 
@@ -783,27 +780,24 @@ def get_api_data():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
         current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
-
+        
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
         if open_pos and current_price > 0:
             pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
 
         trend = "N/A"
-
+        
         if len(full_candle_data) > 100 + 15:
             relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
             ai_instance = LocalAI(settings_copy, relevant_trades_history)
-
+            
             analysis_result = ai_instance.get_market_analysis(full_candle_data)
             if analysis_result:
                 trend = analysis_result.get('bias', 'N/A').title()
-
-                # BARU: Jika pair ini yang sedang dilihat di chart & tidak ada posisi terbuka,
-                # jalankan analisis kemiripan untuk ditampilkan di dashboard.
                 if pair_id == active_chart_pair and not open_pos:
                     global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
-
+        
         market_data_view[pair_id] = {
             "price": current_price,
             "funding": pair_state.get("funding_rate", 0.0),
@@ -812,7 +806,7 @@ def get_api_data():
             "pnl": pnl,
             "trend": trend,
         }
-
+        
     return jsonify({
         "is_ai_running": is_autopilot_running,
         "pnl_today": calculate_todays_pnl(trades_copy),
@@ -821,7 +815,7 @@ def get_api_data():
         "market_data": market_data_view,
         "trades": trades_copy,
         "settings": settings_copy,
-        "global_ai_analysis": global_ai_analysis # BARU: Tambahkan data analisis ke response
+        "global_ai_analysis": global_ai_analysis
     })
 
 @app.route('/toggle-ai', methods=['POST'])
@@ -869,24 +863,31 @@ def trade_close():
 def update_settings():
     global current_settings
     with state_lock:
+        # Handle checkbox separately
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
-        for key, value in request.form.items():
-            if key in current_settings and isinstance(current_settings[key], (int, float)):
-                try:
-                    if '.' in value: current_settings[key] = float(value)
-                    else: current_settings[key] = int(value)
-                except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-            elif key == 'use_trailing_tp':
-                 continue # sudah di handle di atas
-            else:
-                 # Handle string settings jika ada, contohnya
-                 if key in current_settings:
-                    current_settings[key] = value
 
+        # Iterate over all submitted form data
+        for key, value in request.form.items():
+            if key == 'use_trailing_tp':
+                continue # Already handled
+
+            # Check if the key exists in current settings to avoid adding new keys
+            if key in current_settings:
+                # Try to convert to float/int if the original is a number
+                if isinstance(current_settings[key], (int, float)):
+                    try:
+                        if '.' in value:
+                            current_settings[key] = float(value)
+                        else:
+                            current_settings[key] = int(value)
+                    except (ValueError, TypeError):
+                        print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
+                else:
+                    # Otherwise, just update the string value
+                    current_settings[key] = value
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
-
 
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
@@ -911,7 +912,6 @@ if __name__ == "__main__":
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True)
     data_thread = threading.Thread(target=data_refresh_worker, daemon=True)
     autopilot_thread.start(); data_thread.start()
-    # Menghapus chart Binance dari skrip agar lebih fokus
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
     print_colored("\nMenutup aplikasi...", Fore.YELLOW)
     stop_event.set()
