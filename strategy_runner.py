@@ -65,7 +65,7 @@ def load_settings():
         "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10, 
         "use_trailing_tp": True, "trailing_tp_activation_pct": 0.30, 
         "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
-        "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDSWT": "1H"},
+        "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
         "max_trades_in_history": 80, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
         "similarity_threshold_win": 12, "similarity_threshold_loss": 10
     }
@@ -184,7 +184,6 @@ class LocalAI:
             "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING",
             "pre_entry_candle_solidity": [self.analyze_candle_solidity(c) for c in pre_entry_candles],
             "pre_entry_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles],
-            # BARU: Data detail untuk visualisasi
             "details": {
                 "candles": [{"open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in pre_entry_candles],
                 "ema9": pre_entry_ema9
@@ -565,29 +564,32 @@ HTML_SKELETON_TRADINGVIEW = """
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             let currentChartPair = null; let lastData = {};
             
-            // BARU: Fungsi untuk merender chart candlestick mini
             const renderPriceActionChart = (details) => {
-                if (!details || !details.candles || !details.ema9 || details.candles.length === 0) return '';
+                // DIPERBAIKI: Pemeriksaan yang lebih kuat untuk data yang tidak lengkap atau flat
+                if (!details || !details.candles || !details.ema9 || details.candles.length === 0) {
+                    return '<div class="analysis-placeholder" style="font-size:0.8rem;">Chart data not available<br>(likely an old trade record)</div>';
+                }
+
                 const { candles, ema9 } = details;
                 const allPrices = candles.flatMap(c => [c.high, c.low]).concat(ema9);
                 const maxPrice = Math.max(...allPrices);
                 const minPrice = Math.min(...allPrices);
                 const priceRange = maxPrice - minPrice;
 
-                if (priceRange === 0) return '<div>Price data is flat.</div>'; // Handle flat data
+                if (priceRange === 0) return '<div class="analysis-placeholder">Price data is flat.</div>';
 
                 const normalize = price => 100 * (maxPrice - price) / priceRange;
 
                 let candlesHtml = '';
                 candles.forEach(c => {
                     const top = normalize(Math.max(c.open, c.close));
-                    const height = 100 * Math.abs(c.open - c.close) / priceRange;
+                    const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange); // min height 0.5%
                     const wickTop = normalize(c.high);
                     const wickHeight = 100 * (c.high - c.low) / priceRange;
                     const colorClass = c.close >= c.open ? 'green' : 'red';
                     candlesHtml += `<div class="pa-candle">
-                                      <div class="pa-wick" style="top:${wickTop}%; height:${wickHeight}%;"></div>
-                                      <div class="pa-body ${colorClass}" style="top:${top}%; height:${height}%;"></div>
+                                      <div class="pa-wick" style="top:${wickTop.toFixed(2)}%; height:${wickHeight.toFixed(2)}%;"></div>
+                                      <div class="pa-body ${colorClass}" style="top:${top.toFixed(2)}%; height:${height.toFixed(2)}%;"></div>
                                   </div>`;
                 });
 
@@ -614,30 +616,34 @@ HTML_SKELETON_TRADINGVIEW = """
                 }
                 let html = '<div class="analysis-container">';
                 
-                // Card untuk Analisis Saat Ini
                 html += `<div class="analysis-card">
                            <h3 class="analysis-title">Current Price Action</h3>
                            ${renderPriceActionChart(analysisData.current_details)}
                          </div>`;
 
                 let matchCardHtml = '';
-                if (analysisData.win_match && analysisData.loss_match && analysisData.win_match.score >= analysisData.loss_match.score) {
-                    matchCardHtml = `<div class="analysis-card">
-                                       <h3 class="analysis-title win">Best Match: Win ID #${analysisData.win_match.id} (Score: ${analysisData.win_match.score})</h3>
-                                       ${renderPriceActionChart(analysisData.win_match.details)}
-                                     </div>`;
-                } else if (analysisData.loss_match) {
+                // Pilih match terbaik berdasarkan skor tertinggi antara win dan loss
+                const winMatch = analysisData.win_match;
+                const lossMatch = analysisData.loss_match;
+                let bestMatch = null;
+                let isWin = false;
+
+                if (winMatch && lossMatch) {
+                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } 
+                    else { bestMatch = lossMatch; isWin = false; }
+                } else if (winMatch) {
+                    bestMatch = winMatch; isWin = true;
+                } else if (lossMatch) {
+                    bestMatch = lossMatch; isWin = false;
+                }
+
+                if (bestMatch) {
                      matchCardHtml = `<div class="analysis-card">
-                                       <h3 class="analysis-title loss">Best Match: Loss ID #${analysisData.loss_match.id} (Score: ${analysisData.loss_match.score})</h3>
-                                       ${renderPriceActionChart(analysisData.loss_match.details)}
-                                     </div>`;
-                } else if (analysisData.win_match) {
-                     matchCardHtml = `<div class="analysis-card">
-                                       <h3 class="analysis-title win">Best Match: Win ID #${analysisData.win_match.id} (Score: ${analysisData.win_match.score})</h3>
-                                       ${renderPriceActionChart(analysisData.win_match.details)}
+                                       <h3 class="analysis-title ${isWin ? 'win' : 'loss'}">Best Match: ${isWin ? 'Win' : 'Loss'} ID #${bestMatch.id} (Score: ${bestMatch.score})</h3>
+                                       ${renderPriceActionChart(bestMatch.details)}
                                      </div>`;
                 } else {
-                     matchCardHtml = `<div class="analysis-card"><h3 class="analysis-title">No Strong Match Found in History</h3><div class="analysis-placeholder">Waiting for more data.</div></div>`;
+                     matchCardHtml = `<div class="analysis-card"><h3 class="analysis-title">No Strong Match Found</h3><div class="analysis-placeholder">Waiting for more history.</div></div>`;
                 }
 
                 html += matchCardHtml + '</div>';
