@@ -92,18 +92,14 @@ def load_trades():
 def save_trades():
     global trades
     with state_lock:
-        # Sort by entryTimestamp descending to have the newest first.
-        # Handle both string and integer timestamps for robustness.
-        trades.sort(key=lambda x: (datetime.fromisoformat(x['entryTimestamp'].replace('Z', '')) if isinstance(x.get('entryTimestamp'), str) else datetime.fromtimestamp(x.get('entryTimestamp', 0)/1000.0)).timestamp(), reverse=True)
+        trades.sort(key=lambda x: x.get('entryTimestamp', '0'), reverse=True)
         max_trades = current_settings.get("max_trades_in_history", 80)
         if len(trades) > max_trades: trades = trades[:max_trades]
         try:
             with open(TRADES_FILE, 'w') as f: json.dump(trades, f, indent=4)
         except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
 
-
 # --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
-# (Semua fungsi worker dan AI tetap sama seperti sebelumnya, tidak perlu diubah)
 def fetch_funding_rate(instId):
     bybit_symbol = instId.replace('-', '')
     try:
@@ -133,19 +129,19 @@ def calculate_pnl(entry_price, current_price, trade_type):
 def calculate_todays_pnl(all_trades):
     today_utc = datetime.utcnow().date(); total_pnl = 0.0; fee_pct = current_settings.get('fee_pct', 0.1)
     for trade in all_trades:
-        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pnl_percent') is not None:
+        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
-                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc: total_pnl += (trade.get('pnl_percent', 0.0) - (2 * fee_pct))
+                if datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date() == today_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
 def calculate_this_weeks_pnl(all_trades):
     today_utc = datetime.utcnow().date(); start_of_week_utc = today_utc - timedelta(days=today_utc.weekday())
     total_pnl = 0.0; fee_pct = current_settings.get('fee_pct', 0.1)
     for trade in all_trades:
-        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pnl_percent') is not None:
+        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                if start_of_week_utc <= exit_date <= today_utc: total_pnl += (trade.get('pnl_percent', 0.0) - (2 * fee_pct))
+                if start_of_week_utc <= exit_date <= today_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
 def calculate_last_weeks_pnl(all_trades):
@@ -153,10 +149,10 @@ def calculate_last_weeks_pnl(all_trades):
     end_of_last_week_utc = start_of_current_week_utc - timedelta(days=1); start_of_last_week_utc = end_of_last_week_utc - timedelta(days=6)
     total_pnl = 0.0; fee_pct = current_settings.get('fee_pct', 0.1)
     for trade in all_trades:
-        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pnl_percent') is not None:
+        if trade.get('status') == 'CLOSED' and 'exitTimestamp' in trade and trade.get('pl_percent') is not None:
             try:
                 exit_date = datetime.fromisoformat(trade['exitTimestamp'].replace('Z', '')).date()
-                if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pnl_percent', 0.0) - (2 * fee_pct))
+                if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
 
@@ -231,7 +227,7 @@ class LocalAI:
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
 
-        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pnl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
+        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         best_win_match, win_score = self.find_best_match(analysis, winning_trades)
 
         if best_win_match and win_score >= self.settings.get("similarity_threshold_win", 12):
@@ -248,7 +244,7 @@ class LocalAI:
             avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15
             if avg_solidity < self.settings.get("caution_level", 0.5): return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
 
-            losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pnl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
+            losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
             best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
             if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 10):
                 reason = f"Peringatan: Mirip loss ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"
@@ -260,8 +256,8 @@ class LocalAI:
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
 
     def get_similarity_analysis_for_dashboard(self, current_analysis):
-        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pnl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
-        losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pnl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
+        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
+        losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
 
         best_win_match, win_score = self.find_best_match(current_analysis, winning_trades)
         best_loss_match, loss_score = self.find_best_match(current_analysis, losing_trades)
@@ -288,7 +284,7 @@ def close_trade_sync(trade, exit_price, reason):
     with state_lock:
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
         exit_dt = datetime.utcnow()
-        trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pnl_percent': pnl_gross })
+        trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
     save_trades()
     pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
     notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
@@ -308,7 +304,7 @@ async def run_autopilot_analysis(instrument_id):
         decision = ai.get_decision(pair_state["candle_data"], open_pos, funding_rate)
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
-            new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "exitPrice": None, "pnl_percent": None }
+            new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "exitPrice": None, "pl_percent": None }
             with state_lock: trades.insert(0, new_trade)
             save_trades()
             notif_title = f"🟢 Posisi {new_trade['type']} Dibuka: {instrument_id}"; notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | {decision.get('reason')}"
@@ -447,7 +443,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
-        .form-group input, .form-group textarea { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
+        .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
         .form-group.checkbox-group { flex-direction: row; align-items: center; gap: 0.5rem; }
         .form-group.checkbox-group label { margin-bottom: 0; }
         .watchlist-manage ul { list-style: none; padding: 0; }
@@ -476,8 +472,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .pa-body.red { background-color: var(--red); }
         .pa-ema-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; }
         .pa-ema-path { stroke: var(--accent-primary); stroke-width: 1.5; fill: none; }
-        #json-error-msg { color: var(--red); font-size: 0.9rem; margin-top: 1rem; min-height: 1.2em; }
-
+        
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
@@ -489,7 +484,7 @@ HTML_SKELETON_TRADINGVIEW = """
 </head>
 <body>
     <div class="container">
-        <!-- PERUBAHAN DI SINI: Menambahkan tombol "Add Data" -->
+        <!-- PERUBAHAN: Tombol "Add Data" ditambahkan di sini -->
         <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="add-data-btn" class="action-btn">Add Data</button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
         
@@ -522,7 +517,7 @@ HTML_SKELETON_TRADINGVIEW = """
         <ul id="history-list" class="history-list"></ul>
     </div>
 
-    <!-- Modal Pengaturan -->
+    <!-- PERUBAHAN: Modal untuk Settings sekarang menggunakan class .modal dan .modal-content -->
     <div id="settings-modal" class="modal">
         <div class="modal-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
@@ -561,22 +556,21 @@ HTML_SKELETON_TRADINGVIEW = """
             </form>
         </div>
     </div>
-
-    <!-- PERUBAHAN DI SINI: Modal baru untuk menambah data JSON manual -->
+    
+    <!-- PERUBAHAN: Modal baru untuk menambahkan data JSON manual -->
     <div id="add-data-modal" class="modal">
         <div class="modal-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Add Manual Trade Data</h2><button id="close-add-data-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="add-data-form">
                 <div class="form-group">
-                    <label for="json-input-area">Paste JSON here</label>
-                    <textarea id="json-input-area" name="json_data" rows="20" style="font-family: monospace; font-size: 0.9rem;" placeholder='{\n  "instrumentId": "EXAMPLE-USDT",\n  "type": "SHORT",\n  ...\n}'></textarea>
+                    <label for="json-input-area">Paste trade JSON data here:</label>
+                    <textarea id="json-input-area" rows="18" style="background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-family: monospace; font-size: 0.9rem; width: 100%; resize: vertical;"></textarea>
                 </div>
-                <p id="json-error-msg"></p>
-                <button type="submit" class="action-btn" style="width:100%; margin-top: 1rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Trade Data</button>
+                <button type="submit" class="action-btn" style="width:100%; margin-top: 1rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Data</button>
             </form>
         </div>
     </div>
-
+    
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT_BASE = '/api/data';
@@ -585,7 +579,7 @@ HTML_SKELETON_TRADINGVIEW = """
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
             const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
-            const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
+            const postRequest = async (url, data) => { try { const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); return res.json(); } catch (e) { console.error(`POST to ${url} failed:`, e); return {success: false, error: e.message}; }};
             let currentChartPair = null; let lastData = {};
             
             const renderPriceActionChart = (details) => {
@@ -709,7 +703,7 @@ HTML_SKELETON_TRADINGVIEW = """
 
                 updateGlobalAnalysisPanel(data.global_ai_analysis);
 
-                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pnl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pnl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason ? t.entryReason.split('\\n')[0] : 'N/A'}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
                     if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
@@ -765,60 +759,41 @@ HTML_SKELETON_TRADINGVIEW = """
 
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
-            
-            // --- PERUBAHAN DI SINI: Event Listeners untuk modal baru ---
-            const settingsModal=document.getElementById('settings-modal');
-            const addDataModal=document.getElementById('add-data-modal');
 
-            document.getElementById('settings-btn').addEventListener('click',()=>settingsModal.classList.add('visible'));
-            document.getElementById('close-settings-btn').addEventListener('click',()=>settingsModal.classList.remove('visible'));
+            // PERUBAHAN: Logika untuk menampilkan dan menyembunyikan modal
+            const settingsModal = document.getElementById('settings-modal');
+            const addDataModal = document.getElementById('add-data-modal');
             
-            document.getElementById('add-data-btn').addEventListener('click', () => addDataModal.classList.add('visible'));
-            document.getElementById('close-add-data-btn').addEventListener('click', () => addDataModal.classList.remove('visible'));
-
+            document.getElementById('settings-btn').addEventListener('click',() => settingsModal.classList.add('visible'));
+            document.getElementById('close-settings-btn').addEventListener('click',() => settingsModal.classList.remove('visible'));
+            
+            document.getElementById('add-data-btn').addEventListener('click',() => addDataModal.classList.add('visible'));
+            document.getElementById('close-add-data-btn').addEventListener('click',() => addDataModal.classList.remove('visible'));
+            
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-            
-            // Event listener untuk form penambahan data JSON
-            document.getElementById('add-data-form').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const textArea = document.getElementById('json-input-area');
-                const errorMsgEl = document.getElementById('json-error-msg');
-                errorMsgEl.textContent = '';
-                textArea.style.borderColor = '';
 
-                let tradeData;
-                try {
-                    tradeData = JSON.parse(textArea.value);
-                } catch (jsonError) {
-                    errorMsgEl.textContent = 'Error: JSON format is invalid. ' + jsonError.message;
-                    textArea.style.borderColor = 'var(--red)';
+            // PERUBAHAN: Logika untuk mengirim data JSON dari modal baru
+            document.getElementById('add-data-form').addEventListener('submit', e => {
+                e.preventDefault();
+                const jsonInput = document.getElementById('json-input-area');
+                const jsonData = jsonInput.value;
+                if (!jsonData.trim()) {
+                    alert('JSON data cannot be empty.');
                     return;
                 }
-
-                try {
-                    const response = await fetch('/api/add_trade', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(tradeData)
-                    });
-
-                    if (response.ok) {
+                postRequest('/api/add_trade_manual', { 'json_data': jsonData })
+                .then(result => {
+                    if (result.success) {
+                        jsonInput.value = ''; // Kosongkan input setelah berhasil
                         addDataModal.classList.remove('visible');
-                        textArea.value = ''; // Kosongkan textarea setelah berhasil
-                        fetchData(); // Refresh data di UI
+                        fetchData(); // Panggil fetchData untuk langsung refresh UI
                     } else {
-                        const errorData = await response.json();
-                        errorMsgEl.textContent = `Server Error: ${errorData.error || 'An unknown error occurred.'}`;
-                        textArea.style.borderColor = 'var(--red)';
+                        alert('Failed to save data: ' + (result.error || 'Unknown error'));
                     }
-                } catch (networkError) {
-                    errorMsgEl.textContent = 'Network Error: Could not save the data.';
-                    textArea.style.borderColor = 'var(--red)';
-                }
+                });
             });
-            // --- AKHIR BLOK PERUBAHAN JAVASCRIPT ---
 
             fetchData(); 
             setInterval(fetchData, REFRESH_INTERVAL_MS);
@@ -912,7 +887,7 @@ def trade_manual():
             entry_snapshot = analysis_result
     with state_lock:
         if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
-        new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pnl_percent": None, "entry_snapshot": entry_snapshot }
+        new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot }
         trades.insert(0, new_trade)
         print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
     save_trades(); return jsonify(success=True)
@@ -929,39 +904,6 @@ def trade_close():
     close_trade_sync(trade_to_close, current_price, "Manual Close")
     return jsonify(success=True)
 
-# --- PERUBAHAN DI SINI: Endpoint baru untuk menerima data trade manual ---
-@app.route('/api/add_trade', methods=['POST'])
-def add_manual_trade():
-    try:
-        new_trade_data = request.get_json()
-
-        if not isinstance(new_trade_data, dict):
-            return jsonify(success=False, error="Input harus berupa objek JSON."), 400
-
-        # Validasi field penting
-        required_keys = ["instrumentId", "type", "entryTimestamp", "entryPrice", "status"]
-        for key in required_keys:
-            if key not in new_trade_data:
-                return jsonify(success=False, error=f"Field yang wajib ada '{key}' tidak ditemukan."), 400
-
-        # Override ID dengan timestamp milidetik untuk memastikan keunikan
-        new_trade_data['id'] = int(time.time() * 1000)
-
-        with state_lock:
-            # Masukkan data baru ke list trades
-            trades.insert(0, new_trade_data)
-        
-        # Simpan semua trade ke file (fungsi ini juga akan mengurutkan ulang)
-        save_trades()
-
-        print_colored(f"Trade manual untuk {new_trade_data['instrumentId']} berhasil ditambahkan dari UI.", Fore.BLUE)
-        return jsonify(success=True, new_id=new_trade_data['id'])
-
-    except Exception as e:
-        print_colored(f"Gagal menambahkan trade manual: {e}", Fore.RED)
-        return jsonify(success=False, error=str(e)), 500
-# --- AKHIR BLOK ENDPOINT BARU ---
-
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
     global current_settings
@@ -975,8 +917,7 @@ def update_settings():
                         if '.' in value: current_settings[key] = float(value)
                         else: current_settings[key] = int(value)
                     except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-                else:
-                    current_settings[key] = value
+                else: current_settings[key] = value
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
@@ -997,6 +938,43 @@ def remove_watchlist():
             del current_settings['watched_pairs'][pair]; save_settings()
             print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
+
+# PERUBAHAN: Endpoint baru untuk menambahkan trade manual dari JSON
+@app.route('/api/add_trade_manual', methods=['POST'])
+def add_trade_manual():
+    try:
+        json_text = request.form.get('json_data')
+        if not json_text:
+            return jsonify(success=False, error="No JSON data provided"), 400
+
+        new_trade_data = json.loads(json_text)
+
+        # Pastikan semua field penting ada, jika tidak tambahkan nilai default
+        # Ini untuk mencegah error jika JSON yang di-paste tidak lengkap
+        required_keys = {
+            "instrumentId": "UNKNOWN-PAIR", "type": "LONG", "entryTimestamp": datetime.utcnow().isoformat() + 'Z',
+            "entryPrice": 0, "status": "CLOSED", "entryReason": "Manual JSON Entry"
+        }
+        for key, default_value in required_keys.items():
+            if key not in new_trade_data:
+                new_trade_data[key] = default_value
+        
+        # Selalu generate ID baru berdasarkan timestamp untuk memastikan keunikan
+        new_trade_data['id'] = int(time.time() * 1000)
+
+        with state_lock:
+            # Masukkan ke awal list agar muncul di paling atas di history
+            trades.insert(0, new_trade_data)
+            save_trades() # Fungsi ini akan mengurutkan ulang dan menyimpan ke file
+
+        print_colored(f"Data trade manual berhasil ditambahkan (ID: {new_trade_data['id']}).", Fore.BLUE)
+        return jsonify(success=True)
+    except json.JSONDecodeError:
+        print_colored("Gagal menambahkan data manual: JSON tidak valid.", Fore.RED)
+        return jsonify(success=False, error="Invalid JSON format. Please check your text."), 400
+    except Exception as e:
+        print_colored(f"Error saat menambahkan data manual: {e}", Fore.RED)
+        return jsonify(success=False, error=str(e)), 500
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
