@@ -455,13 +455,14 @@ HTML_SKELETON_TRADINGVIEW = """
         .chart-fullscreen .tradingview-widget-container { height: 100% !important; }
         .is-hidden { display: none !important; }
         
+        /* BARU: Style untuk panel analisis AI Global */
         #ai-global-analysis-wrapper { margin-bottom: 2rem; }
         .analysis-container { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .analysis-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; }
         .analysis-title { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem 0; }
         .analysis-title.win { color: var(--green); }
         .analysis-title.loss { color: var(--red); }
-        .analysis-placeholder { color: var(--text-muted); text-align: center; padding: 2rem; font-size: 0.9rem; }
+        .analysis-placeholder { color: var(--text-muted); text-align: center; padding: 2rem; }
         .pa-chart-container { display: flex; position: relative; width: 100%; height: 100px; background-color: rgba(0,0,0,0.2); border-radius: 8px; padding: 5px; }
         .pa-candle { flex: 1; position: relative; margin: 0 1px; }
         .pa-wick { position: absolute; left: 50%; width: 1px; transform: translateX(-50%); background-color: var(--text-muted); }
@@ -470,9 +471,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .pa-body.red { background-color: var(--red); }
         .pa-ema-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; }
         .pa-ema-path { stroke: var(--accent-primary); stroke-width: 1.5; fill: none; }
-        .pa-pattern-text { font-family: 'Courier New', Courier, monospace; font-size: 0.9rem; line-height: 1.5; margin-top: 0.75rem; background-color: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px; }
-        .pa-pattern-text pre { margin: 0; white-space: pre; }
-
+        
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
@@ -505,6 +504,7 @@ HTML_SKELETON_TRADINGVIEW = """
             <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
         </div>
         
+        <!-- BARU: Panel Analisis AI Global -->
         <section id="ai-global-analysis-wrapper">
             <h2>AI Pattern Analysis</h2>
             <div id="ai-global-analysis-content"></div>
@@ -565,72 +565,88 @@ HTML_SKELETON_TRADINGVIEW = """
             let currentChartPair = null; let lastData = {};
             
             const renderPriceActionChart = (details) => {
+                // DIPERBAIKI: Pemeriksaan yang lebih kuat untuk data yang tidak lengkap atau flat
                 if (!details || !details.candles || !details.ema9 || details.candles.length === 0) {
-                    return '<div class="analysis-placeholder">Chart data not available<br>(Old trade record or insufficient data)</div>';
+                    return '<div class="analysis-placeholder" style="font-size:0.8rem;">Chart data not available<br>(likely an old trade record)</div>';
                 }
+
                 const { candles, ema9 } = details;
                 const allPrices = candles.flatMap(c => [c.high, c.low]).concat(ema9);
                 const maxPrice = Math.max(...allPrices);
                 const minPrice = Math.min(...allPrices);
                 const priceRange = maxPrice - minPrice;
+
                 if (priceRange === 0) return '<div class="analysis-placeholder">Price data is flat.</div>';
+
                 const normalize = price => 100 * (maxPrice - price) / priceRange;
+
                 let candlesHtml = '';
                 candles.forEach(c => {
                     const top = normalize(Math.max(c.open, c.close));
-                    const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange);
+                    const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange); // min height 0.5%
                     const wickTop = normalize(c.high);
                     const wickHeight = 100 * (c.high - c.low) / priceRange;
                     const colorClass = c.close >= c.open ? 'green' : 'red';
-                    candlesHtml += `<div class="pa-candle"><div class="pa-wick" style="top:${wickTop.toFixed(2)}%; height:${wickHeight.toFixed(2)}%;"></div><div class="pa-body ${colorClass}" style="top:${top.toFixed(2)}%; height:${height.toFixed(2)}%;"></div></div>`;
+                    candlesHtml += `<div class="pa-candle">
+                                      <div class="pa-wick" style="top:${wickTop.toFixed(2)}%; height:${wickHeight.toFixed(2)}%;"></div>
+                                      <div class="pa-body ${colorClass}" style="top:${top.toFixed(2)}%; height:${height.toFixed(2)}%;"></div>
+                                  </div>`;
                 });
+
                 const candleWidth = 100 / candles.length;
                 let pathD = 'M';
                 ema9.forEach((val, i) => {
-                    const x = (i + 0.5) * candleWidth; const y = normalize(val);
+                    const x = (i + 0.5) * candleWidth;
+                    const y = normalize(val);
                     pathD += `${x.toFixed(2)},${y.toFixed(2)} `;
                 });
-                const svgHtml = `<svg class="pa-ema-svg" preserveAspectRatio="none" viewBox="0 0 100 100"><path class="pa-ema-path" d="${pathD.trim()}"></path></svg>`;
-                return `<div class="pa-chart-container">${candlesHtml}${svgHtml}</div>`;
-            };
 
-            const renderPatternText = (details) => {
-                if (!details || !details.candles || details.candles.length === 0) return '';
-                const up = '▲'; const down = '▼';
-                let patternStr = 'Pattern: ';
-                details.candles.forEach(c => {
-                    patternStr += (c.close >= c.open ? `<span class="text-green">${up}</span>` : `<span class="text-red">${down}</span>`) + ' ';
-                });
-                return `<div class="pa-pattern-text"><pre>${patternStr.trim()}</pre></div>`;
+                const svgHtml = `<svg class="pa-ema-svg" preserveAspectRatio="none" viewBox="0 0 100 100">
+                                   <path class="pa-ema-path" d="${pathD.trim()}"></path>
+                               </svg>`;
+
+                return `<div class="pa-chart-container">${candlesHtml}${svgHtml}</div>`;
             };
 
             const updateGlobalAnalysisPanel = (analysisData) => {
                 const container = document.getElementById('ai-global-analysis-content');
                 if (!analysisData || !analysisData.current_details) {
-                    container.innerHTML = `<div class="analysis-placeholder">No active analysis for ${currentChartPair || 'selected pair'}.</div>`; return;
+                    container.innerHTML = `<div class="analysis-placeholder">No active analysis for ${currentChartPair || 'selected pair'}.</div>`;
+                    return;
                 }
                 let html = '<div class="analysis-container">';
+                
                 html += `<div class="analysis-card">
                            <h3 class="analysis-title">Current Price Action</h3>
                            ${renderPriceActionChart(analysisData.current_details)}
-                           ${renderPatternText(analysisData.current_details)}
                          </div>`;
-                const winMatch = analysisData.win_match; const lossMatch = analysisData.loss_match;
-                let bestMatch = null; let isWin = false;
+
+                let matchCardHtml = '';
+                // Pilih match terbaik berdasarkan skor tertinggi antara win dan loss
+                const winMatch = analysisData.win_match;
+                const lossMatch = analysisData.loss_match;
+                let bestMatch = null;
+                let isWin = false;
+
                 if (winMatch && lossMatch) {
-                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } else { bestMatch = lossMatch; isWin = false; }
-                } else if (winMatch) { bestMatch = winMatch; isWin = true;
-                } else if (lossMatch) { bestMatch = lossMatch; isWin = false; }
+                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } 
+                    else { bestMatch = lossMatch; isWin = false; }
+                } else if (winMatch) {
+                    bestMatch = winMatch; isWin = true;
+                } else if (lossMatch) {
+                    bestMatch = lossMatch; isWin = false;
+                }
+
                 if (bestMatch) {
-                     html += `<div class="analysis-card">
+                     matchCardHtml = `<div class="analysis-card">
                                        <h3 class="analysis-title ${isWin ? 'win' : 'loss'}">Best Match: ${isWin ? 'Win' : 'Loss'} ID #${bestMatch.id} (Score: ${bestMatch.score})</h3>
                                        ${renderPriceActionChart(bestMatch.details)}
-                                       ${renderPatternText(bestMatch.details)}
                                      </div>`;
                 } else {
-                     html += `<div class="analysis-card"><h3 class="analysis-title">No Strong Match Found</h3><div class="analysis-placeholder">Waiting for more history.</div></div>`;
+                     matchCardHtml = `<div class="analysis-card"><h3 class="analysis-title">No Strong Match Found</h3><div class="analysis-placeholder">Waiting for more history.</div></div>`;
                 }
-                html += '</div>';
+
+                html += matchCardHtml + '</div>';
                 container.innerHTML = html;
             };
 
