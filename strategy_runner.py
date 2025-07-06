@@ -67,7 +67,9 @@ def load_settings():
         "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
         "max_trades_in_history": 80, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
-        "similarity_threshold_win": 4, "similarity_threshold_loss": 3
+        # DIUBAH: Nilai threshold disesuaikan untuk sistem skor baru
+        "similarity_threshold_win": 12, 
+        "similarity_threshold_loss": 10
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -117,7 +119,7 @@ def fetch_recent_candles(instId, timeframe, limit=300):
         response = requests.get(url, timeout=15); response.raise_for_status(); data = response.json()
         if data.get("retCode") == 0 and 'list' in data.get('result', {}):
             candle_list = data['result']['list']
-            if len(candle_list) < 100 + 15: return None # DIUBAH: dari 3 menjadi 15
+            if len(candle_list) < 100 + 15: return None
             return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
         return None
     except (requests.exceptions.RequestException, Exception): return None
@@ -155,6 +157,7 @@ def calculate_last_weeks_pnl(all_trades):
                 if start_of_last_week_utc <= exit_date <= end_of_last_week_utc: total_pnl += (trade.get('pl_percent', 0.0) - (2 * fee_pct))
             except (ValueError, TypeError): continue
     return total_pnl
+
 class LocalAI:
     def __init__(self, settings, past_trades_for_pair): self.settings = settings; self.past_trades = past_trades_for_pair
     def calculate_ema(self, data, period):
@@ -167,67 +170,124 @@ class LocalAI:
         body = abs(candle['close'] - candle['open']); full_range = candle['high'] - candle['low']
         return body / full_range if full_range > 0 else 1.0
     def get_market_analysis(self, candle_data):
-        if len(candle_data) < 100 + 15: return None # DIUBAH: dari 3 menjadi 15
+        if len(candle_data) < 100 + 15: return None
         ema9 = self.calculate_ema(candle_data, 9); ema50 = self.calculate_ema(candle_data, 50); ema100 = self.calculate_ema(candle_data, 100)
         if len(ema9) < 2 or not ema50 or not ema100: return None
         analysis = { "ema9_current": ema9[-1], "ema9_prev": ema9[-2], "ema50": ema50[-1], "ema100": ema100[-1], "current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'], "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING" }
-        pre_entry_candles = candle_data[-16:-1] # DIUBAH: dari -4:-1 menjadi -16:-1
+        pre_entry_candles = candle_data[-16:-1]
         analysis["pre_entry_candle_solidity"] = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
         analysis["pre_entry_candle_direction"] = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
         return analysis
+
+    # --- FUNGSI INI DIUBAH SECARA FUNDAMENTAL SESUAI IDE ANDA ---
     def compare_setups(self, current_analysis, past_snapshot):
         if not past_snapshot or not past_snapshot.get('bias') or past_snapshot.get('bias') != current_analysis['bias']: return 0
+        
+        # Skor dasar dimulai dari 1 jika bias cocok
         similarity_score = 1
+        
+        # Skor +1 jika posisi harga relatif terhadap EMA50 cocok
         current_pos_vs_ema50 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema50'] else 'below'
         past_pos_vs_ema50 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema50', 0) else 'below'
-        if current_pos_vs_ema50 == past_pos_vs_ema50: similarity_score += 1
-        if 'pre_entry_candle_direction' in current_analysis and current_analysis['pre_entry_candle_direction'] == past_snapshot.get('pre_entry_candle_direction', []): similarity_score += 1
+        if current_pos_vs_ema50 == past_pos_vs_ema50: 
+            similarity_score += 1
+
+        # Skor +1 jika karakteristik (solidity) pasar cocok
         if 'pre_entry_candle_solidity' in current_analysis and 'pre_entry_candle_solidity' in past_snapshot:
-            avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 15 # DIUBAH: dari 3 menjadi 15
-            past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15)); avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0 # DIUBAH: default list & pembagi 15
-            if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
+            avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 15
+            past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15))
+            avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0
+            if abs(avg_solidity_current - avg_solidity_past) < 0.2:
+                similarity_score += 1
+        
+        # --- LOGIKA BARU: Jumlah kecocokan pola candle ditambahkan langsung ke skor ---
+        current_dirs = current_analysis.get('pre_entry_candle_direction')
+        past_dirs = past_snapshot.get('pre_entry_candle_direction')
+        
+        if current_dirs and past_dirs:
+            match_count = 0
+            # Hitung kecocokan dari candle terbaru ke belakang
+            for i in range(1, min(len(current_dirs), len(past_dirs)) + 1):
+                if current_dirs[-i] == past_dirs[-i]:
+                    match_count += 1
+                else:
+                    break  # Berhenti saat menemukan ketidakcocokan
+            
+            # Tambahkan jumlah kecocokan langsung ke skor utama
+            similarity_score += match_count
+        # --- AKHIR DARI LOGIKA BARU ---
+            
         return similarity_score
+
     def check_for_winning_setup(self, current_analysis):
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         if not winning_trades: return (False, None, None)
-        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_win", 4)
+        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_win", 12)
+        best_match_win = None
+        highest_score = 0
         for win in winning_trades:
             score = self.compare_setups(current_analysis, win.get("entry_snapshot"))
-            if score >= SIMILARITY_THRESHOLD:
-                reason = f"High Confidence: Setup mirip win (ID: {win.get('id', 'N/A')})"
-                return (True, reason, win.get('type'))
+            if score > highest_score:
+                highest_score = score
+                best_match_win = win
+        
+        if highest_score >= SIMILARITY_THRESHOLD:
+            reason = f"High Confidence: Mirip win (ID: {best_match_win.get('id', 'N/A')}, Skor: {highest_score})"
+            return (True, reason, best_match_win.get('type'))
         return (False, None, None)
+
     def check_for_repeated_mistake(self, current_analysis):
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
         if not losing_trades: return (False, None)
-        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_loss", 3)
+        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_loss", 10)
+        most_similar_loss = None
+        highest_score = 0
         for loss in losing_trades:
             score = self.compare_setups(current_analysis, loss.get("entry_snapshot"))
-            if score >= SIMILARITY_THRESHOLD:
-                reason = (f"Peringatan: Mirip loss ID {loss.get('id', 'N/A')}. Bias: {current_analysis['bias']}")
-                return (True, reason)
+            if score > highest_score:
+                highest_score = score
+                most_similar_loss = loss
+                
+        if highest_score >= SIMILARITY_THRESHOLD:
+            reason = (f"Peringatan: Mirip loss ID {most_similar_loss.get('id', 'N/A')}. Skor: {highest_score}")
+            return (True, reason)
         return (False, None)
+
     def get_decision(self, candle_data, open_position, funding_rate=0.0):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
+        
         is_win_setup, win_reason, trade_type_from_win = self.check_for_winning_setup(analysis)
         if is_win_setup:
             return {"action": "BUY" if trade_type_from_win == 'LONG' else "SELL", "reason": win_reason, "snapshot": analysis}
-        max_funding_rate = self.settings.get("max_allowed_funding_rate_pct", 0.075)
+            
         potential_trade_type = None
         if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
         elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
+        
         if potential_trade_type:
-            if potential_trade_type == 'LONG' and funding_rate > max_funding_rate: return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
-            if potential_trade_type == 'SHORT' and funding_rate < -max_funding_rate: return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
-            caution_level = self.settings.get("caution_level", 0.5); avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15 # DIUBAH: dari 3 menjadi 15
-            if avg_solidity < caution_level: return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f} < Caution: {caution_level:.2f})"}
+            # Pengecekan kondisi filter harus dilakukan sebelum pengecekan kesalahan berulang
+            if potential_trade_type == 'LONG' and funding_rate > self.settings.get("max_allowed_funding_rate_pct", 0.075):
+                return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
+            if potential_trade_type == 'SHORT' and funding_rate < -self.settings.get("max_allowed_funding_rate_pct", 0.075):
+                 return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
+            
+            avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15
+            if avg_solidity < self.settings.get("caution_level", 0.5):
+                return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
+
+            # Pengecekan kesalahan berulang adalah filter terakhir sebelum eksekusi
             is_repeated_mistake, mistake_reason = self.check_for_repeated_mistake(analysis)
-            if is_repeated_mistake: return {"action": "HOLD", "reason": mistake_reason}
+            if is_repeated_mistake:
+                return {"action": "HOLD", "reason": mistake_reason}
+
             ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
+            
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
+
+
 def close_trade_sync(trade, exit_price, reason):
     with state_lock:
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
@@ -242,7 +302,7 @@ async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
     pair_state = market_state.get(instrument_id)
-    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: return # DIUBAH: dari 3 menjadi 15
+    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: return
     is_ai_thinking = True
     try:
         with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
@@ -327,6 +387,7 @@ def data_refresh_worker():
         stop_event.wait(sleep_duration)
 
 # --- TEMPLATE HTML DENGAN PERBAIKAN ---
+# DIUBAH: Menghapus input field untuk 'similarity_min_pattern_length' yang sudah tidak digunakan.
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -597,7 +658,7 @@ def trade_manual():
     current_price = candle_data[-1].get('close') if candle_data else None
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
     entry_snapshot = {}
-    if candle_data and len(candle_data) >= 100 + 15: # DIUBAH: dari 3 menjadi 15
+    if candle_data and len(candle_data) >= 100 + 15:
         with state_lock: relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
         ai_analyzer = LocalAI(current_settings, relevant_trades_history)
         analysis_result = ai_analyzer.get_market_analysis(candle_data)
