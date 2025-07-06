@@ -67,9 +67,7 @@ def load_settings():
         "trailing_tp_gap_pct": 0.05, "caution_level": 0.5, 
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
         "max_trades_in_history": 80, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
-        # DIUBAH: Nilai threshold disesuaikan untuk sistem skor baru
-        "similarity_threshold_win": 12, 
-        "similarity_threshold_loss": 10
+        "similarity_threshold_win": 12, "similarity_threshold_loss": 10
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -178,114 +176,93 @@ class LocalAI:
         analysis["pre_entry_candle_solidity"] = [self.analyze_candle_solidity(c) for c in pre_entry_candles]
         analysis["pre_entry_candle_direction"] = ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles]
         return analysis
-
-    # --- FUNGSI INI DIUBAH SECARA FUNDAMENTAL SESUAI IDE ANDA ---
+        
     def compare_setups(self, current_analysis, past_snapshot):
         if not past_snapshot or not past_snapshot.get('bias') or past_snapshot.get('bias') != current_analysis['bias']: return 0
-        
-        # Skor dasar dimulai dari 1 jika bias cocok
         similarity_score = 1
-        
-        # Skor +1 jika posisi harga relatif terhadap EMA50 cocok
         current_pos_vs_ema50 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema50'] else 'below'
         past_pos_vs_ema50 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema50', 0) else 'below'
-        if current_pos_vs_ema50 == past_pos_vs_ema50: 
-            similarity_score += 1
-
-        # Skor +1 jika karakteristik (solidity) pasar cocok
+        if current_pos_vs_ema50 == past_pos_vs_ema50: similarity_score += 1
         if 'pre_entry_candle_solidity' in current_analysis and 'pre_entry_candle_solidity' in past_snapshot:
             avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 15
-            past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15))
-            avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0
-            if abs(avg_solidity_current - avg_solidity_past) < 0.2:
-                similarity_score += 1
-        
-        # --- LOGIKA BARU: Jumlah kecocokan pola candle ditambahkan langsung ke skor ---
-        current_dirs = current_analysis.get('pre_entry_candle_direction')
-        past_dirs = past_snapshot.get('pre_entry_candle_direction')
-        
+            past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15)); avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0
+            if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
+        current_dirs = current_analysis.get('pre_entry_candle_direction'); past_dirs = past_snapshot.get('pre_entry_candle_direction')
         if current_dirs and past_dirs:
             match_count = 0
-            # Hitung kecocokan dari candle terbaru ke belakang
             for i in range(1, min(len(current_dirs), len(past_dirs)) + 1):
-                if current_dirs[-i] == past_dirs[-i]:
-                    match_count += 1
-                else:
-                    break  # Berhenti saat menemukan ketidakcocokan
-            
-            # Tambahkan jumlah kecocokan langsung ke skor utama
+                if current_dirs[-i] == past_dirs[-i]: match_count += 1
+                else: break
             similarity_score += match_count
-        # --- AKHIR DARI LOGIKA BARU ---
-            
         return similarity_score
 
-    def check_for_winning_setup(self, current_analysis):
-        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
-        if not winning_trades: return (False, None, None)
-        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_win", 12)
-        best_match_win = None
-        highest_score = 0
-        for win in winning_trades:
-            score = self.compare_setups(current_analysis, win.get("entry_snapshot"))
+    def find_best_match(self, current_analysis, trade_list):
+        best_match = None; highest_score = 0
+        if not trade_list: return None, 0
+        for trade in trade_list:
+            snapshot = trade.get("entry_snapshot")
+            if not snapshot: continue
+            score = self.compare_setups(current_analysis, snapshot)
             if score > highest_score:
                 highest_score = score
-                best_match_win = win
-        
-        if highest_score >= SIMILARITY_THRESHOLD:
-            reason = f"High Confidence: Mirip win (ID: {best_match_win.get('id', 'N/A')}, Skor: {highest_score})"
-            return (True, reason, best_match_win.get('type'))
-        return (False, None, None)
-
-    def check_for_repeated_mistake(self, current_analysis):
-        losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
-        if not losing_trades: return (False, None)
-        SIMILARITY_THRESHOLD = self.settings.get("similarity_threshold_loss", 10)
-        most_similar_loss = None
-        highest_score = 0
-        for loss in losing_trades:
-            score = self.compare_setups(current_analysis, loss.get("entry_snapshot"))
-            if score > highest_score:
-                highest_score = score
-                most_similar_loss = loss
-                
-        if highest_score >= SIMILARITY_THRESHOLD:
-            reason = (f"Peringatan: Mirip loss ID {most_similar_loss.get('id', 'N/A')}. Skor: {highest_score}")
-            return (True, reason)
-        return (False, None)
+                best_match = trade
+        return best_match, highest_score
 
     def get_decision(self, candle_data, open_position, funding_rate=0.0):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
         
-        is_win_setup, win_reason, trade_type_from_win = self.check_for_winning_setup(analysis)
-        if is_win_setup:
-            return {"action": "BUY" if trade_type_from_win == 'LONG' else "SELL", "reason": win_reason, "snapshot": analysis}
+        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
+        best_win_match, win_score = self.find_best_match(analysis, winning_trades)
+
+        if best_win_match and win_score >= self.settings.get("similarity_threshold_win", 12):
+            reason = f"High Confidence: Mirip win (ID: {best_win_match.get('id', 'N/A')}, Skor: {win_score})"
+            return {"action": "BUY" if best_win_match.get('type') == 'LONG' else "SELL", "reason": reason, "snapshot": analysis}
             
         potential_trade_type = None
         if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
         elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
         
         if potential_trade_type:
-            # Pengecekan kondisi filter harus dilakukan sebelum pengecekan kesalahan berulang
-            if potential_trade_type == 'LONG' and funding_rate > self.settings.get("max_allowed_funding_rate_pct", 0.075):
-                return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
-            if potential_trade_type == 'SHORT' and funding_rate < -self.settings.get("max_allowed_funding_rate_pct", 0.075):
-                 return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
-            
+            if potential_trade_type == 'LONG' and funding_rate > self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
+            if potential_trade_type == 'SHORT' and funding_rate < -self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
             avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15
-            if avg_solidity < self.settings.get("caution_level", 0.5):
-                return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
+            if avg_solidity < self.settings.get("caution_level", 0.5): return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
 
-            # Pengecekan kesalahan berulang adalah filter terakhir sebelum eksekusi
-            is_repeated_mistake, mistake_reason = self.check_for_repeated_mistake(analysis)
-            if is_repeated_mistake:
-                return {"action": "HOLD", "reason": mistake_reason}
+            losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
+            best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
+            if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 10):
+                reason = f"Peringatan: Mirip loss ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"
+                return {"action": "HOLD", "reason": reason}
 
             ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
             
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
+        
+    def get_similarity_analysis_for_dashboard(self, current_analysis):
+        # Fungsi baru khusus untuk dashboard, tidak membuat keputusan.
+        winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
+        losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
+        
+        best_win_match, win_score = self.find_best_match(current_analysis, winning_trades)
+        best_loss_match, loss_score = self.find_best_match(current_analysis, losing_trades)
+        
+        dashboard_data = {
+            "current_pattern": current_analysis.get('pre_entry_candle_direction', [])
+        }
+        if best_win_match:
+            dashboard_data['win_match'] = {
+                "id": best_win_match.get('id'), "score": win_score,
+                "pattern": best_win_match.get('entry_snapshot', {}).get('pre_entry_candle_direction', [])
+            }
+        if best_loss_match:
+             dashboard_data['loss_match'] = {
+                "id": best_loss_match.get('id'), "score": loss_score,
+                "pattern": best_loss_match.get('entry_snapshot', {}).get('pre_entry_candle_direction', [])
+            }
+        return dashboard_data
 
 
 def close_trade_sync(trade, exit_price, reason):
@@ -387,7 +364,6 @@ def data_refresh_worker():
         stop_event.wait(sleep_duration)
 
 # --- TEMPLATE HTML DENGAN PERBAIKAN ---
-# DIUBAH: Menghapus input field untuk 'similarity_min_pattern_length' yang sudah tidak digunakan.
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -402,7 +378,7 @@ HTML_SKELETON_TRADINGVIEW = """
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; font-size: 16px; }
         body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Inter', sans-serif; margin: 0; padding: 1rem; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
-            overscroll-behavior-y: contain; /* Mencegah pull-to-refresh */
+            overscroll-behavior-y: contain;
         }
         .container { max-width: 1200px; margin: 0 auto; }
         h1 { margin: 0; font-size: 1.75rem; }
@@ -420,9 +396,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .stat-item .label { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.5rem; }
         .stat-item .value { font-size: 1.75rem; font-weight: 700; }
         .chart-wrapper { margin-bottom: 2rem; }
-        .tradingview-widget-container { height: 450px; 
-            touch-action: none; /* Memberi kontrol sentuhan penuh ke widget */
-        }
+        .tradingview-widget-container { height: 450px; touch-action: none; }
         .watchlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
         .pair-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; cursor: pointer; }
         .pair-card.active-chart { border-color: var(--accent-primary); }
@@ -466,6 +440,13 @@ HTML_SKELETON_TRADINGVIEW = """
         .chart-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5000; background: var(--bg-color); padding: 1rem; }
         .chart-fullscreen .tradingview-widget-container { height: 100% !important; }
         .is-hidden { display: none !important; }
+        /* BARU: Style untuk visualisasi AI */
+        .ai-analysis { margin-top: auto; padding-top: 1rem; }
+        .ai-analysis-details { font-family: 'Courier New', Courier, monospace; font-size: 0.8rem; line-height: 1.4; background-color: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; margin-top: 0.5rem; }
+        .ai-analysis-details pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; }
+        .ai-analysis-title { font-size: 0.9rem; color: var(--text-muted); font-weight: 500;}
+        .ai-analysis-title.win { color: var(--green); }
+        .ai-analysis-title.loss { color: var(--red); }
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid { grid-template-columns: 1fr; }
@@ -551,6 +532,33 @@ HTML_SKELETON_TRADINGVIEW = """
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
             const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             let currentChartPair = null; let lastData = {};
+            
+            // BARU: Fungsi untuk membuat visualisasi perbandingan
+            const renderAnalysisVisuals = (currentPattern, matchedPattern) => {
+                if (!currentPattern || !matchedPattern || currentPattern.length === 0 || matchedPattern.length === 0) return '';
+                const up = '▲'; const down = '▼';
+                const len = Math.min(currentPattern.length, matchedPattern.length);
+                let currentStr = 'Now  : ';
+                let matchedStr = 'Match: ';
+                let resultStr  = '     : ';
+                for (let i = 0; i < len; i++) {
+                    currentStr += (currentPattern[i] === 'UP' ? up : down);
+                    matchedStr += (matchedPattern[i] === 'UP' ? up : down);
+                }
+                let matchCount = 0;
+                for (let i = 1; i <= len; i++) {
+                    if (currentPattern[len - i] === matchedPattern[len - i]) {
+                        matchCount++;
+                    } else {
+                        break;
+                    }
+                }
+                for (let i = 0; i < len; i++) {
+                    resultStr += ((len - i) <= matchCount) ? '<span class="text-green">✓</span>' : '<span class="text-red">✗</span>';
+                }
+                return `<pre>${currentStr}\\n${matchedStr}\\n${resultStr}</pre>`;
+            };
+
             const createChartWidgets = (pair, timeframe) => {
                 document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
@@ -559,6 +567,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
             };
+
             const updateUI = data => {
                 if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
@@ -566,10 +575,29 @@ HTML_SKELETON_TRADINGVIEW = """
                 const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
                     const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; card.dataset.pair = p;
-                    const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>` : `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
+                    
+                    let analysisHTML = '';
+                    if (!d.open_position && d.ai_analysis) {
+                        analysisHTML += '<div class="ai-analysis">';
+                        if (d.ai_analysis.win_match && d.ai_analysis.win_match.score > 0) {
+                            analysisHTML += `<div class="ai-analysis-title win">Best Win Match: ID #${d.ai_analysis.win_match.id} (Score: ${d.ai_analysis.win_match.score})</div>`;
+                            analysisHTML += `<div class="ai-analysis-details">${renderAnalysisVisuals(d.ai_analysis.current_pattern, d.ai_analysis.win_match.pattern)}</div>`;
+                        }
+                        if (d.ai_analysis.loss_match && d.ai_analysis.loss_match.score > 0) {
+                            analysisHTML += `<div class="ai-analysis-title loss" style="margin-top:0.5rem">Best Loss Match: ID #${d.ai_analysis.loss_match.id} (Score: ${d.ai_analysis.loss_match.score})</div>`;
+                            analysisHTML += `<div class="ai-analysis-details">${renderAnalysisVisuals(d.ai_analysis.current_pattern, d.ai_analysis.loss_match.pattern)}</div>`;
+                        }
+                        analysisHTML += '</div>';
+                    }
+                    
+                    const actionHTML = d.open_position 
+                        ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>`
+                        : (analysisHTML || `<div style="display:flex; gap:1rem; margin-top:auto;"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`);
+
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
                     watchlistEl.appendChild(card);
                 });
+
                 document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
@@ -621,27 +649,60 @@ def dashboard(): return render_template_string(HTML_SKELETON_TRADINGVIEW, curren
 
 @app.route('/api/data')
 def get_api_data():
-    with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
+    with state_lock:
+        trades_copy = list(trades)
+        market_state_copy = dict(market_state)
+        settings_copy = dict(current_settings)
+
     market_data_view = {}
     fee_pct = settings_copy.get('fee_pct', 0.1)
-    ai_analyzer_instance = LocalAI(settings_copy, []) 
+
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
         current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
+        
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
-        if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+        if open_pos and current_price > 0:
+            pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+
         trend = "N/A"
-        if len(full_candle_data) > 100:
-            ema50_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 50); ema100_raw = ai_analyzer_instance.calculate_ema(full_candle_data, 100)
-            if ema50_raw and ema100_raw:
-                last_ema50 = ema50_raw[-1]; last_ema100 = ema100_raw[-1]
-                if abs(last_ema50 - last_ema100) / last_ema50 < 0.002: trend = "Ranging"
-                elif last_ema50 > last_ema100: trend = "Bullish"
-                else: trend = "Bearish"
-        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend }
-    return jsonify({"is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy})
+        ai_dashboard_analysis = None
+        
+        if len(full_candle_data) > 100 + 15:
+            relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
+            ai_instance = LocalAI(settings_copy, relevant_trades_history)
+            
+            analysis_result = ai_instance.get_market_analysis(full_candle_data)
+            if analysis_result:
+                # Dapatkan analisis tren dari hasil yang sudah dihitung
+                trend = analysis_result.get('bias', 'N/A').title()
+                
+                # Hanya jalankan analisis dashboard jika tidak ada posisi terbuka
+                if not open_pos:
+                    ai_dashboard_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
+        
+        market_data_view[pair_id] = {
+            "price": current_price,
+            "funding": pair_state.get("funding_rate", 0.0),
+            "timeframe": timeframe,
+            "open_position": open_pos,
+            "pnl": pnl,
+            "trend": trend,
+            "ai_analysis": ai_dashboard_analysis # Data baru untuk UI
+        }
+        
+    return jsonify({
+        "is_ai_running": is_autopilot_running,
+        "pnl_today": calculate_todays_pnl(trades_copy),
+        "pnl_this_week": calculate_this_weeks_pnl(trades_copy),
+        "pnl_last_week": calculate_last_weeks_pnl(trades_copy),
+        "market_data": market_data_view,
+        "trades": trades_copy,
+        "settings": settings_copy
+    })
+
 
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
