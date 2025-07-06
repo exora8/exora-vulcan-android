@@ -92,7 +92,7 @@ def load_trades():
 def save_trades():
     global trades
     with state_lock:
-        trades.sort(key=lambda x: x.get('entryTimestamp', '0'), reverse=True)
+        trades.sort(key=lambda x: x['entryTimestamp'], reverse=True)
         max_trades = current_settings.get("max_trades_in_history", 80)
         if len(trades) > max_trades: trades = trades[:max_trades]
         try:
@@ -436,10 +436,10 @@ HTML_SKELETON_TRADINGVIEW = """
         .history-pair { color: var(--text-muted); }
         .history-pnl { font-size: 1.25rem; font-weight: 600; text-align: right; }
         .history-details { color: var(--text-muted); font-size: 0.85rem; width: 100%; text-align: left; }
-        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
-        .modal.visible { display: flex; opacity: 1; }
-        .modal-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
-        .modal-content h3 { margin-top: 2rem; margin-bottom: 1rem; font-size: 1.1rem; }
+        .settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; opacity: 0; transition: opacity 0.3s ease; }
+        .settings-modal.visible { display: flex; opacity: 1; }
+        .settings-content { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 2rem; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+        .settings-content h3 { margin-top: 2rem; margin-bottom: 1rem; font-size: 1.1rem; }
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
@@ -484,8 +484,7 @@ HTML_SKELETON_TRADINGVIEW = """
 </head>
 <body>
     <div class="container">
-        <!-- PERUBAHAN: Tombol "Add Data" ditambahkan di sini -->
-        <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="add-data-btn" class="action-btn">Add Data</button><button id="settings-btn" class="action-btn">Settings</button></div></header>
+        <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
         
         <div class="chart-wrapper" id="bybit-chart-wrapper">
@@ -516,10 +515,8 @@ HTML_SKELETON_TRADINGVIEW = """
         <h2 id="history-title">Recent History</h2>
         <ul id="history-list" class="history-list"></ul>
     </div>
-
-    <!-- PERUBAHAN: Modal untuk Settings sekarang menggunakan class .modal dan .modal-content -->
-    <div id="settings-modal" class="modal">
-        <div class="modal-content">
+    <div id="settings-modal" class="settings-modal">
+        <div class="settings-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
                 <h3>Trading Parameters</h3>
@@ -556,21 +553,6 @@ HTML_SKELETON_TRADINGVIEW = """
             </form>
         </div>
     </div>
-    
-    <!-- PERUBAHAN: Modal baru untuk menambahkan data JSON manual -->
-    <div id="add-data-modal" class="modal">
-        <div class="modal-content">
-            <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Add Manual Trade Data</h2><button id="close-add-data-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
-            <form id="add-data-form">
-                <div class="form-group">
-                    <label for="json-input-area">Paste trade JSON data here:</label>
-                    <textarea id="json-input-area" rows="18" style="background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-family: monospace; font-size: 0.9rem; width: 100%; resize: vertical;"></textarea>
-                </div>
-                <button type="submit" class="action-btn" style="width:100%; margin-top: 1rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Data</button>
-            </form>
-        </div>
-    </div>
-    
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT_BASE = '/api/data';
@@ -579,7 +561,7 @@ HTML_SKELETON_TRADINGVIEW = """
             const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
             const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
             const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
-            const postRequest = async (url, data) => { try { const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); return res.json(); } catch (e) { console.error(`POST to ${url} failed:`, e); return {success: false, error: e.message}; }};
+            const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
             let currentChartPair = null; let lastData = {};
             
             const renderPriceActionChart = (details) => {
@@ -666,6 +648,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 container.innerHTML = html;
             };
 
+            // ## DIKEMBALIKAN: Fungsi ini sekarang membuat kedua chart lagi
             const createChartWidgets = (pair, timeframe) => {
                 document.getElementById('tradingview_chart_bybit').innerHTML = ''; 
                 document.getElementById('tradingview_chart_binance').innerHTML = '';
@@ -703,7 +686,7 @@ HTML_SKELETON_TRADINGVIEW = """
 
                 updateGlobalAnalysisPanel(data.global_ai_analysis);
 
-                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason ? t.entryReason.split('\\n')[0] : 'N/A'}</div></li>`).join('');
+                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
                     if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
@@ -759,42 +742,13 @@ HTML_SKELETON_TRADINGVIEW = """
 
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
-
-            // PERUBAHAN: Logika untuk menampilkan dan menyembunyikan modal
-            const settingsModal = document.getElementById('settings-modal');
-            const addDataModal = document.getElementById('add-data-modal');
-            
-            document.getElementById('settings-btn').addEventListener('click',() => settingsModal.classList.add('visible'));
-            document.getElementById('close-settings-btn').addEventListener('click',() => settingsModal.classList.remove('visible'));
-            
-            document.getElementById('add-data-btn').addEventListener('click',() => addDataModal.classList.add('visible'));
-            document.getElementById('close-add-data-btn').addEventListener('click',() => addDataModal.classList.remove('visible'));
-            
+            const modal=document.getElementById('settings-modal');
+            document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
+            document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-
-            // PERUBAHAN: Logika untuk mengirim data JSON dari modal baru
-            document.getElementById('add-data-form').addEventListener('submit', e => {
-                e.preventDefault();
-                const jsonInput = document.getElementById('json-input-area');
-                const jsonData = jsonInput.value;
-                if (!jsonData.trim()) {
-                    alert('JSON data cannot be empty.');
-                    return;
-                }
-                postRequest('/api/add_trade_manual', { 'json_data': jsonData })
-                .then(result => {
-                    if (result.success) {
-                        jsonInput.value = ''; // Kosongkan input setelah berhasil
-                        addDataModal.classList.remove('visible');
-                        fetchData(); // Panggil fetchData untuk langsung refresh UI
-                    } else {
-                        alert('Failed to save data: ' + (result.error || 'Unknown error'));
-                    }
-                });
-            });
-
+            
             fetchData(); 
             setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
@@ -806,6 +760,7 @@ HTML_SKELETON_TRADINGVIEW = """
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
 def dashboard():
+    # ## DIKEMBALIKAN: Merender template HTML lengkap tanpa menyembunyikan chart Binance
     return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
 
 @app.route('/api/data')
@@ -908,16 +863,28 @@ def trade_close():
 def update_settings():
     global current_settings
     with state_lock:
+        # Handle checkbox separately
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
+
+        # Iterate over all submitted form data
         for key, value in request.form.items():
-            if key == 'use_trailing_tp': continue
+            if key == 'use_trailing_tp':
+                continue # Already handled
+
+            # Check if the key exists in current settings to avoid adding new keys
             if key in current_settings:
+                # Try to convert to float/int if the original is a number
                 if isinstance(current_settings[key], (int, float)):
                     try:
-                        if '.' in value: current_settings[key] = float(value)
-                        else: current_settings[key] = int(value)
-                    except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-                else: current_settings[key] = value
+                        if '.' in value:
+                            current_settings[key] = float(value)
+                        else:
+                            current_settings[key] = int(value)
+                    except (ValueError, TypeError):
+                        print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
+                else:
+                    # Otherwise, just update the string value
+                    current_settings[key] = value
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
@@ -938,43 +905,6 @@ def remove_watchlist():
             del current_settings['watched_pairs'][pair]; save_settings()
             print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
-
-# PERUBAHAN: Endpoint baru untuk menambahkan trade manual dari JSON
-@app.route('/api/add_trade_manual', methods=['POST'])
-def add_trade_manual():
-    try:
-        json_text = request.form.get('json_data')
-        if not json_text:
-            return jsonify(success=False, error="No JSON data provided"), 400
-
-        new_trade_data = json.loads(json_text)
-
-        # Pastikan semua field penting ada, jika tidak tambahkan nilai default
-        # Ini untuk mencegah error jika JSON yang di-paste tidak lengkap
-        required_keys = {
-            "instrumentId": "UNKNOWN-PAIR", "type": "LONG", "entryTimestamp": datetime.utcnow().isoformat() + 'Z',
-            "entryPrice": 0, "status": "CLOSED", "entryReason": "Manual JSON Entry"
-        }
-        for key, default_value in required_keys.items():
-            if key not in new_trade_data:
-                new_trade_data[key] = default_value
-        
-        # Selalu generate ID baru berdasarkan timestamp untuk memastikan keunikan
-        new_trade_data['id'] = int(time.time() * 1000)
-
-        with state_lock:
-            # Masukkan ke awal list agar muncul di paling atas di history
-            trades.insert(0, new_trade_data)
-            save_trades() # Fungsi ini akan mengurutkan ulang dan menyimpan ke file
-
-        print_colored(f"Data trade manual berhasil ditambahkan (ID: {new_trade_data['id']}).", Fore.BLUE)
-        return jsonify(success=True)
-    except json.JSONDecodeError:
-        print_colored("Gagal menambahkan data manual: JSON tidak valid.", Fore.RED)
-        return jsonify(success=False, error="Invalid JSON format. Please check your text."), 400
-    except Exception as e:
-        print_colored(f"Error saat menambahkan data manual: {e}", Fore.RED)
-        return jsonify(success=False, error=str(e)), 500
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
