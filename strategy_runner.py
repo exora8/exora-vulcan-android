@@ -67,12 +67,12 @@ def display_welcome_message():
 def load_settings():
     global current_settings
     default_settings = {
-        "stop_loss_pct": 0.20, "fee_pct": 0.1, "analysis_interval_sec": 10,
-        "use_trailing_tp": True, "trailing_tp_activation_pct": 0.30,
-        "trailing_tp_gap_pct": 0.05, "caution_level": 0.5,
+        "stop_loss_pct": 0.24, "fee_pct": 0.055, "analysis_interval_sec": 10,
+        "use_trailing_tp": False, "trailing_tp_activation_pct": 0.46,
+        "trailing_tp_gap_pct": 0.05, "caution_level": 0.4,
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BTC-USDT": "1H", "ETH-USDT": "1H"},
-        "max_trades_in_history": 80, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
-        "similarity_threshold_win": 12, "similarity_threshold_loss": 10
+        "max_trades_in_history": 800, "refresh_interval_seconds": 0.1, "chart_candle_limit": 80,
+        "similarity_threshold_win": 12, "similarity_threshold_loss": 12
     }
     if os.path.exists(SETTINGS_FILE):
         try:
