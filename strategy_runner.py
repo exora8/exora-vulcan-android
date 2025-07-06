@@ -376,7 +376,7 @@ def data_refresh_worker():
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
-# --- TEMPLATE HTML DENGAN PERBAIKAN ---
+# --- TEMPLATE HTML DENGAN FUNGSI CHART BARU ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -565,7 +565,7 @@ HTML_SKELETON_TRADINGVIEW = """
             let currentChartPair = null; let lastData = {};
             
             const renderPriceActionChart = (details) => {
-                // DIPERBAIKI: Pemeriksaan yang lebih kuat untuk data yang tidak lengkap atau flat
+                // Pemeriksaan yang kuat untuk data yang tidak lengkap atau flat
                 if (!details || !details.candles || !details.ema9 || details.candles.length === 0) {
                     return '<div class="analysis-placeholder" style="font-size:0.8rem;">Chart data not available<br>(likely an old trade record)</div>';
                 }
