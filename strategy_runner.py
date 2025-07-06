@@ -92,7 +92,7 @@ def load_trades():
 def save_trades():
     global trades
     with state_lock:
-        trades.sort(key=lambda x: x['entryTimestamp'], reverse=True)
+        trades.sort(key=lambda x: x.get('entryTimestamp', '0'), reverse=True)
         max_trades = current_settings.get("max_trades_in_history", 80)
         if len(trades) > max_trades: trades = trades[:max_trades]
         try:
@@ -100,6 +100,7 @@ def save_trades():
         except IOError as e: print_colored(f"Error saving trades: {e}", Fore.RED)
 
 # --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
+# ... (Semua fungsi dari fetch_funding_rate hingga data_refresh_worker tetap sama, tidak perlu diubah) ...
 def fetch_funding_rate(instId):
     bybit_symbol = instId.replace('-', '')
     try:
@@ -167,30 +168,13 @@ class LocalAI:
     def analyze_candle_solidity(self, candle):
         body = abs(candle['close'] - candle['open']); full_range = candle['high'] - candle['low']
         return body / full_range if full_range > 0 else 1.0
-
     def get_market_analysis(self, candle_data):
         if len(candle_data) < 100 + 15: return None
-        ema9 = self.calculate_ema(candle_data, 9)
-        ema50 = self.calculate_ema(candle_data, 50)
-        ema100 = self.calculate_ema(candle_data, 100)
+        ema9 = self.calculate_ema(candle_data, 9); ema50 = self.calculate_ema(candle_data, 50); ema100 = self.calculate_ema(candle_data, 100)
         if len(ema9) < 2 or not ema50 or not ema100: return None
-
-        pre_entry_candles = candle_data[-16:-1]
-        pre_entry_ema9 = ema9[-16:-1]
-
-        analysis = {
-            "ema9_current": ema9[-1], "ema9_prev": ema9[-2], "ema50": ema50[-1], "ema100": ema100[-1],
-            "current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'],
-            "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING",
-            "pre_entry_candle_solidity": [self.analyze_candle_solidity(c) for c in pre_entry_candles],
-            "pre_entry_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles],
-            "details": {
-                "candles": [{"open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in pre_entry_candles],
-                "ema9": pre_entry_ema9
-            }
-        }
+        pre_entry_candles = candle_data[-16:-1]; pre_entry_ema9 = ema9[-16:-1]
+        analysis = { "ema9_current": ema9[-1], "ema9_prev": ema9[-2], "ema50": ema50[-1], "ema100": ema100[-1], "current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'], "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING", "pre_entry_candle_solidity": [self.analyze_candle_solidity(c) for c in pre_entry_candles], "pre_entry_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles], "details": { "candles": [{"open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in pre_entry_candles], "ema9": pre_entry_ema9 } }
         return analysis
-
     def compare_setups(self, current_analysis, past_snapshot):
         if not past_snapshot or not past_snapshot.get('bias') or past_snapshot.get('bias') != current_analysis['bias']: return 0
         similarity_score = 1
@@ -209,76 +193,47 @@ class LocalAI:
                 else: break
             similarity_score += match_count
         return similarity_score
-
     def find_best_match(self, current_analysis, trade_list):
         best_match = None; highest_score = 0
         if not trade_list: return None, 0
         for trade in trade_list:
-            snapshot = trade.get("entry_snapshot")
+            snapshot = trade.get("entry_snapshot");
             if not snapshot or not snapshot.get('details'): continue
             score = self.compare_setups(current_analysis, snapshot)
-            if score > highest_score:
-                highest_score = score
-                best_match = trade
+            if score > highest_score: highest_score = score; best_match = trade
         return best_match, highest_score
-
     def get_decision(self, candle_data, open_position, funding_rate=0.0):
         analysis = self.get_market_analysis(candle_data)
         if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
         if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
-
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         best_win_match, win_score = self.find_best_match(analysis, winning_trades)
-
         if best_win_match and win_score >= self.settings.get("similarity_threshold_win", 12):
             reason = f"High Confidence: Mirip win (ID: {best_win_match.get('id', 'N/A')}, Skor: {win_score})"
             return {"action": "BUY" if best_win_match.get('type') == 'LONG' else "SELL", "reason": reason, "snapshot": analysis}
-
         potential_trade_type = None
         if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
         elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
-
         if potential_trade_type:
             if potential_trade_type == 'LONG' and funding_rate > self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
             if potential_trade_type == 'SHORT' and funding_rate < -self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
             avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15
             if avg_solidity < self.settings.get("caution_level", 0.5): return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
-
             losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
             best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
-            if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 10):
-                reason = f"Peringatan: Mirip loss ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"
-                return {"action": "HOLD", "reason": reason}
-
+            if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 10): return {"action": "HOLD", "reason": f"Peringatan: Mirip loss ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"}
             ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
             return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
-
         return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
-
     def get_similarity_analysis_for_dashboard(self, current_analysis):
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
-
         best_win_match, win_score = self.find_best_match(current_analysis, winning_trades)
         best_loss_match, loss_score = self.find_best_match(current_analysis, losing_trades)
-
-        dashboard_data = {
-            "current_details": current_analysis.get('details')
-        }
-        if best_win_match:
-            dashboard_data['win_match'] = {
-                "id": best_win_match.get('id'),
-                "score": win_score,
-                "details": best_win_match.get('entry_snapshot', {}).get('details')
-            }
-        if best_loss_match:
-             dashboard_data['loss_match'] = {
-                "id": best_loss_match.get('id'),
-                "score": loss_score,
-                "details": best_loss_match.get('entry_snapshot', {}).get('details')
-            }
+        dashboard_data = { "current_details": current_analysis.get('details') }
+        if best_win_match: dashboard_data['win_match'] = { "id": best_win_match.get('id'), "score": win_score, "details": best_win_match.get('entry_snapshot', {}).get('details') }
+        if best_loss_match: dashboard_data['loss_match'] = { "id": best_loss_match.get('id'), "score": loss_score, "details": best_loss_match.get('entry_snapshot', {}).get('details') }
         return dashboard_data
-
 
 def close_trade_sync(trade, exit_price, reason):
     with state_lock:
@@ -287,8 +242,7 @@ def close_trade_sync(trade, exit_price, reason):
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
     save_trades()
     pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
-    notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"
-    notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
+    notif_title = f"🔴 Posisi {trade.get('type')} Ditutup: {trade['instrumentId']}"; notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
     send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
@@ -318,28 +272,18 @@ def autopilot_worker():
         else: time.sleep(1)
 async def check_realtime_position_management(trade_obj, current_candle_data):
     if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
-    trade_type = trade_obj.get('type'); entry_price = trade_obj['entryPrice']
-    candle_low = current_candle_data['low']; candle_high = current_candle_data['high']
+    trade_type = trade_obj.get('type'); entry_price = trade_obj['entryPrice']; candle_low = current_candle_data['low']; candle_high = current_candle_data['high']
     sl_pct = current_settings.get('stop_loss_pct', 0)
     if sl_pct > 0:
-        if trade_type == 'LONG':
-            pnl_at_low = calculate_pnl(entry_price, candle_low, 'LONG')
-            if pnl_at_low <= -sl_pct:
-                sl_price = entry_price * (1 - sl_pct / 100)
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
-        elif trade_type == 'SHORT':
-            pnl_at_high = calculate_pnl(entry_price, candle_high, 'SHORT')
-            if pnl_at_high <= -sl_pct:
-                sl_price = entry_price * (1 + sl_pct / 100)
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
+        if trade_type == 'LONG' and calculate_pnl(entry_price, candle_low, 'LONG') <= -sl_pct: close_trade_sync(trade_obj, entry_price * (1 - sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
+        elif trade_type == 'SHORT' and calculate_pnl(entry_price, candle_high, 'SHORT') <= -sl_pct: close_trade_sync(trade_obj, entry_price * (1 + sl_pct / 100), f"Stop Loss @ {-sl_pct:.2f}%"); return
     if current_settings.get('use_trailing_tp', True):
         activation_pct = current_settings.get("trailing_tp_activation_pct", 0); gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
         if activation_pct <= 0 or gap_pct <= 0: return
-        pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type)
-        ts_price = None
+        pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type); ts_price = None
         with state_lock:
             if pnl_at_best >= activation_pct:
-                current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
+                current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0);
                 if current_cp == 0.0: current_cp = activation_pct
                 steps_passed = math.floor((pnl_at_best - current_cp) / gap_pct)
                 if steps_passed >= 0:
@@ -348,18 +292,12 @@ async def check_realtime_position_management(trade_obj, current_candle_data):
                     if trade_type == 'LONG': trade_obj['trailing_stop_price'] = entry_price * (1 + new_ts_level / 100)
                     else: trade_obj['trailing_stop_price'] = entry_price * (1 - new_ts_level / 100)
             ts_price = trade_obj.get('trailing_stop_price')
-        if ts_price is not None:
-            if (trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price):
-                close_trade_sync(trade_obj, ts_price, "Trailing TP")
+        if ts_price is not None and ((trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price)): close_trade_sync(trade_obj, ts_price, "Trailing TP")
     else:
-        static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
+        static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0);
         if static_tp_pct <= 0: return
-        if trade_type == 'LONG':
-            tp_price = entry_price * (1 + static_tp_pct / 100)
-            if candle_high >= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
-        elif trade_type == 'SHORT':
-            tp_price = entry_price * (1 - static_tp_pct / 100)
-            if candle_low <= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+        if trade_type == 'LONG' and candle_high >= (entry_price * (1 + static_tp_pct / 100)): close_trade_sync(trade_obj, entry_price * (1 + static_tp_pct / 100), f"Static TP @ {static_tp_pct:.2f}%")
+        elif trade_type == 'SHORT' and candle_low <= (entry_price * (1 - static_tp_pct / 100)): close_trade_sync(trade_obj, entry_price * (1 - static_tp_pct / 100), f"Static TP @ {static_tp_pct:.2f}%")
 def data_refresh_worker():
     while not stop_event.is_set():
         start_time = time.time()
@@ -378,7 +316,9 @@ def data_refresh_worker():
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
+
 # --- TEMPLATE HTML DENGAN FUNGSI CHART BARU ---
+## DIUBAH: Menambahkan tombol "Add Data" dan modal baru untuk input JSON
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -443,7 +383,7 @@ HTML_SKELETON_TRADINGVIEW = """
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .form-group { display: flex; flex-direction: column; }
         .form-group label { color: var(--text-muted); margin-bottom: 0.5rem; font-size: 0.9rem; }
-        .form-group input { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; }
+        .form-group input, .form-group textarea { background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.75rem; border-radius: 8px; font-size: 1rem; font-family: 'Inter', sans-serif;}
         .form-group.checkbox-group { flex-direction: row; align-items: center; gap: 0.5rem; }
         .form-group.checkbox-group label { margin-bottom: 0; }
         .watchlist-manage ul { list-style: none; padding: 0; }
@@ -456,7 +396,6 @@ HTML_SKELETON_TRADINGVIEW = """
         .chart-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5000; background: var(--bg-color); padding: 1rem; }
         .chart-fullscreen .tradingview-widget-container { height: 100% !important; }
         .is-hidden { display: none !important; }
-        
         #ai-global-analysis-wrapper { margin-bottom: 2rem; }
         .analysis-container { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
         .analysis-card { background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; }
@@ -472,7 +411,6 @@ HTML_SKELETON_TRADINGVIEW = """
         .pa-body.red { background-color: var(--red); }
         .pa-ema-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: visible; }
         .pa-ema-path { stroke: var(--accent-primary); stroke-width: 1.5; fill: none; }
-        
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
             .pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
@@ -484,7 +422,8 @@ HTML_SKELETON_TRADINGVIEW = """
 </head>
 <body>
     <div class="container">
-        <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="settings-btn" class="action-btn">Settings</button></div></header>
+        <!-- ## BARU: Tombol Add Data ditambahkan di sini -->
+        <header class="header"><h1>Vulcan AI</h1><div class="header-actions"><button id="ai-status-btn" class="action-btn ai-status"></button><button id="add-data-btn" class="action-btn">Add Data</button><button id="settings-btn" class="action-btn">Settings</button></div></header>
         <section id="pnl-stats" class="pnl-stats"></section>
         
         <div class="chart-wrapper" id="bybit-chart-wrapper">
@@ -515,243 +454,169 @@ HTML_SKELETON_TRADINGVIEW = """
         <h2 id="history-title">Recent History</h2>
         <ul id="history-list" class="history-list"></ul>
     </div>
+
+    <!-- Settings Modal (tidak berubah) -->
     <div id="settings-modal" class="settings-modal">
         <div class="settings-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
-                <h3>Trading Parameters</h3>
-                <div class="form-grid">
-                    <div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div>
-                    <div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div>
-                    <div class="form-group checkbox-group"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp">Enable Trailing TP</label></div>
-                    <div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
-                    <div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
-                    <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
-                </div>
-                <h3>AI Learning Parameters</h3>
-                <div class="form-grid">
-                    <div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="any" name="caution_level" id="s-caution_level"></div>
-                    <div class="form-group"><label>Win Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_win" id="s-similarity_threshold_win"></div>
-                    <div class="form-group"><label>Loss Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div>
-                </div>
-                <h3>System Parameters</h3>
-                <div class="form-grid">
-                    <div class="form-group"><label>AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div>
-                    <div class="form-group"><label>Max Trade History</label><input type="number" step="10" name="max_trades_in_history" id="s-max_trades_in_history"></div>
-                    <div class="form-group"><label>Data Refresh (s)</label><input type="number" step="any" name="refresh_interval_seconds" id="s-refresh_interval_seconds"></div>
-                </div>
-                <h3>Watchlist</h3>
-                <div class="watchlist-manage"><ul id="watchlist-list"></ul>
-                    <div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label>
-                        <div style="display:flex; gap:1rem;">
-                            <input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;">
-                            <button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button>
-                        </div>
-                    </div>
-                </div>
-                <button type="submit" class="action-btn" style="width:100%; margin-top: 2rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Settings</button>
+                 <h3>Trading Parameters</h3><div class="form-grid"><div class="form-group"><label>Fee per Transaction (%)</label><input type="number" step="any" name="fee_pct" id="s-fee_pct"></div><div class="form-group"><label>Stop Loss (%)</label><input type="number" step="any" name="stop_loss_pct" id="s-stop_loss_pct"></div><div class="form-group checkbox-group"><input type="checkbox" name="use_trailing_tp" id="s-use_trailing_tp"><label for="s-use_trailing_tp">Enable Trailing TP</label></div><div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div><div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div><div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div></div>
+                 <h3>AI Learning Parameters</h3><div class="form-grid"><div class="form-group"><label>Caution Level (0-1)</label><input type="number" step="any" name="caution_level" id="s-caution_level"></div><div class="form-group"><label>Win Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_win" id="s-similarity_threshold_win"></div><div class="form-group"><label>Loss Similarity Threshold</label><input type="number" step="1" name="similarity_threshold_loss" id="s-similarity_threshold_loss"></div></div>
+                 <h3>System Parameters</h3><div class="form-grid"><div class="form-group"><label>AI Delay (s)</label><input type="number" step="1" name="analysis_interval_sec" id="s-analysis_interval_sec"></div><div class="form-group"><label>Max Trade History</label><input type="number" step="10" name="max_trades_in_history" id="s-max_trades_in_history"></div><div class="form-group"><label>Data Refresh (s)</label><input type="number" step="any" name="refresh_interval_seconds" id="s-refresh_interval_seconds"></div></div>
+                 <h3>Watchlist</h3><div class="watchlist-manage"><ul id="watchlist-list"></ul><div class="form-group" style="margin-top:1rem;"><label>Add New Pair (e.g., BTC-USDT)</label><div style="display:flex; gap:1rem;"><input type="text" id="new-pair-input" placeholder="Pair" style="flex-grow:1;"><input type="text" id="new-tf-input" value="1H" placeholder="Timeframe" style="width:100px;"><button type="button" id="add-pair-btn" class="action-btn" style="background-color: var(--accent-primary); border:none;">Add</button></div></div></div>
+                 <button type="submit" class="action-btn" style="width:100%; margin-top: 2rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Settings</button>
             </form>
         </div>
     </div>
+    
+    <!-- ## BARU: Modal untuk Add Data JSON -->
+    <div id="add-data-modal" class="settings-modal">
+        <div class="settings-content">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h2>Add Trade via JSON</h2>
+                <button id="close-add-data-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button>
+            </div>
+            <form id="add-data-form">
+                <div class="form-group">
+                    <label for="json-input-area">Paste JSON data here</label>
+                    <textarea id="json-input-area" rows="15" placeholder='[\\n  {\\n    "id": 1718583600000,\\n    "instrumentId": "BTC-USDT",\\n    ...\\n  }\\n]'></textarea>
+                </div>
+                <button type="submit" class="action-btn" style="width:100%; margin-top: 1rem; padding: 0.75rem; background-color:var(--accent-primary); border:none;">Save Trade Data</button>
+            </form>
+        </div>
+    </div>
+
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const API_ENDPOINT_BASE = '/api/data';
-            let REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
-            const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
-            const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
-            const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
-            const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
-            const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
-            let currentChartPair = null; let lastData = {};
-            
-            const renderPriceActionChart = (details) => {
-                if (!details || !details.candles || !details.ema9 || details.candles.length === 0) {
-                    return '<div class="analysis-placeholder" style="font-size:0.8rem;">Chart data not available<br>(likely an old trade record)</div>';
-                }
-
-                const { candles, ema9 } = details;
-                const allPrices = candles.flatMap(c => [c.high, c.low]).concat(ema9);
-                const maxPrice = Math.max(...allPrices);
-                const minPrice = Math.min(...allPrices);
-                const priceRange = maxPrice - minPrice;
-
-                if (priceRange === 0) return '<div class="analysis-placeholder">Price data is flat.</div>';
-
-                const normalize = price => 100 * (maxPrice - price) / priceRange;
-
-                let candlesHtml = '';
-                candles.forEach(c => {
-                    const top = normalize(Math.max(c.open, c.close));
-                    const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange);
-                    const wickTop = normalize(c.high);
-                    const wickHeight = 100 * (c.high - c.low) / priceRange;
-                    const colorClass = c.close >= c.open ? 'green' : 'red';
-                    candlesHtml += `<div class="pa-candle">
-                                      <div class="pa-wick" style="top:${wickTop.toFixed(2)}%; height:${wickHeight.toFixed(2)}%;"></div>
-                                      <div class="pa-body ${colorClass}" style="top:${top.toFixed(2)}%; height:${height.toFixed(2)}%;"></div>
-                                  </div>`;
-                });
-
-                const candleWidth = 100 / candles.length;
-                let pathD = 'M ';
-                ema9.forEach((val, i) => {
-                    const x = (i + 0.5) * candleWidth;
-                    const y = normalize(val);
-                    pathD += `${x.toFixed(2)},${y.toFixed(2)} `;
-                });
-
-                const svgHtml = `<svg class="pa-ema-svg" preserveAspectRatio="none" viewBox="0 0 100 100">
-                                   <path class="pa-ema-path" d="${pathD.trim()}"></path>
-                               </svg>`;
-
-                return `<div class="pa-chart-container">${candlesHtml}${svgHtml}</div>`;
-            };
-
-            const updateGlobalAnalysisPanel = (analysisData) => {
-                const container = document.getElementById('ai-global-analysis-content');
-                if (!analysisData || !analysisData.current_details) {
-                    container.innerHTML = `<div class="analysis-placeholder">No active analysis for ${currentChartPair || 'selected pair'}.</div>`;
-                    return;
-                }
-                let html = '<div class="analysis-container">';
-                
-                html += `<div class="analysis-card">
-                           <h3 class="analysis-title">Current Price Action</h3>
-                           ${renderPriceActionChart(analysisData.current_details)}
-                         </div>`;
-
-                let matchCardHtml = '';
-                const winMatch = analysisData.win_match;
-                const lossMatch = analysisData.loss_match;
-                let bestMatch = null;
-                let isWin = false;
-
-                if (winMatch && lossMatch) {
-                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } 
-                    else { bestMatch = lossMatch; isWin = false; }
-                } else if (winMatch) {
-                    bestMatch = winMatch; isWin = true;
-                } else if (lossMatch) {
-                    bestMatch = lossMatch; isWin = false;
-                }
-
-                if (bestMatch) {
-                     matchCardHtml = `<div class="analysis-card">
-                                       <h3 class="analysis-title ${isWin ? 'win' : 'loss'}">Best Match: ${isWin ? 'Win' : 'Loss'} ID #${bestMatch.id} (Score: ${bestMatch.score})</h3>
-                                       ${renderPriceActionChart(bestMatch.details)}
-                                     </div>`;
-                } else {
-                     matchCardHtml = `<div class="analysis-card"><h3 class="analysis-title">No Strong Match Found</h3><div class="analysis-placeholder">Waiting for more history.</div></div>`;
-                }
-
-                html += matchCardHtml + '</div>';
-                container.innerHTML = html;
-            };
-
-            // ## DIKEMBALIKAN: Fungsi ini sekarang membuat kedua chart lagi
-            const createChartWidgets = (pair, timeframe) => {
-                document.getElementById('tradingview_chart_bybit').innerHTML = ''; 
-                document.getElementById('tradingview_chart_binance').innerHTML = '';
-                const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
-                const interval = tfMap[timeframe] || "60";
-                const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-                
-                new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
-                new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
-
-                document.getElementById('bybit-chart-title').childNodes[0].nodeValue = `${pair} Bybit Perp Chart `;
-                document.getElementById('binance-chart-title').childNodes[0].nodeValue = `${pair} Binance Perp Chart `;
-            };
-
-            const updateUI = data => {
-                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { 
-                    currentChartPair = Object.keys(data.settings.watched_pairs)[0]; 
-                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); 
-                }
-                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
-                document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                
-                const watchlistEl = document.getElementById('watchlist'); 
-                watchlistEl.innerHTML = '';
-                Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div'); 
-                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; 
-                    card.dataset.pair = p;
-                    const actionHTML = d.open_position 
-                        ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>`
-                        : `<div class="pair-actions"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
-                    card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
-                    watchlistEl.appendChild(card);
-                });
-
-                updateGlobalAnalysisPanel(data.global_ai_analysis);
-
-                document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason.split('\\n')[0]}</div></li>`).join('');
-                Object.entries(data.settings).forEach(([k, v]) => {
-                    const i = document.getElementById(`s-${k}`);
-                    if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
-                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
-                });
-            };
-            
-            const fetchData = async () => { 
-                let url = API_ENDPOINT_BASE;
-                if (currentChartPair) url += `?active_chart=${currentChartPair}`;
-                try { 
-                    const res = await fetch(url); 
-                    if (!res.ok) return; 
-                    const data = await res.json(); 
-                    if(JSON.stringify(data) !== JSON.stringify(lastData)) updateUI(data); 
-                    lastData = data; 
-                } catch(e) { console.error("Update failed:", e); } 
-            };
-
-            const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
-            const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
-            const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
-            document.querySelectorAll('.fullscreen-btn').forEach(button => {
-                button.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const targetWrapper = document.querySelector(button.dataset.target);
-                    if (!targetWrapper) return;
-                    const isAlreadyFullscreen = targetWrapper.classList.contains('chart-fullscreen');
-                    document.querySelectorAll('.chart-fullscreen').forEach(el => el.classList.remove('chart-fullscreen'));
-                    UIElementsToHide.forEach(selector => { document.querySelectorAll(selector).forEach(el => el.classList.remove('is-hidden')); });
-                    document.querySelectorAll('.fullscreen-btn').forEach(btn => btn.innerHTML = iconExpand);
-                    if (!isAlreadyFullscreen) {
-                        targetWrapper.classList.add('chart-fullscreen');
-                        UIElementsToHide.forEach(selector => {
-                            document.querySelectorAll(selector).forEach(el => { if (el !== targetWrapper) { el.classList.add('is-hidden'); } });
-                        });
-                        button.innerHTML = iconCollapse;
-                    }
-                    window.dispatchEvent(new Event('resize'));
-                });
+    document.addEventListener('DOMContentLoaded', () => {
+        const API_ENDPOINT_BASE = '/api/data';
+        let REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
+        const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
+        const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
+        const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
+        const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
+        const postRequest = async (url, data) => { try { const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); if(!res.ok) { const err = await res.json(); alert(`Error: ${err.error}`); } return res; } catch (e) { console.error(`POST to ${url} failed:`, e); alert('Request failed. Check console.'); }};
+        let currentChartPair = null; let lastData = {};
+        
+        const renderPriceActionChart = (details) => {
+            if (!details || !details.candles || !details.ema9 || details.candles.length === 0) return '<div class="analysis-placeholder" style="font-size:0.8rem;">Chart data not available<br>(likely an old trade record)</div>';
+            const { candles, ema9 } = details;
+            const allPrices = candles.flatMap(c => [c.high, c.low]).concat(ema9);
+            const maxPrice = Math.max(...allPrices); const minPrice = Math.min(...allPrices); const priceRange = maxPrice - minPrice;
+            if (priceRange === 0) return '<div class="analysis-placeholder">Price data is flat.</div>';
+            const normalize = price => 100 * (maxPrice - price) / priceRange;
+            let candlesHtml = '';
+            candles.forEach(c => {
+                const top = normalize(Math.max(c.open, c.close)); const height = Math.max(0.5, 100 * Math.abs(c.open - c.close) / priceRange);
+                const wickTop = normalize(c.high); const wickHeight = 100 * (c.high - c.low) / priceRange; const colorClass = c.close >= c.open ? 'green' : 'red';
+                candlesHtml += `<div class="pa-candle"><div class="pa-wick" style="top:${wickTop.toFixed(2)}%; height:${wickHeight.toFixed(2)}%;"></div><div class="pa-body ${colorClass}" style="top:${top.toFixed(2)}%; height:${height.toFixed(2)}%;"></div></div>`;
             });
-            
-            document.getElementById('watchlist').addEventListener('click', e => { 
-                const card = e.target.closest('.pair-card'); 
-                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { 
-                    currentChartPair = card.dataset.pair; 
-                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); 
-                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); 
-                    card.classList.add('active-chart'); 
-                    fetchData();
-                } 
-            });
+            const candleWidth = 100 / candles.length; let pathD = 'M ';
+            ema9.forEach((val, i) => { const x = (i + 0.5) * candleWidth; const y = normalize(val); pathD += `${x.toFixed(2)},${y.toFixed(2)} `; });
+            const svgHtml = `<svg class="pa-ema-svg" preserveAspectRatio="none" viewBox="0 0 100 100"><path class="pa-ema-path" d="${pathD.trim()}"></path></svg>`;
+            return `<div class="pa-chart-container">${candlesHtml}${svgHtml}</div>`;
+        };
 
-            document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
-            document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
-            const modal=document.getElementById('settings-modal');
-            document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
-            document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
-            document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
-            document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
-            document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-            
-            fetchData(); 
-            setInterval(fetchData, REFRESH_INTERVAL_MS);
+        const updateGlobalAnalysisPanel = (analysisData) => {
+            const container = document.getElementById('ai-global-analysis-content');
+            if (!analysisData || !analysisData.current_details) { container.innerHTML = `<div class="analysis-placeholder">No active analysis for ${currentChartPair || 'selected pair'}.</div>`; return; }
+            let html = '<div class="analysis-container">';
+            html += `<div class="analysis-card"><h3 class="analysis-title">Current Price Action</h3>${renderPriceActionChart(analysisData.current_details)}</div>`;
+            let matchCardHtml = ''; const winMatch = analysisData.win_match; const lossMatch = analysisData.loss_match; let bestMatch = null; let isWin = false;
+            if (winMatch && lossMatch) { if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } else { bestMatch = lossMatch; isWin = false; } } else if (winMatch) { bestMatch = winMatch; isWin = true; } else if (lossMatch) { bestMatch = lossMatch; isWin = false; }
+            if (bestMatch) { matchCardHtml = `<div class="analysis-card"><h3 class="analysis-title ${isWin ? 'win' : 'loss'}">Best Match: ${isWin ? 'Win' : 'Loss'} ID #${bestMatch.id} (Score: ${bestMatch.score})</h3>${renderPriceActionChart(bestMatch.details)}</div>`;
+            } else { matchCardHtml = `<div class="analysis-card"><h3 class="analysis-title">No Strong Match Found</h3><div class="analysis-placeholder">Waiting for more history.</div></div>`; }
+            html += matchCardHtml + '</div>'; container.innerHTML = html;
+        };
+
+        const createChartWidgets = (pair, timeframe) => {
+            document.getElementById('tradingview_chart_bybit').innerHTML = ''; document.getElementById('tradingview_chart_binance').innerHTML = '';
+            const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"}; const interval = tfMap[timeframe] || "60";
+            const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
+            new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
+            new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
+            document.getElementById('bybit-chart-title').childNodes[0].nodeValue = `${pair} Bybit Perp Chart `; document.getElementById('binance-chart-title').childNodes[0].nodeValue = `${pair} Binance Perp Chart `;
+        };
+
+        const updateUI = data => {
+            if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { currentChartPair = Object.keys(data.settings.watched_pairs)[0]; createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); }
+            document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
+            document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
+            const watchlistEl = document.getElementById('watchlist'); watchlistEl.innerHTML = '';
+            Object.entries(data.market_data).forEach(([p, d]) => {
+                const card = document.createElement('div'); card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''}`; card.dataset.pair = p;
+                const actionHTML = d.open_position ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>`
+                    : `<div class="pair-actions"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
+                card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
+                watchlistEl.appendChild(card);
+            });
+            updateGlobalAnalysisPanel(data.global_ai_analysis);
+            document.getElementById('history-list').innerHTML = data.trades.map(t => `<li class="history-item"><div class="history-main"><span class="history-type ${t.type==='LONG'?'text-green':'text-red'}">${t.type}</span><span class="history-pair">${t.instrumentId}</span></div><div class="history-pnl ${getPnlColorClass(t.status==='CLOSED'?(t.pl_percent - (2*data.settings.fee_pct)):null)}">${t.status==='CLOSED'?formatPercent(t.pl_percent - (2*data.settings.fee_pct)):'OPEN'}</div><div class="history-details">Entry @ ${formatPrice(t.entryPrice)} • ${t.entryReason ? t.entryReason.split('\\n')[0] : 'N/A'}</div></li>`).join('');
+            Object.entries(data.settings).forEach(([k, v]) => { const i = document.getElementById(`s-${k}`); if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } } if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } });
+        };
+        
+        const fetchData = async () => { 
+            let url = API_ENDPOINT_BASE; if (currentChartPair) url += `?active_chart=${currentChartPair}`;
+            try { const res = await fetch(url); if (!res.ok) return; const data = await res.json(); if(JSON.stringify(data) !== JSON.stringify(lastData)) updateUI(data); lastData = data; } catch(e) { console.error("Update failed:", e); } 
+        };
+
+        const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
+        const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
+        const UIElementsToHide = ['.header', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+        document.querySelectorAll('.fullscreen-btn').forEach(button => {
+            button.addEventListener('click', (e) => {
+                e.preventDefault(); const targetWrapper = document.querySelector(button.dataset.target); if (!targetWrapper) return;
+                const isAlreadyFullscreen = targetWrapper.classList.contains('chart-fullscreen');
+                document.querySelectorAll('.chart-fullscreen').forEach(el => el.classList.remove('chart-fullscreen'));
+                UIElementsToHide.forEach(selector => { document.querySelectorAll(selector).forEach(el => el.classList.remove('is-hidden')); });
+                document.querySelectorAll('.fullscreen-btn').forEach(btn => btn.innerHTML = iconExpand);
+                if (!isAlreadyFullscreen) {
+                    targetWrapper.classList.add('chart-fullscreen');
+                    UIElementsToHide.forEach(selector => { document.querySelectorAll(selector).forEach(el => { if (el !== targetWrapper) { el.classList.add('is-hidden'); } }); });
+                    button.innerHTML = iconCollapse;
+                }
+                window.dispatchEvent(new Event('resize'));
+            });
         });
+        
+        document.getElementById('watchlist').addEventListener('click', e => { 
+            const card = e.target.closest('.pair-card'); 
+            if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { currentChartPair = card.dataset.pair; createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); card.classList.add('active-chart'); fetchData(); } 
+        });
+
+        document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))).then(() => setTimeout(fetchData, 500)); }});
+        document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}).then(() => fetchData()); });
+        
+        // Settings Modal
+        const settingsModal=document.getElementById('settings-modal');
+        document.getElementById('settings-btn').addEventListener('click',()=>settingsModal.classList.add('visible'));
+        document.getElementById('close-settings-btn').addEventListener('click',()=>settingsModal.classList.remove('visible'));
+        document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
+
+        // ## BARU: Logika untuk modal Add Data
+        const addDataModal = document.getElementById('add-data-modal');
+        const addDataForm = document.getElementById('add-data-form');
+        const jsonInputArea = document.getElementById('json-input-area');
+        document.getElementById('add-data-btn').addEventListener('click', () => addDataModal.classList.add('visible'));
+        document.getElementById('close-add-data-btn').addEventListener('click', () => addDataModal.classList.remove('visible'));
+        addDataForm.addEventListener('submit', e => {
+            e.preventDefault();
+            const jsonText = jsonInputArea.value;
+            if (!jsonText.trim()) { alert('JSON input cannot be empty.'); return; }
+            postRequest('/api/add_trade_json', { json_data: jsonText }).then(res => {
+                if(res && res.ok) {
+                    addDataModal.classList.remove('visible');
+                    jsonInputArea.value = '';
+                    fetchData();
+                }
+            });
+        });
+
+        document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}).then(() => fetchData()));
+        document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf}).then(() => fetchData());});
+        
+        fetchData(); 
+        setInterval(fetchData, REFRESH_INTERVAL_MS);
+    });
     </script>
 </body>
 </html>
@@ -760,63 +625,27 @@ HTML_SKELETON_TRADINGVIEW = """
 # --- RUTE FLASK (Backend) ---
 @app.route('/')
 def dashboard():
-    # ## DIKEMBALIKAN: Merender template HTML lengkap tanpa menyembunyikan chart Binance
     return render_template_string(HTML_SKELETON_TRADINGVIEW, current_settings=current_settings)
 
 @app.route('/api/data')
 def get_api_data():
-    with state_lock:
-        trades_copy = list(trades)
-        market_state_copy = dict(market_state)
-        settings_copy = dict(current_settings)
-
-    active_chart_pair = request.args.get('active_chart')
-    market_data_view = {}
-    global_ai_analysis = None
-
+    with state_lock: trades_copy = list(trades); market_state_copy = dict(market_state); settings_copy = dict(current_settings)
+    active_chart_pair = request.args.get('active_chart'); market_data_view = {}; global_ai_analysis = None
     fee_pct = settings_copy.get('fee_pct', 0.1)
-
     for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
-        pair_state = market_state_copy.get(pair_id, {})
-        full_candle_data = pair_state.get("candle_data", [])
-        current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
-        
+        pair_state = market_state_copy.get(pair_id, {}); full_candle_data = pair_state.get("candle_data", []); current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
         pnl = 0.0
-        if open_pos and current_price > 0:
-            pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-
+        if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
         trend = "N/A"
-        
         if len(full_candle_data) > 100 + 15:
-            relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
-            ai_instance = LocalAI(settings_copy, relevant_trades_history)
-            
+            relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]; ai_instance = LocalAI(settings_copy, relevant_trades_history)
             analysis_result = ai_instance.get_market_analysis(full_candle_data)
             if analysis_result:
                 trend = analysis_result.get('bias', 'N/A').title()
-                if pair_id == active_chart_pair and not open_pos:
-                    global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
-        
-        market_data_view[pair_id] = {
-            "price": current_price,
-            "funding": pair_state.get("funding_rate", 0.0),
-            "timeframe": timeframe,
-            "open_position": open_pos,
-            "pnl": pnl,
-            "trend": trend,
-        }
-        
-    return jsonify({
-        "is_ai_running": is_autopilot_running,
-        "pnl_today": calculate_todays_pnl(trades_copy),
-        "pnl_this_week": calculate_this_weeks_pnl(trades_copy),
-        "pnl_last_week": calculate_last_weeks_pnl(trades_copy),
-        "market_data": market_data_view,
-        "trades": trades_copy,
-        "settings": settings_copy,
-        "global_ai_analysis": global_ai_analysis
-    })
+                if pair_id == active_chart_pair and not open_pos: global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
+        market_data_view[pair_id] = { "price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend, }
+    return jsonify({ "is_ai_running": is_autopilot_running, "pnl_today": calculate_todays_pnl(trades_copy), "pnl_this_week": calculate_this_weeks_pnl(trades_copy), "pnl_last_week": calculate_last_weeks_pnl(trades_copy), "market_data": market_data_view, "trades": trades_copy, "settings": settings_copy, "global_ai_analysis": global_ai_analysis })
 
 @app.route('/toggle-ai', methods=['POST'])
 def toggle_ai():
@@ -829,17 +658,14 @@ def toggle_ai():
 def trade_manual():
     data = request.form; pair = data.get('pair'); trade_type = data.get('type')
     if not pair or not trade_type: return jsonify(success=False, error="Data tidak lengkap"), 400
-    pair_state = market_state.get(pair, {}); candle_data = pair_state.get("candle_data")
-    current_price = candle_data[-1].get('close') if candle_data else None
+    pair_state = market_state.get(pair, {}); candle_data = pair_state.get("candle_data"); current_price = candle_data[-1].get('close') if candle_data else None
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
     entry_snapshot = {}
     if candle_data and len(candle_data) >= 100 + 15:
         with state_lock: relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
         ai_analyzer = LocalAI(current_settings, relevant_trades_history)
         analysis_result = ai_analyzer.get_market_analysis(candle_data)
-        if analysis_result:
-            analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
-            entry_snapshot = analysis_result
+        if analysis_result: analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0); entry_snapshot = analysis_result
     with state_lock:
         if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
         new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot }
@@ -850,41 +676,22 @@ def trade_manual():
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
     trade_id = int(request.form.get('trade_id'))
-    trade_to_close = None
     with state_lock: trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
     if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
-    pair = trade_to_close['instrumentId']
-    current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
+    pair = trade_to_close['instrumentId']; current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
     if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
-    close_trade_sync(trade_to_close, current_price, "Manual Close")
-    return jsonify(success=True)
+    close_trade_sync(trade_to_close, current_price, "Manual Close"); return jsonify(success=True)
 
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
     global current_settings
     with state_lock:
-        # Handle checkbox separately
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
-
-        # Iterate over all submitted form data
         for key, value in request.form.items():
-            if key == 'use_trailing_tp':
-                continue # Already handled
-
-            # Check if the key exists in current settings to avoid adding new keys
+            if key == 'use_trailing_tp': continue
             if key in current_settings:
-                # Try to convert to float/int if the original is a number
-                if isinstance(current_settings[key], (int, float)):
-                    try:
-                        if '.' in value:
-                            current_settings[key] = float(value)
-                        else:
-                            current_settings[key] = int(value)
-                    except (ValueError, TypeError):
-                        print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
-                else:
-                    # Otherwise, just update the string value
-                    current_settings[key] = value
+                try: current_settings[key] = type(current_settings[key])(value)
+                except (ValueError, TypeError): print_colored(f"Nilai tidak valid untuk {key}: {value}", Fore.RED)
         save_settings()
     print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
     return jsonify(success=True)
@@ -901,10 +708,43 @@ def add_watchlist():
 def remove_watchlist():
     pair = request.form.get('pair')
     with state_lock:
-        if pair in current_settings['watched_pairs']:
-            del current_settings['watched_pairs'][pair]; save_settings()
-            print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
+        if pair in current_settings['watched_pairs']: del current_settings['watched_pairs'][pair]; save_settings()
+        print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
+
+# ## BARU: Route untuk menangani penambahan data trade dari JSON
+@app.route('/api/add_trade_json', methods=['POST'])
+def add_trade_json():
+    json_text = request.form.get('json_data')
+    if not json_text:
+        return jsonify(success=False, error="Input JSON tidak boleh kosong."), 400
+
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        return jsonify(success=False, error="Format JSON tidak valid."), 400
+
+    # Menangani kasus jika user paste satu objek atau array objek
+    if isinstance(data, dict):
+        new_trades_list = [data]
+    elif isinstance(data, list):
+        new_trades_list = data
+    else:
+        return jsonify(success=False, error="JSON harus berupa objek tunggal atau sebuah array dari objek."), 400
+
+    with state_lock:
+        # Menambahkan trade baru ke awal list (agar muncul di atas)
+        for trade_obj in reversed(new_trades_list): # Dibalik agar urutan saat paste array tetap sama
+             # Validasi minimal, pastikan ada 'id' dan 'instrumentId'
+            if 'id' in trade_obj and 'instrumentId' in trade_obj:
+                trades.insert(0, trade_obj)
+            else:
+                print_colored(f"Peringatan: Melewatkan objek trade karena tidak memiliki 'id' atau 'instrumentId': {trade_obj}", Fore.YELLOW)
+
+    save_trades() # Memanggil fungsi untuk menyimpan dan mengurutkan ulang
+    print_colored(f"{len(new_trades_list)} trade baru berhasil ditambahkan dari input JSON.", Fore.BLUE, Style.BRIGHT)
+    return jsonify(success=True)
+
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
