@@ -216,8 +216,7 @@ def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
         return None
     except (requests.exceptions.RequestException, Exception):
         return None
-# --- (Sisa fungsi kalkulasi, AI, worker threads tidak perlu diubah, jadi saya singkat di sini untuk kejelasan) ---
-# --- ... (Fungsi calculate_pnl, calculate_todays_pnl, LocalAI, dll. tetap sama) ...
+
 def calculate_pnl(entry_price, current_price, trade_type):
     if entry_price == 0: return 0.0
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
@@ -366,10 +365,8 @@ class LocalAI:
              dashboard_data['loss_match'] = {"id": best_loss_match.get('id'), "score": loss_score, "details": best_loss_match.get('entry_snapshot', {}).get('details')}
         return dashboard_data
 
-# --- LOGIKA PENUTUPAN TRADE ---
 def close_trade_sync(trade, exit_price, reason):
     with state_lock:
-        # Jika trade ini adalah trade real, coba tutup di bursa dulu
         if trade.get('is_real'):
             success, error = close_real_order(
                 trade['instrumentId'], 
@@ -378,12 +375,10 @@ def close_trade_sync(trade, exit_price, reason):
                 current_settings
             )
             if not success:
-                # Jika gagal menutup posisi real, jangan update status lokal
                 print_colored(f"KRITIS: Gagal menutup posisi real untuk trade ID {trade['id']}. Error: {error}. Tidak mengubah status trade lokal.", Fore.RED, Style.BRIGHT)
                 send_termux_notification("‼️ GAGAL TUTUP POSISI REAL ‼️", f"ID: {trade['id']}, Pair: {trade['instrumentId']}, Error: {error}")
-                return # Hentikan proses jika gagal menutup di bursa
+                return
         
-        # Lanjutkan dengan logika penutupan lokal
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
@@ -395,9 +390,13 @@ def close_trade_sync(trade, exit_price, reason):
             timeframe_str = current_settings.get("watched_pairs", {}).get(instrument_id, "5m")
             tf_map_ms = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000}
             candle_duration_ms = tf_map_ms.get(timeframe_str, 300000)
+            
             cooldown_duration_ms = cooldown_candles * candle_duration_ms
+            
             last_candle_ms = market_state[instrument_id].get("candle_data", [{}])[-1].get("time", int(exit_dt.timestamp() * 1000))
+            
             market_state[instrument_id]['cooldown_until_timestamp'] = last_candle_ms + cooldown_duration_ms
+            
             end_time_str = datetime.utcfromtimestamp((last_candle_ms + cooldown_duration_ms) / 1000).strftime('%H:%M:%S')
             print_colored(f"[{instrument_id}] Cooldown diaktifkan untuk {cooldown_candles} lilin. Tidak ada trade baru sampai setelah {end_time_str} UTC.", Fore.YELLOW)
 
@@ -408,17 +407,18 @@ def close_trade_sync(trade, exit_price, reason):
     notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
     send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
 
-# --- WORKER THREADS (LOGIKA DIUBAH DI SINI) ---
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
     
     pair_state = market_state.get(instrument_id)
-    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: return
+    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: 
+        return
 
     current_candle_time = pair_state["candle_data"][-1]['time']
     cooldown_end_time = pair_state.get('cooldown_until_timestamp', 0)
-    if current_candle_time < cooldown_end_time: return
+    if current_candle_time < cooldown_end_time:
+        return
 
     is_ai_thinking = True
     try:
@@ -434,38 +434,34 @@ async def run_autopilot_analysis(instrument_id):
             trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
             quantity = 0
             
-            # --- LOGIKA REAL TRADING ---
             if is_real:
                 risk_usdt = float(current_settings.get('risk_usdt_per_trade', 5.0))
                 sl_pct = float(current_settings.get('stop_loss_pct', 0.25))
                 if risk_usdt <= 0 or sl_pct <= 0:
                     print_colored(f"REAL TRADE DIBATALKAN: Risk per Trade atau Stop Loss harus > 0.", Fore.RED)
-                    return
+                    is_ai_thinking = False; return
                 
-                # Kalkulasi quantity
                 sl_size_in_usdt = entry_price * (sl_pct / 100)
                 if sl_size_in_usdt == 0:
                     print_colored(f"REAL TRADE DIBATALKAN: Kalkulasi SL menghasilkan nol.", Fore.RED)
-                    return
+                    is_ai_thinking = False; return
                 quantity = risk_usdt / sl_size_in_usdt
                 
-                # Coba tempatkan order real
                 bingx_symbol = instrument_id.replace('-', '')
                 order_id, error = place_real_order(bingx_symbol, trade_type, quantity, entry_price, current_settings)
 
-                if error: # Jika order gagal, batalkan semuanya
+                if error:
                     send_termux_notification(f"‼️ GAGAL BUKA POSISI REAL ‼️", f"{instrument_id} {trade_type}: {error}")
-                    return # Hentikan eksekusi lebih lanjut
+                    is_ai_thinking = False; return
             
-            # --- LOGIKA PEMBUATAN TRADE LOKAL (DEMO & REAL) ---
             snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
             new_trade = { 
                 "id": int(time.time()), "instrumentId": instrument_id, "type": trade_type,
                 "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": entry_price, 
                 "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot,
                 "exitPrice": None, "pl_percent": None, 
-                "is_real": is_real, # Tandai jika ini trade real
-                "quantity": quantity # Simpan quantity yang digunakan
+                "is_real": is_real,
+                "quantity": quantity
             }
             with state_lock: trades.insert(0, new_trade)
             save_trades()
@@ -477,8 +473,6 @@ async def run_autopilot_analysis(instrument_id):
 
     finally: is_ai_thinking = False
 
-# --- (Sisa worker threads: autopilot_worker, check_realtime_position_management, dll. tetap sama) ---
-# ...
 def autopilot_worker():
     while not stop_event.is_set():
         if is_autopilot_running:
@@ -549,13 +543,16 @@ def data_refresh_worker():
 
 def backtest_worker():
     with backtest_lock:
-        if backtest_state["is_running"]: return
+        if backtest_state["is_running"]:
+            return
         load_trades()
-        with state_lock: trades_copy = list(trades)
+        with state_lock:
+            trades_copy = list(trades)
         if not trades_copy:
             backtest_state.update({"is_running": False, "message": "Error: No trades in history to start backtest from."})
             return
         backtest_state.update({"is_running": True, "message": "Initializing backtest...", "progress": 0})
+
     try:
         trades_copy.sort(key=lambda x: x['entryTimestamp'])
         oldest_trade = trades_copy[0]
@@ -564,39 +561,51 @@ def backtest_worker():
         start_dt = datetime.fromisoformat(oldest_trade['entryTimestamp'].replace('Z', ''))
         end_timestamp_ms = int(start_dt.timestamp() * 1000)
         max_trades = current_settings.get("max_trades_in_history", 80)
+        
         with backtest_lock:
             backtest_state["max_trades"] = max_trades
             backtest_state["total_trades"] = len(trades_copy)
+
         print_colored(f"--- Starting Backtest for {instrument_id} from {start_dt.strftime('%Y-%m-%d %H:%M')} ---", Fore.CYAN)
+        
         backtest_open_pos = None
         newly_found_trades = []
+
         while True:
-            with state_lock: current_total_trades = len(trades)
+            with state_lock:
+                current_total_trades = len(trades)
             if current_total_trades >= max_trades:
                 with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: Max trade history reached."})
                 print_colored("Backtest complete: Max trade history reached.", Fore.GREEN)
                 break
+            
             candle_batch = fetch_recent_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
             if not candle_batch or len(candle_batch) <= 1:
                 with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: No more historical data."})
                 print_colored("Backtest complete: No more historical data available.", Fore.YELLOW)
                 break
+
             next_end_timestamp_ms = candle_batch[0]['time']
+            
             for i in range(100 + 15, len(candle_batch)):
                 if len(trades) + len(newly_found_trades) >= max_trades: break
+
                 current_simulation_time_ms = candle_batch[i]['time']
                 candle_window = candle_batch[i - (100 + 15) : i + 1]
                 current_candle = candle_window[-1]
+
                 if backtest_open_pos:
                     entry_price = backtest_open_pos['entryPrice']
                     trade_type = backtest_open_pos['type']
                     exit_price, exit_reason = None, ""
+                    
                     sl_pct = current_settings.get('stop_loss_pct', 0)
                     if sl_pct > 0:
                         if trade_type == 'LONG' and current_candle['low'] <= entry_price * (1 - sl_pct / 100):
                             exit_price, exit_reason = entry_price * (1 - sl_pct / 100), f"Backtest SL @ {-sl_pct:.2f}%"
                         elif trade_type == 'SHORT' and current_candle['high'] >= entry_price * (1 + sl_pct / 100):
                             exit_price, exit_reason = entry_price * (1 + sl_pct / 100), f"Backtest SL @ {-sl_pct:.2f}%"
+                    
                     if not exit_price and not current_settings.get('use_trailing_tp', True):
                         static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
                         if static_tp_pct > 0:
@@ -604,6 +613,7 @@ def backtest_worker():
                                 exit_price, exit_reason = entry_price * (1 + static_tp_pct/100), f"Backtest Static TP @ {static_tp_pct:.2f}%"
                             elif trade_type == 'SHORT' and current_candle['low'] <= entry_price * (1 - static_tp_pct/100):
                                 exit_price, exit_reason = entry_price * (1 - static_tp_pct/100), f"Backtest Static TP @ {static_tp_pct:.2f}%"
+
                     if exit_price:
                         pnl_gross = calculate_pnl(backtest_open_pos['entryPrice'], exit_price, backtest_open_pos['type'])
                         exit_dt = datetime.utcfromtimestamp(current_simulation_time_ms / 1000)
@@ -611,34 +621,42 @@ def backtest_worker():
                         print_colored(f"Backtest Close: {exit_reason} at {exit_dt.strftime('%Y-%m-%d %H:%M')}, PnL: {pnl_gross:.2f}%", Fore.MAGENTA)
                         newly_found_trades.append(backtest_open_pos)
                         backtest_open_pos = None
+
                 if not backtest_open_pos:
                     with state_lock: current_trade_history = [t for t in trades if t['instrumentId'] == instrument_id] + newly_found_trades
                     ai = LocalAI(current_settings, current_trade_history)
                     decision = ai.get_decision(candle_window, None, 0.0)
+
                     if decision.get('action') in ["BUY", "SELL"]:
                         entry_price = current_candle['close']
                         entry_dt = datetime.utcfromtimestamp(current_simulation_time_ms / 1000)
                         new_trade = {"id": int(entry_dt.timestamp()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": entry_dt.isoformat() + 'Z', "entryPrice": entry_price, "entryReason": f"Backtest: {decision.get('reason')}", "status": 'OPEN', "entry_snapshot": decision.get("snapshot", {}), "exitPrice": None, "pl_percent": None}
                         backtest_open_pos = new_trade
                         print_colored(f"Backtest Open: {new_trade['type']} @ {entry_price:.4f} on {entry_dt.strftime('%Y-%m-%d %H:%M')}", Fore.GREEN)
+
             end_timestamp_ms = next_end_timestamp_ms
             with backtest_lock:
                 backtest_state["total_trades"] = len(trades) + len(newly_found_trades)
                 backtest_state["message"] = f"Backtesting... currently at {datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d')}"
+            
             if newly_found_trades:
                 with state_lock: trades.extend(newly_found_trades)
-                save_trades(); newly_found_trades = []
+                save_trades()
+                newly_found_trades = []
             time.sleep(1)
+            
     except Exception as e:
-        print_colored(f"An error occurred during backtest: {e}", Fore.RED); traceback.print_exc()
+        print_colored(f"An error occurred during backtest: {e}", Fore.RED)
+        traceback.print_exc()
         with backtest_lock: backtest_state.update({"is_running": False, "message": f"Error: {e}"})
     finally:
         if newly_found_trades:
-            with state_lock: trades.extend(newly_found_trades); save_trades()
+            with state_lock: trades.extend(newly_found_trades)
+            save_trades()
         with backtest_lock:
-            if backtest_state["is_running"]: backtest_state.update({"is_running": False, "message": "Backtest stopped."})
+            if backtest_state["is_running"]:
+                backtest_state.update({"is_running": False, "message": "Backtest stopped."})
 
-# --- KODE HTML DIUBAH DI SINI ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -742,7 +760,6 @@ HTML_SKELETON_TRADINGVIEW = """
         progress::-webkit-progress-value { background-color: var(--accent-primary); border-radius: 4px; transition: width 0.3s ease;}
         progress::-moz-progress-bar { background-color: var(--accent-primary); border-radius: 4px; transition: width 0.3s ease;}
         .api-warning { background-color: #442020; border: 1px solid var(--red); padding: 1rem; border-radius: 8px; margin-top: 1rem; }
-        .api-warning strong { color: var(--red); }
 
         @media (max-width: 768px) {
             h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
@@ -791,13 +808,11 @@ HTML_SKELETON_TRADINGVIEW = """
         <ul id="history-list" class="history-list"></ul>
     </div>
 
-    <!-- SETTINGS MODAL DIUBAH -->
     <div id="settings-modal" class="settings-modal">
         <div class="settings-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
                 
-                <!-- BAGIAN BARU: API & REAL TRADING -->
                 <h3>Real Trading & API (GUNAKAN DENGAN RISIKO ANDA SENDIRI)</h3>
                 <div class="form-grid">
                     <div class="form-group"><label>BingX API Key</label><input type="text" name="bingx_api_key" id="s-bingx_api_key"></div>
@@ -845,7 +860,6 @@ HTML_SKELETON_TRADINGVIEW = """
         </div>
     </div>
     
-    <!-- SCRIPT JAVASCRIPT DIUBAH -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT_BASE = '/api/data';
@@ -931,7 +945,10 @@ HTML_SKELETON_TRADINGVIEW = """
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-                new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_bingx" });
+                
+                // KODE DIPERBAIKI: Menggunakan format simbol .P untuk BingX Perpetual
+                new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bingx" });
+
                 document.getElementById('bingx-chart-title').childNodes[0].nodeValue = `${pair} BingX Perp Chart `;
             };
             const updateUI = data => {
@@ -939,11 +956,9 @@ HTML_SKELETON_TRADINGVIEW = """
                     currentChartPair = Object.keys(data.settings.watched_pairs)[0]; 
                     createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); 
                 }
-                // Update AI status button
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; 
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
                 
-                // Update Trade Mode button
                 const tradeModeBtn = document.getElementById('trade-mode-btn');
                 tradeModeBtn.className = `action-btn trade-mode-${data.settings.is_real_trading ? 'real' : 'demo'}`;
                 tradeModeBtn.textContent = data.settings.is_real_trading ? '🔴 REAL' : '🟢 DEMO';
@@ -1039,7 +1054,6 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
             
-            // Event listener untuk tombol baru
             document.getElementById('trade-mode-btn').addEventListener('click', () => {
                 const isCurrentlyReal = lastData.settings.is_real_trading;
                 const message = isCurrentlyReal
@@ -1119,7 +1133,6 @@ def get_api_data():
         "backtest_state": backtest_state_copy
     })
 
-# --- ENDPOINT BARU ---
 @app.route('/toggle-trade-mode', methods=['POST'])
 def toggle_trade_mode():
     global current_settings
@@ -1190,7 +1203,6 @@ def update_settings():
         for key, value in request.form.items():
             if key == 'use_trailing_tp': continue
             if key in current_settings or key.startswith("bingx_") or key in ["leverage", "risk_usdt_per_trade"]:
-                # Logic to handle different types
                 target_type = type(current_settings.get(key, ""))
                 if target_type == float:
                     try: current_settings[key] = float(value)
@@ -1198,7 +1210,7 @@ def update_settings():
                 elif target_type == int:
                     try: current_settings[key] = int(value)
                     except (ValueError, TypeError): pass
-                else: # string or other
+                else:
                     current_settings[key] = value
 
         save_settings()
@@ -1222,7 +1234,6 @@ def remove_watchlist():
             print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
     load_settings(); load_trades(); display_welcome_message()
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True)
