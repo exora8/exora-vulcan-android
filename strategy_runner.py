@@ -25,7 +25,7 @@ except ImportError:
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
-BYBIT_API_URL = "https://api.bybit.com/v5/market"
+BINGX_API_URL = "https://open-api.bingx.com/openApi/swap/v2/quote" # DIUBAH: URL API dari Bybit ke BingX
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -105,30 +105,41 @@ def save_trades():
 
 # --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
 def fetch_funding_rate(instId):
-    bybit_symbol = instId.replace('-', '')
+    # DIUBAH: Logika untuk fetch funding rate dari BingX
+    bingx_symbol = instId
     try:
-        url = f"{BYBIT_API_URL}/tickers?category=linear&symbol={bybit_symbol}"
-        response = requests.get(url, timeout=10); response.raise_for_status(); data = response.json()
-        if data.get("retCode") == 0 and 'list' in data.get('result', {}) and data['result']['list']:
-            return float(data['result']['list'][0].get('fundingRate', '0')) * 100
+        url = f"{BINGX_API_URL}/premiumIndex?symbol={bingx_symbol}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") == 0 and 'data' in data and data['data']:
+            return float(data['data'][0].get('fundingRate', '0')) * 100
         return None
-    except (requests.exceptions.RequestException, ValueError, KeyError): return None
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return None
+
 def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
-    timeframe_map_str = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
-    bybit_interval = timeframe_map_str.get(timeframe, '5')
-    bybit_symbol = instId.replace('-', '')
+    # DIUBAH: Logika untuk fetch candle dari BingX
+    timeframe_map_str = {'1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1H': '1h', '2H': '2h', '4H': '4h', '1D': '1d', '1W': '1w'}
+    bingx_interval = timeframe_map_str.get(timeframe, '5m')
+    bingx_symbol = instId
     try:
-        url = f"{BYBIT_API_URL}/kline?category=linear&symbol={bybit_symbol}&interval={bybit_interval}&limit={limit}"
+        url = f"{BINGX_API_URL}/klines?symbol={bingx_symbol}&interval={bingx_interval}&limit={limit}"
         if end_time_ms:
-            url += f"&end={end_time_ms}"
-        response = requests.get(url, timeout=15); response.raise_for_status(); data = response.json()
-        if data.get("retCode") == 0 and 'list' in data.get('result', {}):
-            candle_list = data['result']['list']
+            url += f"&endTime={end_time_ms}"
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") == 0 and 'data' in data:
+            candle_list = data['data']
             if not candle_list:
                 return None
-            return [{"time": int(d[0]), "open": float(d[1]), "high": float(d[2]), "low": float(d[3]), "close": float(d[4]), "volume": float(d[5])} for d in candle_list][::-1]
+            # BingX mengembalikan format list of objects, dan sudah urut dari lama ke baru
+            return [{"time": int(d["time"]), "open": float(d["open"]), "high": float(d["high"]), "low": float(d["low"]), "close": float(d["close"]), "volume": float(d["volume"])} for d in candle_list]
         return None
-    except (requests.exceptions.RequestException, Exception): return None
+    except (requests.exceptions.RequestException, Exception):
+        return None
+
 def calculate_pnl(entry_price, current_price, trade_type):
     if entry_price == 0: return 0.0
     if trade_type == 'LONG': return ((current_price - entry_price) / entry_price) * 100
@@ -519,6 +530,7 @@ def backtest_worker():
             if backtest_state["is_running"]:
                 backtest_state.update({"is_running": False, "message": "Backtest stopped."})
 
+# DIUBAH: Skeleton HTML untuk mengganti Bybit dengan BingX
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -645,13 +657,13 @@ HTML_SKELETON_TRADINGVIEW = """
             </div>
         </section>
         <section id="pnl-stats" class="pnl-stats"></section>
-        <div class="chart-wrapper" id="bybit-chart-wrapper">
-            <h2 id="bybit-chart-title">Bybit Perp Chart 
-                <button class="fullscreen-btn" data-target="#bybit-chart-wrapper" aria-label="Toggle Fullscreen">
+        <div class="chart-wrapper" id="bingx-chart-wrapper">
+            <h2 id="bingx-chart-title">BingX Perp Chart 
+                <button class="fullscreen-btn" data-target="#bingx-chart-wrapper" aria-label="Toggle Fullscreen">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
                 </button>
             </h2>
-            <div id="tradingview_chart_bybit" class="tradingview-widget-container"></div>
+            <div id="tradingview_chart_bingx" class="tradingview-widget-container"></div>
         </div>
         <div class="chart-wrapper" id="binance-chart-wrapper">
              <h2 id="binance-chart-title">Binance Perp Chart
@@ -790,14 +802,14 @@ HTML_SKELETON_TRADINGVIEW = """
                 container.innerHTML = html;
             };
             const createChartWidgets = (pair, timeframe) => {
-                document.getElementById('tradingview_chart_bybit').innerHTML = ''; 
+                document.getElementById('tradingview_chart_bingx').innerHTML = ''; 
                 document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-                new TradingView.widget({ ...commonSettings, "symbol": `BYBIT:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bybit" });
+                new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_bingx" });
                 new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
-                document.getElementById('bybit-chart-title').childNodes[0].nodeValue = `${pair} Bybit Perp Chart `;
+                document.getElementById('bingx-chart-title').childNodes[0].nodeValue = `${pair} BingX Perp Chart `;
                 document.getElementById('binance-chart-title').childNodes[0].nodeValue = `${pair} Binance Perp Chart `;
             };
             const updateUI = data => {
@@ -856,7 +868,7 @@ HTML_SKELETON_TRADINGVIEW = """
             };
             const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
             const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
-            const UIElementsToHide = ['.header', '#backtest-status-wrapper', '#pnl-stats', '#bybit-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+            const UIElementsToHide = ['.header', '#backtest-status-wrapper', '#pnl-stats', '#bingx-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
             document.querySelectorAll('.fullscreen-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     e.preventDefault();
