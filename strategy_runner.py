@@ -339,6 +339,18 @@ class LocalAI:
         elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
 
         if potential_trade_type:
+            # --- START: KODE BARU UNTUK MEMASTIKAN CANDLE MENYENTUH EMA 9 ---
+            current_candle = candle_data[-1]
+            ema9_current = analysis['ema9_current']
+            candle_touched_ema9 = (current_candle['low'] <= ema9_current <= current_candle['high'])
+
+            if not candle_touched_ema9:
+                return {
+                    "action": "HOLD", 
+                    "reason": f"Sinyal batal. Candle tidak menyentuh EMA 9 (H: {current_candle['high']:.4f}, L: {current_candle['low']:.4f}, EMA9: {ema9_current:.4f})."
+                }
+            # --- END: KODE BARU ---
+
             best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
             if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 12):
                 return {"action": "HOLD", "reason": f"Peringatan: Mirip loss ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"}
