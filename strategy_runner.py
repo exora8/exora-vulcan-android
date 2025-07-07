@@ -71,7 +71,11 @@ def load_settings():
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BRETT-USDT": "5m"},
         "max_trades_in_history": 800, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
         "similarity_threshold_win": 12, "similarity_threshold_loss": 12,
-        "cooldown_candles_after_trade": 3
+        "cooldown_candles_after_trade": 3,
+        # PENGATURAN BARU UNTUK REAL/DEMO ACCOUNT
+        "is_real_account": False, # Defaultnya mode Demo
+        "real_leverage": 10,
+        "risk_usdt_per_trade": 5
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -337,9 +341,32 @@ async def run_autopilot_analysis(instrument_id):
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
             new_trade = { "id": int(time.time()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": pair_state["candle_data"][-1]['close'], "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot, "exitPrice": None, "pl_percent": None }
+            
+            # --- LOGIKA REAL TRADING AKAN DI SINI ---
+            if current_settings.get("is_real_account", False):
+                leverage = current_settings.get("real_leverage", 10)
+                risk_amount_usdt = current_settings.get("risk_usdt_per_trade", 5)
+                stop_loss_pct = current_settings.get("stop_loss_pct", 0)
+
+                print_colored(f"[REAL MODE] Sinyal Diterima: {new_trade['type']} untuk {instrument_id}", Fore.YELLOW, Style.BRIGHT)
+                print_colored(f"  > Leverage: {leverage}x, Risk: ${risk_amount_usdt} USDT, SL: {stop_loss_pct}%", Fore.YELLOW)
+                
+                # PENTING: Anda perlu menambahkan kode eksekusi API BingX yang sesungguhnya di sini.
+                # 1. Hitung ukuran posisi (quantity) berdasarkan risk_amount dan stop_loss_pct.
+                #    Contoh kalkulasi: quantity = (risk_amount_usdt / (entry_price * (stop_loss_pct / 100)))
+                # 2. Panggil API BingX untuk membuat order (misal: bingx_client.place_order(...))
+                #    Anda perlu handle response dan error dari API.
+                # 3. Jika order berhasil, Anda bisa menambahkan ID order dari BingX ke dictionary `new_trade`.
+                #
+                # Untuk saat ini, bot hanya akan MENCATAT trade, bukan mengeksekusi secara nyata.
+                notif_title = f"🔔 [REAL] Sinyal Trade: {instrument_id}"
+                notif_content = f"Buka posisi {new_trade['type']} @ {new_trade['entryPrice']:.4f}"
+            else: # Mode Demo
+                notif_title = f"🟢 [DEMO] Posisi {new_trade['type']} Dibuka: {instrument_id}"
+                notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | {decision.get('reason')}"
+
             with state_lock: trades.insert(0, new_trade)
             save_trades()
-            notif_title = f"🟢 Posisi {new_trade['type']} Dibuka: {instrument_id}"; notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | {decision.get('reason')}"
             send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.GREEN)
     finally: is_ai_thinking = False
 
@@ -527,7 +554,7 @@ def backtest_worker():
             if backtest_state["is_running"]:
                 backtest_state.update({"is_running": False, "message": "Backtest stopped."})
 
-# DIUBAH: Skeleton HTML untuk menggunakan simbol BingX yang benar dan membersihkan referensi lama.
+# --- PERUBAHAN HTML: Tombol baru, input settings baru, dan JS untuk menghandle-nya ---
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -641,6 +668,7 @@ HTML_SKELETON_TRADINGVIEW = """
             <h1>Vulcan AI</h1>
             <div class="header-actions">
                 <button id="ai-status-btn" class="action-btn ai-status"></button>
+                <button id="account-mode-btn" class="action-btn"></button>
                 <button id="backtest-btn" class="action-btn">Backtest</button>
                 <button id="settings-btn" class="action-btn">Settings</button>
             </div>
@@ -683,6 +711,19 @@ HTML_SKELETON_TRADINGVIEW = """
                     <div class="form-group"><label>TP Activation / Static TP (%)</label><input type="number" step="any" name="trailing_tp_activation_pct" id="s-trailing_tp_activation_pct"></div>
                     <div class="form-group"><label>TP Gap (for Trailing)</label><input type="number" step="any" name="trailing_tp_gap_pct" id="s-trailing_tp_gap_pct"></div>
                     <div class="form-group"><label>Max Funding Rate (%)</label><input type="number" step="any" name="max_allowed_funding_rate_pct" id="s-max_allowed_funding_rate_pct"></div>
+                </div>
+                <!-- PENGATURAN BARU DI SINI -->
+                <h3>Real Account Trading</h3>
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: -0.5rem; margin-bottom: 1rem;">Parameter ini akan digunakan saat mode "Real Account" aktif. Fungsi trading nyata belum diimplementasikan di kode ini.</p>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Leverage (e.g., 10x)</label>
+                        <input type="number" step="1" name="real_leverage" id="s-real_leverage">
+                    </div>
+                    <div class="form-group">
+                        <label>Risk per Trade (USDT)</label>
+                        <input type="number" step="any" name="risk_usdt_per_trade" id="s-risk_usdt_per_trade">
+                    </div>
                 </div>
                 <h3>AI & Security Parameters</h3>
                 <div class="form-grid">
@@ -795,10 +836,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-                
-                // KODE DIPERBAIKI: Menggunakan format simbol .P untuk BingX Perpetual
                 new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bingx" });
-
                 document.getElementById('bingx-chart-title').childNodes[0].nodeValue = `${pair} BingX Perp Chart `;
             };
             const updateUI = data => {
@@ -807,6 +845,19 @@ HTML_SKELETON_TRADINGVIEW = """
                     createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); 
                 }
                 document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
+                
+                // JS UNTUK TOMBOL BARU
+                const accountModeBtn = document.getElementById('account-mode-btn');
+                if (data.settings.is_real_account) {
+                    accountModeBtn.textContent = 'Mode: REAL';
+                    accountModeBtn.style.color = 'var(--red)';
+                    accountModeBtn.style.borderColor = 'var(--red)';
+                } else {
+                    accountModeBtn.textContent = 'Mode: DEMO';
+                    accountModeBtn.style.color = 'var(--green)';
+                    accountModeBtn.style.borderColor = 'var(--green)';
+                }
+
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
                 const watchlistEl = document.getElementById('watchlist'); 
                 watchlistEl.innerHTML = '';
@@ -893,6 +944,10 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
             document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
+            
+            // EVENT LISTENER UNTUK TOMBOL BARU
+            document.getElementById('account-mode-btn').addEventListener('click', () => postRequest('/toggle-account-mode', {}));
+
             document.getElementById('backtest-btn').addEventListener('click', () => {
                 if (confirm('This will start a backtest from your oldest trade, adding new trades to your history. This process cannot be stopped once started. Continue?')) {
                     postRequest('/start-backtest', {});
@@ -969,6 +1024,18 @@ def toggle_ai():
     print_colored(f"Autopilot {'diaktifkan' if is_autopilot_running else 'dimatikan'} dari Web UI.", Fore.YELLOW)
     return jsonify(success=True)
 
+# --- ENDPOINT BARU UNTUK TOGGLE MODE AKUN ---
+@app.route('/toggle-account-mode', methods=['POST'])
+def toggle_account_mode():
+    global current_settings
+    with state_lock:
+        current_settings['is_real_account'] = not current_settings.get('is_real_account', False)
+        save_settings()
+    mode = "REAL" if current_settings['is_real_account'] else "DEMO"
+    color = Fore.RED if current_settings['is_real_account'] else Fore.GREEN
+    print_colored(f"Mode akun diubah ke: {mode}", color, Style.BRIGHT)
+    return jsonify(success=True, mode=mode)
+
 @app.route('/start-backtest', methods=['POST'])
 def start_backtest():
     with backtest_lock:
@@ -1019,6 +1086,7 @@ def update_settings():
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
         for key, value in request.form.items():
             if key == 'use_trailing_tp': continue
+            # Pengecekan field baru ditambahkan secara otomatis oleh loop ini
             if key in current_settings:
                 if isinstance(current_settings[key], (int, float)):
                     try:
