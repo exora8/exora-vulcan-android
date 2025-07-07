@@ -25,7 +25,7 @@ except ImportError:
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
-BINGX_API_URL = "https://open-api.bingx.com/openApi/swap/v2/quote" # DIUBAH: URL API dari Bybit ke BingX
+BINGX_API_URL = "https://open-api.bingx.com/openApi/swap/v2/quote"
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -105,7 +105,6 @@ def save_trades():
 
 # --- FUNGSI API, KALKULASI, AI, THREAD WORKERS ---
 def fetch_funding_rate(instId):
-    # DIUBAH: Logika untuk fetch funding rate dari BingX
     bingx_symbol = instId
     try:
         url = f"{BINGX_API_URL}/premiumIndex?symbol={bingx_symbol}"
@@ -119,7 +118,6 @@ def fetch_funding_rate(instId):
         return None
 
 def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
-    # DIUBAH: Logika untuk fetch candle dari BingX
     timeframe_map_str = {'1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1H': '1h', '2H': '2h', '4H': '4h', '1D': '1d', '1W': '1w'}
     bingx_interval = timeframe_map_str.get(timeframe, '5m')
     bingx_symbol = instId
@@ -134,7 +132,6 @@ def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
             candle_list = data['data']
             if not candle_list:
                 return None
-            # BingX mengembalikan format list of objects, dan sudah urut dari lama ke baru
             return [{"time": int(d["time"]), "open": float(d["open"]), "high": float(d["high"]), "low": float(d["low"]), "close": float(d["close"]), "volume": float(d["volume"])} for d in candle_list]
         return None
     except (requests.exceptions.RequestException, Exception):
@@ -530,7 +527,7 @@ def backtest_worker():
             if backtest_state["is_running"]:
                 backtest_state.update({"is_running": False, "message": "Backtest stopped."})
 
-# DIUBAH: Skeleton HTML untuk mengganti Bybit dengan BingX
+# DIUBAH: Skeleton HTML untuk menggunakan simbol BingX yang benar dan membersihkan referensi lama.
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -665,14 +662,6 @@ HTML_SKELETON_TRADINGVIEW = """
             </h2>
             <div id="tradingview_chart_bingx" class="tradingview-widget-container"></div>
         </div>
-        <div class="chart-wrapper" id="binance-chart-wrapper">
-             <h2 id="binance-chart-title">Binance Perp Chart
-                <button class="fullscreen-btn" data-target="#binance-chart-wrapper" aria-label="Toggle Fullscreen">
-                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
-                </button>
-            </h2>
-            <div id="tradingview_chart_binance" class="tradingview-widget-container"></div>
-        </div>
         <section id="ai-global-analysis-wrapper">
             <h2>AI Pattern Analysis</h2>
             <div id="ai-global-analysis-content"></div>
@@ -803,14 +792,14 @@ HTML_SKELETON_TRADINGVIEW = """
             };
             const createChartWidgets = (pair, timeframe) => {
                 document.getElementById('tradingview_chart_bingx').innerHTML = ''; 
-                document.getElementById('tradingview_chart_binance').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-                new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_bingx" });
-                new TradingView.widget({ ...commonSettings, "symbol": `BINANCE:${pair.replace('-', '')}PERP`, "container_id": "tradingview_chart_binance" });
+                
+                // KODE DIPERBAIKI: Menggunakan format simbol .P untuk BingX Perpetual
+                new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bingx" });
+
                 document.getElementById('bingx-chart-title').childNodes[0].nodeValue = `${pair} BingX Perp Chart `;
-                document.getElementById('binance-chart-title').childNodes[0].nodeValue = `${pair} Binance Perp Chart `;
             };
             const updateUI = data => {
                 if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { 
@@ -868,7 +857,7 @@ HTML_SKELETON_TRADINGVIEW = """
             };
             const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
             const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
-            const UIElementsToHide = ['.header', '#backtest-status-wrapper', '#pnl-stats', '#bingx-chart-wrapper', '#binance-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
+            const UIElementsToHide = ['.header', '#backtest-status-wrapper', '#pnl-stats', '#bingx-chart-wrapper', '#ai-global-analysis-wrapper', '#watchlist-title', '#watchlist', '#history-title', '#history-list'];
             document.querySelectorAll('.fullscreen-btn').forEach(button => {
                 button.addEventListener('click', (e) => {
                     e.preventDefault();
