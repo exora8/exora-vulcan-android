@@ -73,7 +73,7 @@ def load_settings():
     default_settings = {
         "stop_loss_pct": 0.24, "fee_pct": 0.05, "analysis_interval_sec": 5,
         "use_trailing_tp": False, "trailing_tp_activation_pct": 0.55,
-        "trailing_tp_gap_pct": 0.05, "caution_level": 0.40,
+        "trailing_tp_gap_pct": 0.05, "caution_level": 0.55,
         "max_allowed_funding_rate_pct": 0.075, "watched_pairs": {"BRETT-USDT": "5m"},
         "max_trades_in_history": 800, "refresh_interval_seconds": 1, "chart_candle_limit": 80,
         "similarity_threshold_win": 12, "similarity_threshold_loss": 12,
