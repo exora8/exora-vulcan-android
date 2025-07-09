@@ -27,7 +27,12 @@ except ImportError:
 # --- KONFIGURASI GLOBAL ---
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
-BINGX_API_URL = "https://open-api.bingx.com" # Base URL
+BINGX_API_URL = "https://open-api.bingx.com" # Base URL BingX
+
+# --- PERUBAHAN DIMULAI ---
+# Menambahkan Base URL untuk Bybit
+BYBIT_API_URL = "https://api.bybit.com" 
+# --- PERUBAHAN SELESAI ---
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -199,7 +204,10 @@ def fetch_funding_rate(instId):
     except (requests.exceptions.RequestException, ValueError, KeyError):
         return None
 
-def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
+# --- PERUBAHAN DIMULAI ---
+# Mengubah nama fungsi menjadi lebih spesifik
+def fetch_bingx_candles(instId, timeframe, limit=300, end_time_ms=None):
+# --- PERUBAHAN SELESAI ---
     timeframe_map_str = {'1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1H': '1h', '2H': '2h', '4H': '4h', '1D': '1d', '1W': '1w'}
     bingx_interval = timeframe_map_str.get(timeframe, '5m')
     bingx_symbol = instId
@@ -212,10 +220,66 @@ def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
         if data.get("code") == 0 and 'data' in data:
             candle_list = data['data']
             if not candle_list: return None
+            # Pastikan data diurutkan dari yang paling lama ke yang paling baru
+            candle_list.sort(key=lambda x: int(x['time']))
             return [{"time": int(d["time"]), "open": float(d["open"]), "high": float(d["high"]), "low": float(d["low"]), "close": float(d["close"]), "volume": float(d["volume"])} for d in candle_list]
         return None
     except (requests.exceptions.RequestException, Exception):
         return None
+
+# --- PERUBAHAN DIMULAI ---
+# Fungsi baru untuk mengambil data historis dari Bybit
+def fetch_bybit_candles(instId, timeframe, limit=1000, end_time_ms=None):
+    """Mengambil data candle historis dari Bybit."""
+    # Mapping timeframe dari format umum ke format Bybit
+    timeframe_map_bybit = {'1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'}
+    bybit_interval = timeframe_map_bybit.get(timeframe)
+    if not bybit_interval:
+        print_colored(f"Timeframe {timeframe} tidak didukung oleh Bybit.", Fore.RED)
+        return None
+
+    bybit_symbol = instId.replace('-', '') # Bybit menggunakan format BTCUSDT, bukan BTC-USDT
+
+    try:
+        url = f"{BYBIT_API_URL}/v5/market/kline?category=linear&symbol={bybit_symbol}&interval={bybit_interval}&limit={limit}"
+        if end_time_ms:
+            # Bybit's `end` parameter is inclusive, so we might need to subtract a small amount
+            # to not get the same candle we ended on. Let's subtract 1 second (1000 ms).
+            url += f"&end={end_time_ms - 1000}"
+
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("retCode") == 0 and 'result' in data and 'list' in data['result']:
+            candle_list_raw = data['result']['list']
+            if not candle_list_raw:
+                return None
+
+            # Normalisasi format data dari Bybit ke format standar aplikasi
+            # Format Bybit: [timestamp, open, high, low, close, volume, turnover]
+            # Urutkan dari yang paling lama ke yang paling baru (Bybit sudah mengembalikan dalam urutan ini)
+            candle_list_raw.reverse() # Bybit returns newest first, so we reverse it.
+
+            formatted_candles = []
+            for d in candle_list_raw:
+                formatted_candles.append({
+                    "time": int(d[0]),
+                    "open": float(d[1]),
+                    "high": float(d[2]),
+                    "low": float(d[3]),
+                    "close": float(d[4]),
+                    "volume": float(d[5])
+                })
+            return formatted_candles
+        else:
+            print_colored(f"Error dari API Bybit: {data.get('retMsg', 'Unknown Error')}", Fore.YELLOW)
+            return None
+    except (requests.exceptions.RequestException, Exception) as e:
+        print_colored(f"Gagal mengambil data dari Bybit: {e}", Fore.RED)
+        return None
+# --- PERUBAHAN SELESAI ---
+
 
 def calculate_pnl(entry_price, current_price, trade_type):
     if entry_price == 0: return 0.0
@@ -339,7 +403,6 @@ class LocalAI:
         elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
 
         if potential_trade_type:
-            # --- START: KODE BARU UNTUK MEMASTIKAN CANDLE MENYENTUH EMA 9 ---
             current_candle = candle_data[-1]
             ema9_current = analysis['ema9_current']
             candle_touched_ema9 = (current_candle['low'] <= ema9_current <= current_candle['high'])
@@ -349,7 +412,6 @@ class LocalAI:
                     "action": "HOLD", 
                     "reason": f"Sinyal batal. Candle tidak menyentuh EMA 9 (H: {current_candle['high']:.4f}, L: {current_candle['low']:.4f}, EMA9: {ema9_current:.4f})."
                 }
-            # --- END: KODE BARU ---
 
             best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
             if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 12):
@@ -541,7 +603,10 @@ def data_refresh_worker():
         watched_pairs_copy = list(current_settings.get("watched_pairs", {}).items())
         for pair_id, timeframe in watched_pairs_copy:
             if pair_id not in market_state: market_state[pair_id] = {}
-            candle_data = fetch_recent_candles(pair_id, timeframe)
+            # --- PERUBAHAN DIMULAI ---
+            # Menggunakan fungsi yang namanya sudah diubah
+            candle_data = fetch_bingx_candles(pair_id, timeframe)
+            # --- PERUBAHAN SELESAI ---
             funding_rate = fetch_funding_rate(pair_id)
             market_state[pair_id]['funding_rate'] = funding_rate if funding_rate is not None else market_state[pair_id].get('funding_rate', 0.0)
             if candle_data:
@@ -553,6 +618,8 @@ def data_refresh_worker():
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
+# --- PERUBAHAN DIMULAI ---
+# Memodifikasi keseluruhan worker untuk logika BingX -> Bybit
 def backtest_worker():
     with backtest_lock:
         if backtest_state["is_running"]:
@@ -577,28 +644,56 @@ def backtest_worker():
         with backtest_lock:
             backtest_state["max_trades"] = max_trades
             backtest_state["total_trades"] = len(trades_copy)
-
-        print_colored(f"--- Starting Backtest for {instrument_id} from {start_dt.strftime('%Y-%m-%d %H:%M')} ---", Fore.CYAN)
+        
+        # Variabel untuk melacak sumber data saat ini
+        backtest_source = 'bingx'
+        print_colored(f"--- Starting Backtest for {instrument_id} from {start_dt.strftime('%Y-%m-%d %H:%M')} using {backtest_source.upper()} ---", Fore.CYAN)
         
         backtest_open_pos = None
         newly_found_trades = []
 
         while True:
             with state_lock:
-                current_total_trades = len(trades)
+                current_total_trades = len(trades) + len(newly_found_trades)
             if current_total_trades >= max_trades:
                 with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: Max trade history reached."})
                 print_colored("Backtest complete: Max trade history reached.", Fore.GREEN)
                 break
             
-            candle_batch = fetch_recent_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+            candle_batch = None
+            # Logika untuk memilih sumber data
+            if backtest_source == 'bingx':
+                candle_batch = fetch_bingx_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+                if not candle_batch or len(candle_batch) <= 1:
+                    print_colored("Data historis dari BingX selesai. Mencoba melanjutkan dari Bybit...", Fore.YELLOW, Style.BRIGHT)
+                    backtest_source = 'bybit' # Ganti sumber
+                    with backtest_lock:
+                        backtest_state["message"] = f"Switching to Bybit..."
+                    time.sleep(2) # Beri jeda sebelum mencoba sumber baru
+                    continue # Lanjutkan ke iterasi berikutnya untuk mencoba Bybit
+            
+            if backtest_source == 'bybit':
+                candle_batch = fetch_bybit_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+
+            # Kondisi berhenti HANYA jika sumber data terakhir (Bybit) juga sudah habis
             if not candle_batch or len(candle_batch) <= 1:
-                with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: No more historical data."})
-                print_colored("Backtest complete: No more historical data available.", Fore.YELLOW)
+                final_message = f"Backtest complete: No more historical data from {backtest_source.upper()}."
+                with backtest_lock: backtest_state.update({"is_running": False, "message": final_message})
+                print_colored(final_message, Fore.GREEN)
                 break
 
+            # end_timestamp_ms diperbarui dengan data paling LAMA dari batch yang diterima
+            # karena kita akan meminta data SEBELUM timestamp ini di iterasi berikutnya
             next_end_timestamp_ms = candle_batch[0]['time']
-            
+            if next_end_timestamp_ms >= end_timestamp_ms:
+                # Mencegah loop tak terbatas jika API mengembalikan data yang sama
+                final_message = f"Backtest stopped: API {backtest_source.upper()} returned non-progressive data."
+                with backtest_lock: backtest_state.update({"is_running": False, "message": final_message})
+                print_colored(final_message, Fore.RED)
+                break
+            end_timestamp_ms = next_end_timestamp_ms
+
+            # Logika proses backtest tetap sama karena format data sudah dinormalisasi
             for i in range(100 + 15, len(candle_batch)):
                 if len(trades) + len(newly_found_trades) >= max_trades: break
 
@@ -630,7 +725,7 @@ def backtest_worker():
                         pnl_gross = calculate_pnl(backtest_open_pos['entryPrice'], exit_price, backtest_open_pos['type'])
                         exit_dt = datetime.utcfromtimestamp(current_simulation_time_ms / 1000)
                         backtest_open_pos.update({'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross})
-                        print_colored(f"Backtest Close: {exit_reason} at {exit_dt.strftime('%Y-%m-%d %H:%M')}, PnL: {pnl_gross:.2f}%", Fore.MAGENTA)
+                        print_colored(f"Backtest Close ({backtest_source.upper()}): {exit_reason} at {exit_dt.strftime('%Y-%m-%d %H:%M')}, PnL: {pnl_gross:.2f}%", Fore.MAGENTA)
                         newly_found_trades.append(backtest_open_pos)
                         backtest_open_pos = None
 
@@ -644,18 +739,18 @@ def backtest_worker():
                         entry_dt = datetime.utcfromtimestamp(current_simulation_time_ms / 1000)
                         new_trade = {"id": int(entry_dt.timestamp()), "instrumentId": instrument_id, "type": "LONG" if decision['action'] == "BUY" else "SHORT", "entryTimestamp": entry_dt.isoformat() + 'Z', "entryPrice": entry_price, "entryReason": f"Backtest: {decision.get('reason')}", "status": 'OPEN', "entry_snapshot": decision.get("snapshot", {}), "exitPrice": None, "pl_percent": None}
                         backtest_open_pos = new_trade
-                        print_colored(f"Backtest Open: {new_trade['type']} @ {entry_price:.4f} on {entry_dt.strftime('%Y-%m-%d %H:%M')}", Fore.GREEN)
-
-            end_timestamp_ms = next_end_timestamp_ms
+                        print_colored(f"Backtest Open ({backtest_source.upper()}): {new_trade['type']} @ {entry_price:.4f} on {entry_dt.strftime('%Y-%m-%d %H:%M')}", Fore.GREEN)
+            
             with backtest_lock:
                 backtest_state["total_trades"] = len(trades) + len(newly_found_trades)
-                backtest_state["message"] = f"Backtesting... currently at {datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d')}"
+                current_date_str = datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d')
+                backtest_state["message"] = f"Backtesting from {backtest_source.upper()}... at {current_date_str}"
             
             if newly_found_trades:
                 with state_lock: trades.extend(newly_found_trades)
                 save_trades()
                 newly_found_trades = []
-            time.sleep(1)
+            time.sleep(1) # Jeda antar request batch
             
     except Exception as e:
         print_colored(f"An error occurred during backtest: {e}", Fore.RED)
@@ -668,7 +763,10 @@ def backtest_worker():
         with backtest_lock:
             if backtest_state["is_running"]:
                 backtest_state.update({"is_running": False, "message": "Backtest stopped."})
+# --- PERUBAHAN SELESAI ---
 
+# ... Sisa kode (Flask HTML & endpoints) tidak perlu diubah karena logika intinya tidak tersentuh ...
+# ... (Salin sisa kode Anda dari HTML_SKELETON_TRADINGVIEW sampai akhir di sini) ...
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
