@@ -28,6 +28,10 @@ except ImportError:
 SETTINGS_FILE = 'settings.json'
 TRADES_FILE = 'trades.json'
 BINGX_API_URL = "https://open-api.bingx.com" # Base URL
+# ---> START PERUBAHAN <---
+BYBIT_API_URL = "https://api.bybit.com" # URL Bybit untuk backtest
+# ---> END PERUBAHAN <---
+
 
 # --- STATE APLIKASI ---
 current_settings = {}
@@ -125,7 +129,7 @@ def bingx_request(method, path, params, settings):
     params['timestamp'] = int(time.time() * 1000)
     params_str = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
     signature = generate_signature(params_str, secret_key)
-    
+
     headers = {'X-BX-APIKEY': api_key}
     url = f"{BINGX_API_URL}{path}?{params_str}&signature={signature}"
 
@@ -165,10 +169,10 @@ def place_real_order(symbol, trade_type, quantity, price, settings):
     if error:
         print_colored(f"Gagal membuka posisi real {trade_type} {symbol}: {error}", Fore.RED)
         return None, error
-    
+
     print_colored(f"Order REAL berhasil ditempatkan: {data.get('orderId')}", Fore.GREEN)
     return data.get('orderId'), None
-    
+
 def close_real_order(symbol, trade_type, quantity, settings):
     # To close, we place an order in the opposite direction
     close_params = {
@@ -182,7 +186,7 @@ def close_real_order(symbol, trade_type, quantity, settings):
     if error:
         print_colored(f"Gagal menutup posisi real {trade_type} {symbol}: {error}", Fore.RED)
         return False, error
-    
+
     print_colored(f"Posisi REAL {symbol} berhasil ditutup.", Fore.MAGENTA)
     return True, None
 
@@ -216,6 +220,65 @@ def fetch_recent_candles(instId, timeframe, limit=300, end_time_ms=None):
         return None
     except (requests.exceptions.RequestException, Exception):
         return None
+
+# ---> START PERUBAHAN <---
+# FUNGSI BARU UNTUK MENGAMBIL DATA BACKTEST DARI BYBIT
+def fetch_bybit_backtest_candles(instId, timeframe, limit=1000, end_time_ms=None):
+    """Mengambil data candle historis dari Bybit khusus untuk keperluan backtest."""
+    timeframe_map_bybit = {
+        '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30',
+        '1H': '60', '2H': '120', '4H': '240', '1D': 'D', '1W': 'W'
+    }
+    bybit_interval = timeframe_map_bybit.get(timeframe)
+    if not bybit_interval:
+        print_colored(f"Timeframe tidak valid untuk Bybit: {timeframe}", Fore.RED)
+        return None
+
+    bybit_symbol = instId.replace('-', '')
+
+    try:
+        # Bybit v5 Kline endpoint
+        url = f"{BYBIT_API_URL}/v5/market/kline"
+        params = {
+            'category': 'linear',
+            'symbol': bybit_symbol,
+            'interval': bybit_interval,
+            'limit': limit
+        }
+        if end_time_ms:
+            params['end'] = end_time_ms
+
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("retCode") == 0 and 'result' in data and data['result'].get('list'):
+            candle_list = data['result']['list']
+            if not candle_list:
+                return None
+
+            # Bybit format: [timestamp, open, high, low, close, volume, turnover]
+            # Data sudah dalam urutan descending (terbaru dulu), sesuai yg dibutuhkan backtester.
+            formatted_candles = [
+                {
+                    "time": int(d[0]),
+                    "open": float(d[1]),
+                    "high": float(d[2]),
+                    "low": float(d[3]),
+                    "close": float(d[4]),
+                    "volume": float(d[5])
+                }
+                for d in candle_list
+            ]
+            return formatted_candles
+        else:
+            print_colored(f"Bybit API Error for {bybit_symbol}: {data.get('retMsg', 'Unknown error')}", Fore.YELLOW)
+            return None
+
+    except (requests.exceptions.RequestException, Exception) as e:
+        print_colored(f"Error fetching backtest data from Bybit: {e}", Fore.RED)
+        return None
+# ---> END PERUBAHAN <---
 
 def calculate_pnl(entry_price, current_price, trade_type):
     if entry_price == 0: return 0.0
@@ -325,7 +388,7 @@ class LocalAI:
 
         winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) > 0]
         losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and (t.get('pl_percent', 0) - (2 * self.settings.get('fee_pct', 0.1))) < 0]
-        
+
         best_win_match, win_score = self.find_best_match(analysis, winning_trades)
         if best_win_match and win_score >= self.settings.get("similarity_threshold_win", 12):
             best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
@@ -346,7 +409,7 @@ class LocalAI:
 
             if not candle_touched_ema9:
                 return {
-                    "action": "HOLD", 
+                    "action": "HOLD",
                     "reason": f"Sinyal batal. Candle tidak menyentuh EMA 9 (H: {current_candle['high']:.4f}, L: {current_candle['low']:.4f}, EMA9: {ema9_current:.4f})."
                 }
             # --- END: KODE BARU ---
@@ -381,8 +444,8 @@ def close_trade_sync(trade, exit_price, reason):
     with state_lock:
         if trade.get('is_real'):
             success, error = close_real_order(
-                trade['instrumentId'], 
-                trade.get('type'), 
+                trade['instrumentId'],
+                trade.get('type'),
                 trade.get('quantity'),
                 current_settings
             )
@@ -390,25 +453,25 @@ def close_trade_sync(trade, exit_price, reason):
                 print_colored(f"KRITIS: Gagal menutup posisi real untuk trade ID {trade['id']}. Error: {error}. Tidak mengubah status trade lokal.", Fore.RED, Style.BRIGHT)
                 send_termux_notification("‼️ GAGAL TUTUP POSISI REAL ‼️", f"ID: {trade['id']}, Pair: {trade['instrumentId']}, Error: {error}")
                 return
-        
+
         pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
         exit_dt = datetime.utcnow()
         trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
-        
+
         instrument_id = trade['instrumentId']
         cooldown_candles = current_settings.get('cooldown_candles_after_trade', 0)
-        
+
         if cooldown_candles > 0 and instrument_id in market_state:
             timeframe_str = current_settings.get("watched_pairs", {}).get(instrument_id, "5m")
             tf_map_ms = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000}
             candle_duration_ms = tf_map_ms.get(timeframe_str, 300000)
-            
+
             cooldown_duration_ms = cooldown_candles * candle_duration_ms
-            
+
             last_candle_ms = market_state[instrument_id].get("candle_data", [{}])[-1].get("time", int(exit_dt.timestamp() * 1000))
-            
+
             market_state[instrument_id]['cooldown_until_timestamp'] = last_candle_ms + cooldown_duration_ms
-            
+
             end_time_str = datetime.utcfromtimestamp((last_candle_ms + cooldown_duration_ms) / 1000).strftime('%H:%M:%S')
             print_colored(f"[{instrument_id}] Cooldown diaktifkan untuk {cooldown_candles} lilin. Tidak ada trade baru sampai setelah {end_time_str} UTC.", Fore.YELLOW)
 
@@ -422,9 +485,9 @@ def close_trade_sync(trade, exit_price, reason):
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
-    
+
     pair_state = market_state.get(instrument_id)
-    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: 
+    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15:
         return
 
     current_candle_time = pair_state["candle_data"][-1]['time']
@@ -439,45 +502,45 @@ async def run_autopilot_analysis(instrument_id):
         ai = LocalAI(current_settings, relevant_trades_history)
         funding_rate = pair_state.get("funding_rate", 0.0)
         decision = ai.get_decision(pair_state["candle_data"], open_pos, funding_rate)
-        
+
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             is_real = current_settings.get("is_real_trading", False)
             entry_price = pair_state["candle_data"][-1]['close']
             trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
             quantity = 0
-            
+
             if is_real:
                 risk_usdt = float(current_settings.get('risk_usdt_per_trade', 5.0))
                 sl_pct = float(current_settings.get('stop_loss_pct', 0.25))
                 if risk_usdt <= 0 or sl_pct <= 0:
                     print_colored(f"REAL TRADE DIBATALKAN: Risk per Trade atau Stop Loss harus > 0.", Fore.RED)
                     is_ai_thinking = False; return
-                
+
                 sl_size_in_usdt = entry_price * (sl_pct / 100)
                 if sl_size_in_usdt == 0:
                     print_colored(f"REAL TRADE DIBATALKAN: Kalkulasi SL menghasilkan nol.", Fore.RED)
                     is_ai_thinking = False; return
                 quantity = risk_usdt / sl_size_in_usdt
-                
+
                 bingx_symbol = instrument_id.replace('-', '')
                 order_id, error = place_real_order(bingx_symbol, trade_type, quantity, entry_price, current_settings)
 
                 if error:
                     send_termux_notification(f"‼️ GAGAL BUKA POSISI REAL ‼️", f"{instrument_id} {trade_type}: {error}")
                     is_ai_thinking = False; return
-            
+
             snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
-            new_trade = { 
+            new_trade = {
                 "id": int(time.time()), "instrumentId": instrument_id, "type": trade_type,
-                "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": entry_price, 
+                "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": entry_price,
                 "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot,
-                "exitPrice": None, "pl_percent": None, 
+                "exitPrice": None, "pl_percent": None,
                 "is_real": is_real,
                 "quantity": quantity
             }
             with state_lock: trades.insert(0, new_trade)
             save_trades()
-            
+
             mode = "REAL" if is_real else "DEMO"
             notif_title = f"🟢 Posisi {mode} {trade_type} Dibuka: {instrument_id}"
             notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | Qty: {quantity:.4f} | {decision.get('reason')}"
@@ -573,13 +636,13 @@ def backtest_worker():
         start_dt = datetime.fromisoformat(oldest_trade['entryTimestamp'].replace('Z', ''))
         end_timestamp_ms = int(start_dt.timestamp() * 1000)
         max_trades = current_settings.get("max_trades_in_history", 80)
-        
+
         with backtest_lock:
             backtest_state["max_trades"] = max_trades
             backtest_state["total_trades"] = len(trades_copy)
 
         print_colored(f"--- Starting Backtest for {instrument_id} from {start_dt.strftime('%Y-%m-%d %H:%M')} ---", Fore.CYAN)
-        
+
         backtest_open_pos = None
         newly_found_trades = []
 
@@ -590,27 +653,30 @@ def backtest_worker():
                 with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: Max trade history reached."})
                 print_colored("Backtest complete: Max trade history reached.", Fore.GREEN)
                 break
-            
-            # --- START PERBAIKAN: MEKANISME RETRY ---
+
+            # ---> START PERUBAHAN <---
             candle_batch = None
             max_retries = 5
             for attempt in range(max_retries):
-                candle_batch = fetch_recent_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+                # Diubah dari fetch_recent_candles (BingX) ke fetch_bybit_backtest_candles (Bybit)
+                print_colored(f"Fetching backtest data from Bybit for {instrument_id} before {datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d %H:%M')}...", Fore.CYAN, end='\r')
+                candle_batch = fetch_bybit_backtest_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
                 if candle_batch and len(candle_batch) > 1:
-                    # Berhasil mendapatkan data, keluar dari loop retry
+                    print() # Newline setelah pesan fetching berhasil
                     break
-                print_colored(f"Gagal mengambil data backtest, mencoba lagi dalam 5 detik... (Percobaan {attempt + 1}/{max_retries})", Fore.YELLOW)
-                time.sleep(5) # Tunggu 5 detik sebelum mencoba lagi
+                print_colored(f"\nGagal mengambil data backtest dari Bybit, mencoba lagi dalam 5 detik... (Percobaan {attempt + 1}/{max_retries})", Fore.YELLOW)
+                time.sleep(5)
 
-            # Cek setelah semua percobaan retry selesai
             if not candle_batch or len(candle_batch) <= 1:
-                with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: No more historical data."})
-                print_colored("Backtest complete: No more historical data available after retries.", Fore.YELLOW)
+                with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: No more historical data from Bybit."})
+                print_colored("\nBacktest complete: No more historical data available from Bybit after retries.", Fore.YELLOW)
                 break
-            # --- END PERBAIKAN ---
 
-            next_end_timestamp_ms = candle_batch[0]['time']
-            
+            # Perbaikan Bug: Ambil timestamp dari candle PALING TUA untuk request selanjutnya
+            # API mengembalikan data dengan yang terbaru di awal, jadi yang paling tua ada di akhir list.
+            next_end_timestamp_ms = candle_batch[-1]['time']
+            # ---> END PERUBAHAN <---
+
             # Balik urutan batch agar dari yang paling lama ke yang paling baru
             candle_batch.reverse()
 
@@ -625,14 +691,14 @@ def backtest_worker():
                     entry_price = backtest_open_pos['entryPrice']
                     trade_type = backtest_open_pos['type']
                     exit_price, exit_reason = None, ""
-                    
+
                     sl_pct = current_settings.get('stop_loss_pct', 0)
                     if sl_pct > 0:
                         if trade_type == 'LONG' and current_candle['low'] <= entry_price * (1 - sl_pct / 100):
                             exit_price, exit_reason = entry_price * (1 - sl_pct / 100), f"Backtest SL @ {-sl_pct:.2f}%"
                         elif trade_type == 'SHORT' and current_candle['high'] >= entry_price * (1 + sl_pct / 100):
                             exit_price, exit_reason = entry_price * (1 + sl_pct / 100), f"Backtest SL @ {-sl_pct:.2f}%"
-                    
+
                     if not exit_price and not current_settings.get('use_trailing_tp', True):
                         static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
                         if static_tp_pct > 0:
@@ -665,15 +731,15 @@ def backtest_worker():
             with backtest_lock:
                 backtest_state["total_trades"] = len(trades) + len(newly_found_trades)
                 backtest_state["message"] = f"Backtesting... currently at {datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d')}"
-            
+
             if newly_found_trades:
                 with state_lock: trades.extend(newly_found_trades)
                 save_trades()
                 newly_found_trades = []
-            
+
             # Beri jeda sedikit agar tidak membebani API
-            time.sleep(0.5) 
-            
+            time.sleep(0.5)
+
     except Exception as e:
         print_colored(f"An error occurred during backtest: {e}", Fore.RED)
         traceback.print_exc()
@@ -686,7 +752,7 @@ def backtest_worker():
             if backtest_state["is_running"]:
                 backtest_state.update({"is_running": False, "message": "Backtest stopped."})
 
-# ... sisa script dari HTML_SKELETON_TRADINGVIEW sampai akhir tidak perlu diubah ...
+# ... sisa script dari HTML_SKELETON_TRADINGVIEW sampai akhir tidak diubah ...
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
@@ -821,7 +887,7 @@ HTML_SKELETON_TRADINGVIEW = """
         </section>
         <section id="pnl-stats" class="pnl-stats"></section>
         <div class="chart-wrapper" id="bingx-chart-wrapper">
-            <h2 id="bingx-chart-title">BingX Perp Chart 
+            <h2 id="bingx-chart-title">BingX Perp Chart
                 <button class="fullscreen-btn" data-target="#bingx-chart-wrapper" aria-label="Toggle Fullscreen">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
                 </button>
@@ -842,7 +908,7 @@ HTML_SKELETON_TRADINGVIEW = """
         <div class="settings-content">
             <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
             <form id="settings-form">
-                
+
                 <h3>Real Trading & API (GUNAKAN DENGAN RISIKO ANDA SENDIRI)</h3>
                 <div class="form-grid">
                     <div class="form-group"><label>BingX API Key</label><input type="text" name="bingx_api_key" id="s-bingx_api_key"></div>
@@ -889,7 +955,7 @@ HTML_SKELETON_TRADINGVIEW = """
             </form>
         </div>
     </div>
-    
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_ENDPOINT_BASE = '/api/data';
@@ -952,7 +1018,7 @@ HTML_SKELETON_TRADINGVIEW = """
                 let bestMatch = null;
                 let isWin = false;
                 if (winMatch && lossMatch) {
-                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; } 
+                    if (winMatch.score >= lossMatch.score) { bestMatch = winMatch; isWin = true; }
                     else { bestMatch = lossMatch; isWin = false; }
                 } else if (winMatch) {
                     bestMatch = winMatch; isWin = true;
@@ -971,37 +1037,37 @@ HTML_SKELETON_TRADINGVIEW = """
                 container.innerHTML = html;
             };
             const createChartWidgets = (pair, timeframe) => {
-                document.getElementById('tradingview_chart_bingx').innerHTML = ''; 
+                document.getElementById('tradingview_chart_bingx').innerHTML = '';
                 const tfMap = { "1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1H":"60", "2H":"120", "4H":"240", "1D":"D", "1W":"W"};
                 const interval = tfMap[timeframe] || "60";
                 const commonSettings = { "autosize": true, "interval": interval, "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "withdateranges": true, "hide_side_toolbar": false, "allow_symbol_change": true, "disabled_features": ["header_widget"], "studies": [{ "id": "MAExp@tv-basicstudies", "inputs": { "length": 9 } }], "overrides": { "study.Moving Average Exponential.plot.color": "#60A5FA" } };
-                
+
                 // KODE DIPERBAIKI: Menggunakan format simbol .P untuk BingX Perpetual
                 new TradingView.widget({ ...commonSettings, "symbol": `BINGX:${pair.replace('-', '')}.P`, "container_id": "tradingview_chart_bingx" });
 
                 document.getElementById('bingx-chart-title').childNodes[0].nodeValue = `${pair} BingX Perp Chart `;
             };
             const updateUI = data => {
-                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) { 
-                    currentChartPair = Object.keys(data.settings.watched_pairs)[0]; 
-                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]); 
+                if (!currentChartPair && Object.keys(data.settings.watched_pairs).length > 0) {
+                    currentChartPair = Object.keys(data.settings.watched_pairs)[0];
+                    createChartWidgets(currentChartPair, data.settings.watched_pairs[currentChartPair]);
                 }
-                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`; 
+                document.getElementById('ai-status-btn').className = `action-btn ai-status ${data.is_ai_running ? 'running' : 'stopped'}`;
                 document.getElementById('ai-status-btn').textContent = `AI ${data.is_ai_running ? 'Running' : 'Paused'}`;
-                
+
                 const tradeModeBtn = document.getElementById('trade-mode-btn');
                 tradeModeBtn.className = `action-btn trade-mode-${data.settings.is_real_trading ? 'real' : 'demo'}`;
                 tradeModeBtn.textContent = data.settings.is_real_trading ? '🔴 REAL' : '🟢 DEMO';
-                
+
                 document.getElementById('pnl-stats').innerHTML = `<div class="stat-item"><div class="label">Today's P/L</div><div class="value ${getPnlColorClass(data.pnl_today)}">${formatPercent(data.pnl_today)}</div></div><div class="stat-item"><div class="label">This Week</div><div class="value ${getPnlColorClass(data.pnl_this_week)}">${formatPercent(data.pnl_this_week)}</div></div><div class="stat-item"><div class="label">Last Week</div><div class="value ${getPnlColorClass(data.pnl_last_week)}">${formatPercent(data.pnl_last_week)}</div></div>`;
-                const watchlistEl = document.getElementById('watchlist'); 
+                const watchlistEl = document.getElementById('watchlist');
                 watchlistEl.innerHTML = '';
                 Object.entries(data.market_data).forEach(([p, d]) => {
-                    const card = document.createElement('div'); 
+                    const card = document.createElement('div');
                     const isReal = d.open_position && d.open_position.is_real;
-                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''} ${isReal ? 'is-real' : ''}`; 
+                    card.className = `pair-card ${d.open_position ? 'position-open' : ''} ${p === currentChartPair ? 'active-chart' : ''} ${isReal ? 'is-real' : ''}`;
                     card.dataset.pair = p;
-                    const actionHTML = d.open_position 
+                    const actionHTML = d.open_position
                         ? `<div class="position-info"><div class="position-header">${d.open_position.type} POSITION ${isReal ? '<span class="real-badge">REAL</span>' : ''}</div><div class="position-pnl ${getPnlColorClass(d.pnl)}">${formatPercent(d.pnl)}</div><div style="font-size:0.9rem; color:var(--text-muted); margin-bottom:1rem;">Entry @ ${formatPrice(d.open_position.entryPrice)}</div><form class="trade-form" data-url="/trade/close" data-body='{"trade_id":"${d.open_position.id}"}'><button type="submit" class="btn btn-close">Close</button></form></div>`
                         : `<div class="pair-actions"><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"LONG"}'><button type="submit" class="btn btn-long">Long</button></form><form class="trade-form" data-url="/trade/manual" data-body='{"pair":"${p}","type":"SHORT"}'><button type="submit" class="btn btn-short">Short</button></form></div>`;
                     card.innerHTML = `<div class="pair-header"><span class="pair-name">${p}</span><span class="pair-price">${formatPrice(d.price)}</span></div><div class="pair-info"><span>TF: <strong>${d.timeframe}</strong></span><span>Trend: <strong class="${getTrendColorClass(d.trend)}">${d.trend}</strong></span><span>Funding: <strong class="${d.funding > 0.01 ? 'text-red' : ''}">${formatPercent(d.funding)}</strong></span></div>${actionHTML}`;
@@ -1031,19 +1097,19 @@ HTML_SKELETON_TRADINGVIEW = """
                 Object.entries(data.settings).forEach(([k, v]) => {
                     const i = document.getElementById(`s-${k}`);
                     if(i && document.activeElement !== i) { if (i.type === 'checkbox') { i.checked = v; } else { i.value = v; } }
-                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); } 
+                    if (k === 'watched_pairs') { document.getElementById('watchlist-list').innerHTML = Object.entries(v).map(([p,tf])=>`<li><span>${p} (${tf})</span><button class="btn-remove" data-pair="${p}">×</button></li>`).join(''); }
                 });
             };
-            const fetchData = async () => { 
+            const fetchData = async () => {
                 let url = API_ENDPOINT_BASE;
                 if (currentChartPair) url += `?active_chart=${currentChartPair}`;
-                try { 
-                    const res = await fetch(url); 
-                    if (!res.ok) return; 
-                    const data = await res.json(); 
-                    if(JSON.stringify(data) !== JSON.stringify(lastData)) updateUI(data); 
-                    lastData = data; 
-                } catch(e) { console.error("Update failed:", e); } 
+                try {
+                    const res = await fetch(url);
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if(JSON.stringify(data) !== JSON.stringify(lastData)) updateUI(data);
+                    lastData = data;
+                } catch(e) { console.error("Update failed:", e); }
             };
             const iconExpand = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m4.5 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>';
             const iconCollapse = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9L3.75 3.75M3.75 3.75h4.5m-4.5 0v4.5m11.25 11.25L20.25 20.25M20.25 20.25v-4.5m0 4.5h-4.5M9 15l-5.25 5.25M3.75 20.25v-4.5m0 4.5h4.5m11.25-11.25L15 9m5.25-5.25v4.5m0-4.5h-4.5" /></svg>';
@@ -1067,15 +1133,15 @@ HTML_SKELETON_TRADINGVIEW = """
                     window.dispatchEvent(new Event('resize'));
                 });
             });
-            document.getElementById('watchlist').addEventListener('click', e => { 
-                const card = e.target.closest('.pair-card'); 
-                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) { 
-                    currentChartPair = card.dataset.pair; 
-                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]); 
-                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart')); 
-                    card.classList.add('active-chart'); 
+            document.getElementById('watchlist').addEventListener('click', e => {
+                const card = e.target.closest('.pair-card');
+                if (card && card.dataset.pair && card.dataset.pair !== currentChartPair) {
+                    currentChartPair = card.dataset.pair;
+                    createChartWidgets(currentChartPair, lastData.settings.watched_pairs[currentChartPair]);
+                    document.querySelectorAll('.pair-card').forEach(c => c.classList.remove('active-chart'));
+                    card.classList.add('active-chart');
                     fetchData();
-                } 
+                }
             });
             document.body.addEventListener('submit', e => { if(e.target.matches('.trade-form')) { e.preventDefault(); const f = e.target; postRequest(f.dataset.url, JSON.parse(f.dataset.body.replace(/'/g, '"'))); }});
             document.getElementById('watchlist-list').addEventListener('click', e => { if (e.target.matches('.btn-remove')) postRequest('/api/watchlist/remove', {pair: e.target.dataset.pair}); });
@@ -1083,7 +1149,7 @@ HTML_SKELETON_TRADINGVIEW = """
             document.getElementById('settings-btn').addEventListener('click',()=>modal.classList.add('visible'));
             document.getElementById('close-settings-btn').addEventListener('click',()=>modal.classList.remove('visible'));
             document.getElementById('ai-status-btn').addEventListener('click',()=>postRequest('/toggle-ai',{}));
-            
+
             document.getElementById('trade-mode-btn').addEventListener('click', () => {
                 const isCurrentlyReal = lastData.settings.is_real_trading;
                 const message = isCurrentlyReal
@@ -1101,7 +1167,7 @@ HTML_SKELETON_TRADINGVIEW = """
             });
             document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
             document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
-            fetchData(); 
+            fetchData();
             setInterval(fetchData, REFRESH_INTERVAL_MS);
         });
     </script>
@@ -1145,12 +1211,12 @@ def get_api_data():
                 trend = analysis_result.get('bias', 'N/A').title()
                 if pair_id == active_chart_pair and not open_pos:
                     global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
-        
+
         market_data_view[pair_id] = {
             "price": current_price, "funding": pair_state.get("funding_rate", 0.0),
             "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend,
         }
-        
+
     return jsonify({
         "is_ai_running": is_autopilot_running,
         "pnl_today": calculate_todays_pnl(trades_copy),
