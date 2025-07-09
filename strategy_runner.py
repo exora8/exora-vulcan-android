@@ -591,14 +591,29 @@ def backtest_worker():
                 print_colored("Backtest complete: Max trade history reached.", Fore.GREEN)
                 break
             
-            candle_batch = fetch_recent_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+            # --- START PERBAIKAN: MEKANISME RETRY ---
+            candle_batch = None
+            max_retries = 5
+            for attempt in range(max_retries):
+                candle_batch = fetch_recent_candles(instrument_id, timeframe, limit=1000, end_time_ms=end_timestamp_ms)
+                if candle_batch and len(candle_batch) > 1:
+                    # Berhasil mendapatkan data, keluar dari loop retry
+                    break
+                print_colored(f"Gagal mengambil data backtest, mencoba lagi dalam 5 detik... (Percobaan {attempt + 1}/{max_retries})", Fore.YELLOW)
+                time.sleep(5) # Tunggu 5 detik sebelum mencoba lagi
+
+            # Cek setelah semua percobaan retry selesai
             if not candle_batch or len(candle_batch) <= 1:
                 with backtest_lock: backtest_state.update({"is_running": False, "message": "Backtest complete: No more historical data."})
-                print_colored("Backtest complete: No more historical data available.", Fore.YELLOW)
+                print_colored("Backtest complete: No more historical data available after retries.", Fore.YELLOW)
                 break
+            # --- END PERBAIKAN ---
 
             next_end_timestamp_ms = candle_batch[0]['time']
             
+            # Balik urutan batch agar dari yang paling lama ke yang paling baru
+            candle_batch.reverse()
+
             for i in range(100 + 15, len(candle_batch)):
                 if len(trades) + len(newly_found_trades) >= max_trades: break
 
@@ -655,7 +670,9 @@ def backtest_worker():
                 with state_lock: trades.extend(newly_found_trades)
                 save_trades()
                 newly_found_trades = []
-            time.sleep(1)
+            
+            # Beri jeda sedikit agar tidak membebani API
+            time.sleep(0.5) 
             
     except Exception as e:
         print_colored(f"An error occurred during backtest: {e}", Fore.RED)
@@ -669,6 +686,7 @@ def backtest_worker():
             if backtest_state["is_running"]:
                 backtest_state.update({"is_running": False, "message": "Backtest stopped."})
 
+# ... sisa script dari HTML_SKELETON_TRADINGVIEW sampai akhir tidak perlu diubah ...
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
 <html lang="en">
