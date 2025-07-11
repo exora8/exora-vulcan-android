@@ -521,8 +521,11 @@ async def run_autopilot_analysis(instrument_id):
                     print_colored(f"REAL TRADE DIBATALKAN: Kalkulasi SL menghasilkan nol.", Fore.RED)
                     is_ai_thinking = False; return
                 quantity = risk_usdt / sl_size_in_usdt
-
-                bingx_symbol = instrument_id.replace('-', '')
+                
+                # ================================================================= #
+                # === PERBAIKAN DI SINI: Jangan hapus tanda hubung dari simbol. === #
+                # ================================================================= #
+                bingx_symbol = instrument_id # Ini adalah perbaikan. Sebelumnya: instrument_id.replace('-', '')
                 order_id, error = place_real_order(bingx_symbol, trade_type, quantity, entry_price, current_settings)
 
                 if error:
