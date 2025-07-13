@@ -150,8 +150,10 @@ def bingx_request(method, path, params, settings):
 
 def place_real_order(symbol, trade_type, quantity, price, settings):
     leverage = settings.get("leverage", 10)
+    
+    # === PERBAIKAN: Menggunakan trade_type untuk menentukan sisi leverage, kompatibel dengan Hedge Mode ===
     # Set leverage first
-    leverage_params = {'symbol': symbol, 'side': 'BOTH', 'leverage': leverage}
+    leverage_params = {'symbol': symbol, 'side': trade_type, 'leverage': leverage}
     _, err_leverage = bingx_request('POST', '/openApi/swap/v2/trade/leverage', leverage_params, settings)
     if err_leverage:
         print_colored(f"Gagal mengatur leverage ke {leverage}x untuk {symbol}: {err_leverage}", Fore.RED)
@@ -522,10 +524,7 @@ async def run_autopilot_analysis(instrument_id):
                     is_ai_thinking = False; return
                 quantity = risk_usdt / sl_size_in_usdt
                 
-                # ================================================================= #
-                # === PERBAIKAN DI SINI: Jangan hapus tanda hubung dari simbol. === #
-                # ================================================================= #
-                bingx_symbol = instrument_id # Ini adalah perbaikan. Sebelumnya: instrument_id.replace('-', '')
+                bingx_symbol = instrument_id
                 order_id, error = place_real_order(bingx_symbol, trade_type, quantity, entry_price, current_settings)
 
                 if error:
