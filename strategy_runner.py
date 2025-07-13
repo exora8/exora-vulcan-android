@@ -1259,27 +1259,94 @@ def start_backtest():
     backtest_thread.start()
     return jsonify(success=True, message="Backtest started.")
 
+# ================================================================================= #
+# === PERUBAHAN DI SINI: Endpoint /trade/manual sekarang mendukung mode REAL/DEMO === #
+# ================================================================================= #
 @app.route('/trade/manual', methods=['POST'])
 def trade_manual():
-    data = request.form; pair = data.get('pair'); trade_type = data.get('type')
-    if not pair or not trade_type: return jsonify(success=False, error="Data tidak lengkap"), 400
-    pair_state = market_state.get(pair, {}); candle_data = pair_state.get("candle_data")
+    data = request.form
+    pair = data.get('pair')
+    trade_type = data.get('type')
+    
+    if not pair or not trade_type:
+        return jsonify(success=False, error="Data tidak lengkap"), 400
+
+    pair_state = market_state.get(pair, {})
+    candle_data = pair_state.get("candle_data")
     current_price = candle_data[-1].get('close') if candle_data else None
-    if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
+
+    if not current_price:
+        return jsonify(success=False, error="Harga pasar tidak tersedia"), 400
+
+    # Tentukan apakah ini trade REAL atau DEMO
+    is_real = current_settings.get("is_real_trading", False)
+    quantity = 0.0
+
+    # Jika mode REAL, hitung kuantitas dan tempatkan order
+    if is_real:
+        print_colored(f"Mencoba membuka posisi REAL manual {trade_type} {pair}...", Fore.YELLOW)
+        try:
+            risk_usdt = float(current_settings.get('risk_usdt_per_trade', 5.0))
+            sl_pct = float(current_settings.get('stop_loss_pct', 0.25))
+            if risk_usdt <= 0 or sl_pct <= 0:
+                return jsonify(success=False, error="Risk/SL harus > 0 untuk Real Trade."), 400
+            
+            sl_size_in_usdt = current_price * (sl_pct / 100)
+            if sl_size_in_usdt == 0:
+                 return jsonify(success=False, error="Kalkulasi SL menghasilkan nol (harga/SL terlalu kecil)."), 400
+            quantity = risk_usdt / sl_size_in_usdt
+
+            # Panggil fungsi untuk menempatkan order sungguhan
+            order_id, error = place_real_order(pair, trade_type, quantity, current_price, current_settings)
+            if error:
+                return jsonify(success=False, error=f"Gagal menempatkan order real: {error}"), 500
+
+        except (ValueError, TypeError) as e:
+            return jsonify(success=False, error=f"Pengaturan trading tidak valid: {e}"), 400
+    
+    # Ambil snapshot pasar saat ini
     entry_snapshot = {}
     if candle_data and len(candle_data) >= 100 + 15:
-        with state_lock: relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
+        with state_lock:
+            relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
         ai_analyzer = LocalAI(current_settings, relevant_trades_history)
         analysis_result = ai_analyzer.get_market_analysis(candle_data)
         if analysis_result:
             analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
             entry_snapshot = analysis_result
+
+    # Buat dan simpan catatan trade (baik REAL maupun DEMO)
     with state_lock:
-        if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi sudah ada"), 400
-        new_trade = { "id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot }
+        if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'):
+            return jsonify(success=False, error="Posisi untuk pair ini sudah terbuka."), 400
+        
+        new_trade = {
+            "id": int(time.time()),
+            "instrumentId": pair,
+            "type": trade_type,
+            "entryTimestamp": datetime.utcnow().isoformat() + 'Z',
+            "entryPrice": current_price,
+            "entryReason": "Manual Entry",
+            "status": 'OPEN',
+            "exitPrice": None,
+            "pl_percent": None,
+            "entry_snapshot": entry_snapshot,
+            "is_real": is_real,
+            "quantity": quantity
+        }
         trades.insert(0, new_trade)
-        print_colored(f"Trade Manual {trade_type} {pair} @ {current_price} dibuka.", Fore.BLUE)
-    save_trades(); return jsonify(success=True)
+        
+        mode_str = "REAL" if is_real else "DEMO"
+        notif_title = f"🟢 Posisi {mode_str} {trade_type} Dibuka: {pair}"
+        notif_content = f"Manual Entry @ {current_price:.4f}"
+        if is_real:
+            notif_content += f" | Qty: {quantity:.4f}"
+        
+        send_termux_notification(notif_title, notif_content)
+        print_colored(notif_content, Fore.BLUE, Style.BRIGHT)
+
+    save_trades()
+    return jsonify(success=True)
 
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
