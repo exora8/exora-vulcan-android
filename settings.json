@@ -1,0 +1,30 @@
+{
+    "stop_loss_pct": 1.4,
+    "fee_pct": 0.05,
+    "analysis_interval_sec": 1,
+    "trailing_tp_activation_pct": 1.6,
+    "trailing_tp_gap_pct": 0,
+    "target_winrate_pct": 85.0,
+    "max_allowed_funding_rate_pct": 0.075,
+    "watched_pairs": {
+        "BRETT-USDT": "5m"
+    },
+    "caution_level": 0.55,
+    "backtest_duration_months": 2,
+    "max_trades_in_history": 800,
+    "refresh_interval_seconds": 0.1,
+    "chart_candle_limit": 80,
+    "similarity_threshold_win": 12,
+    "similarity_threshold_loss": 12,
+    "use_trailing_tp": false,
+    "cooldown_candles_after_trade": 3,
+    "is_real_account": false,
+    "real_leverage": 1,
+    "risk_usdt_per_trade": 2,
+    "api_key": "",
+    "secret_key": "",
+    "is_real_trading": true,
+    "bingx_api_key": "VsRYvAmMY0AjEazhEF557eZScGJINf6MzkmTxjxNNMYhymePdf6LLiat7bWRnpUXR9g6WelhADdxo3d4C2Nm2Q",
+    "bingx_api_secret": "eYwE4zTKlcxN8FGlGqnMiVJAjHtfHmm1yfBNtMoA96pG5H3JLG1Vwo4gvW7qeFOm9DzIdA7O5QRObsVJttB22A",
+    "leverage": 20
+}
