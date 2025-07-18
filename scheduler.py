@@ -1,19 +1,19 @@
 import os
 import json
+import base64
 import subprocess
 import logging
 import time
-from threading import Thread
 
-# Coba impor library yang dibutuhkan, berikan pesan jika gagal
+# Coba impor library, berikan pesan jika gagal
 try:
+    import requests
     from flask import Flask, request, render_template_string, redirect, url_for
     from apscheduler.schedulers.background import BackgroundScheduler
-    from github import Github, UnknownObjectException
-except ImportError:
-    print("Error: Library yang dibutuhkan belum terinstal.")
+except ImportError as e:
+    print(f"Error: Library yang dibutuhkan belum terinstal ({e}).")
     print("Jalankan perintah ini di Termux:")
-    print("pip install Flask PyGithub apscheduler")
+    print("pip install requests flask apscheduler")
     exit()
 
 # --- Konfigurasi Dasar ---
@@ -73,45 +73,61 @@ def get_device_info():
         return False
 
 def upload_to_github(file_path, commit_message):
-    """Mengunggah atau memperbarui file ke GitHub."""
+    """Mengunggah atau memperbarui file ke GitHub menggunakan requests."""
     config = load_config()
     token = config.get("github_token")
     repo_name = config.get("github_repo_name")
     owner = config.get("github_owner")
     branch = config.get("github_branch", "main")
 
-    if not all([token, repo_name, owner]):
+    if not all([token, owner, repo_name]):
         logging.warning(f"Upload untuk {file_path} dilewati. Konfigurasi GitHub belum lengkap.")
         return
 
+    api_url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{file_path}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
     try:
-        g = Github(token)
-        repo = g.get_repo(f"{owner}/{repo_name}")
-        
-        with open(file_path, 'r') as f:
-            content = f.read()
+        with open(file_path, 'rb') as f:
+            content_bytes = f.read()
+        content_base64 = base64.b64encode(content_bytes).decode('utf-8')
 
-        try:
-            contents = repo.get_contents(file_path, ref=branch)
-            repo.update_file(
-                path=contents.path,
-                message=commit_message,
-                content=content,
-                sha=contents.sha,
-                branch=branch
-            )
-            logging.info(f"Berhasil memperbarui file '{file_path}' di GitHub.")
-        except UnknownObjectException:
-            repo.create_file(
-                path=file_path,
-                message=commit_message,
-                content=content,
-                branch=branch
-            )
+        # 1. Cek apakah file sudah ada untuk mendapatkan SHA
+        sha = None
+        get_response = requests.get(api_url, headers=headers, params={'ref': branch})
+        if get_response.status_code == 200:
+            sha = get_response.json().get('sha')
+            logging.info(f"File '{file_path}' sudah ada di repo, akan diperbarui.")
+        elif get_response.status_code != 404:
+            logging.error(f"Gagal memeriksa file di GitHub: {get_response.status_code} - {get_response.text}")
+            return
+
+        # 2. Buat payload untuk di-upload
+        payload = {
+            "message": commit_message,
+            "content": content_base64,
+            "branch": branch
+        }
+        if sha:
+            payload["sha"] = sha  # Tambahkan SHA jika ini adalah update
+
+        # 3. Upload file (create atau update)
+        upload_response = requests.put(api_url, headers=headers, data=json.dumps(payload))
+
+        if upload_response.status_code == 201:
             logging.info(f"Berhasil membuat file baru '{file_path}' di GitHub.")
+        elif upload_response.status_code == 200:
+            logging.info(f"Berhasil memperbarui file '{file_path}' di GitHub.")
+        else:
+            logging.error(f"Gagal mengunggah '{file_path}' ke GitHub: {upload_response.status_code} - {upload_response.text}")
 
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Kesalahan jaringan saat menghubungi GitHub API: {e}")
     except Exception as e:
-        logging.error(f"Terjadi kesalahan saat mengunggah {file_path} ke GitHub: {e}")
+        logging.error(f"Terjadi kesalahan tak terduga saat proses upload: {e}")
 
 
 # --- Fungsi untuk Job Terjadwal ---
@@ -130,7 +146,7 @@ def job_upload_device_info():
         upload_to_github(DEVICE_INFO_FILE, "Update: Status perangkat")
 
 # --- Pengelola Jadwal (Scheduler) ---
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
 
 def reschedule_jobs():
     """Mengatur ulang semua jadwal berdasarkan konfigurasi saat ini."""
@@ -161,18 +177,19 @@ app = Flask(__name__)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Termux Uploader Config</title>
+    <title>Konfigurasi Uploader Termux</title>
     <style>
-        body { font-family: sans-serif; margin: 2em; background: #2e3440; color: #d8dee9; }
-        .container { max-width: 600px; margin: auto; background: #3b4252; padding: 20px; border-radius: 8px; }
-        h1, h2 { color: #88c0d0; }
-        label { display: block; margin-top: 10px; color: #eceff4; }
-        input[type="text"], input[type="password"], input[type="number"] { width: 95%; padding: 8px; margin-top: 5px; border-radius: 4px; border: 1px solid #4c566a; background: #434c5e; color: #d8dee9; }
-        .btn { background-color: #5e81ac; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; margin-top: 20px; font-size: 16px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 2em; background: #2e3440; color: #d8dee9; }
+        .container { max-width: 700px; margin: auto; background: #3b4252; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        h1, h2 { color: #88c0d0; border-bottom: 2px solid #4c566a; padding-bottom: 10px; }
+        label { display: block; margin-top: 15px; margin-bottom: 5px; color: #eceff4; font-weight: bold; }
+        input[type="text"], input[type="password"], input[type="number"] { width: calc(100% - 20px); padding: 10px; border-radius: 4px; border: 1px solid #4c566a; background: #434c5e; color: #d8dee9; font-size: 16px; }
+        input::placeholder { color: #a3b2cc; }
+        .btn { display: block; width: 100%; background-color: #5e81ac; color: white; padding: 12px 15px; border: none; border-radius: 4px; cursor: pointer; margin-top: 25px; font-size: 18px; font-weight: bold; }
         .btn:hover { background-color: #81a1c1; }
     </style>
 </head>
@@ -182,7 +199,7 @@ HTML_TEMPLATE = """
         <form method="post">
             <h2>Pengaturan GitHub</h2>
             <label for="github_token">Personal Access Token</label>
-            <input type="password" name="github_token" value="{{ config.get('github_token', '') }}" required>
+            <input type="password" name="github_token" placeholder="Biarkan kosong jika tidak ingin mengubah" >
             
             <label for="github_owner">Username/Organisasi GitHub</label>
             <input type="text" name="github_owner" value="{{ config.get('github_owner', '') }}" required>
@@ -190,10 +207,10 @@ HTML_TEMPLATE = """
             <label for="github_repo_name">Nama Repositori</label>
             <input type="text" name="github_repo_name" value="{{ config.get('github_repo_name', '') }}" required>
             
-            <label for="github_branch">Nama Branch (e.g., main atau master)</label>
+            <label for="github_branch">Nama Branch (contoh: main)</label>
             <input type="text" name="github_branch" value="{{ config.get('github_branch', 'main') }}" required>
 
-            <h2>Pengaturan Interval Upload</h2>
+            <h2>Pengaturan Interval</h2>
             <label for="trades_interval_sec">Interval Upload trades.json (detik)</label>
             <input type="number" name="trades_interval_sec" value="{{ config.get('trades_interval_sec', 3600) }}" required>
             
@@ -211,7 +228,7 @@ HTML_TEMPLATE = """
 def index():
     if request.method == 'POST':
         current_config = load_config()
-        # Ambil token dari form, jika kosong, gunakan token lama yang tersimpan
+        # Ambil token dari form; jika kosong, gunakan token lama yang tersimpan
         new_token = request.form.get('github_token')
         
         new_config = {
@@ -237,18 +254,14 @@ def main():
             json.dump({"message": "File ini dibuat secara otomatis"}, f)
             
     reschedule_jobs()
-    if not scheduler.get_jobs():
-        logging.warning("Tidak ada jadwal yang aktif. Periksa konfigurasi Anda.")
     
     scheduler.start()
     logging.info("Scheduler dimulai.")
     
     logging.info("Server Flask berjalan di http://0.0.0.0:5001")
-    logging.info("Untuk konfigurasi, buka browser di HP/PC yang satu jaringan dan akses alamat IP perangkat ini, contoh: http://192.168.1.5:5001")
+    logging.info("Untuk konfigurasi, buka browser di HP/PC yang satu jaringan dan akses alamat IP perangkat ini.")
+    logging.info("Contoh: http://192.168.1.5:5001 (cek IP Anda dengan perintah 'ifconfig')")
     
-    # Jalankan Flask app dalam thread terpisah agar tidak memblokir
-    # Ini adalah alternatif jika app.run() memblokir fungsi lain.
-    # Namun, untuk kasus ini, BackgroundScheduler sudah berjalan di thread terpisah.
     app.run(host='0.0.0.0', port=5001)
 
 if __name__ == '__main__':
