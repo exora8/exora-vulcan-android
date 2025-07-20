@@ -352,16 +352,43 @@ class LocalAI:
         }
         return analysis
 
+    # =================================================================================
+    # === FUNGSI INI TELAH DIMODIFIKASI SESUAI PERMINTAAN ANDA ===
+    # =================================================================================
     def compare_setups(self, current_analysis, past_snapshot):
         if not past_snapshot or not past_snapshot.get('details'): return 0
         similarity_score = 1
+        
+        # 1. Perbandingan Posisi vs EMA 50 (Tetap ada)
         current_pos_vs_ema50 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema50'] else 'below'
         past_pos_vs_ema50 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema50', 0) else 'below'
         if current_pos_vs_ema50 == past_pos_vs_ema50: similarity_score += 1
+
+        # ---> START PERUBAHAN: PENAMBAHAN LOGIKA EMA 9 <---
+        
+        # 2. BARU: Perbandingan Posisi Harga vs EMA 9
+        # Mengecek apakah harga saat ini berada di atas/bawah EMA 9, sama seperti di masa lalu.
+        current_pos_vs_ema9 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema9_current'] else 'below'
+        past_pos_vs_ema9 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema9_current', 0) else 'below'
+        if current_pos_vs_ema9 == past_pos_vs_ema9: 
+            similarity_score += 1
+            
+        # 3. BARU: Perbandingan Arah/Slope EMA 9
+        # Mengecek apakah EMA 9 sedang bergerak naik (slope up) atau turun (slope down).
+        current_ema9_slope = 'up' if current_analysis['ema9_current'] > current_analysis['ema9_prev'] else 'down'
+        past_ema9_slope = 'up' if past_snapshot.get('ema9_current', 0) > past_snapshot.get('ema9_prev', 0) else 'down'
+        if current_ema9_slope == past_ema9_slope:
+            similarity_score += 1
+
+        # ---> END PERUBAHAN <---
+
+        # 4. Perbandingan Soliditas Candle (Tetap ada)
         if 'pre_entry_candle_solidity' in current_analysis and 'pre_entry_candle_solidity' in past_snapshot:
             avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 15
             past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15)); avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0
             if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
+            
+        # 5. Perbandingan Arah Candle Berurutan (Tetap ada)
         current_dirs = current_analysis.get('pre_entry_candle_direction'); past_dirs = past_snapshot.get('pre_entry_candle_direction')
         if current_dirs and past_dirs:
             match_count = 0
@@ -369,7 +396,11 @@ class LocalAI:
                 if current_dirs[-i] == past_dirs[-i]: match_count += 1
                 else: break
             similarity_score += match_count
+            
         return similarity_score
+    # =================================================================================
+    # === AKHIR DARI FUNGSI YANG DIMODIFIKASI ===
+    # =================================================================================
 
     def find_best_match(self, current_analysis, trade_list):
         best_match = None; highest_score = 0
