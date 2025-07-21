@@ -5,3 +5,5 @@ scheduler.py -> untuk membuat device AIbox meng upload device.json yang berisi i
 
 
 maintance.py -> untuk device yang mau listen langsung ke server untuk menerima alert apakah suhu terlalu panas atau baterai sudah dibawah 50%
+
+backtester.html -> membuat json untuk backtest AI
