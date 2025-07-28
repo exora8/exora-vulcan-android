@@ -42,7 +42,6 @@ is_autopilot_running = True
 stop_event = threading.Event()
 IS_TERMUX = 'TERMUX_VERSION' in os.environ
 state_lock = threading.Lock()
-# --- PERUBAHAN: State diganti dari backtest ke learning ---
 learning_state = {"is_running": False, "progress": 0, "message": "Idle", "total_trades": 0, "max_trades": 0}
 learning_lock = threading.Lock()
 
@@ -110,10 +109,9 @@ def load_trades():
         except (json.JSONDecodeError, IOError): trades = []
     else: trades = []
 def save_trades():
-    global trades
     with state_lock:
         trades.sort(key=lambda x: x['entryTimestamp'], reverse=True)
-        max_trades = current_settings.get("max_trades_in_history", 80)
+        max_trades = current_settings.get("max_trades_in_history", 800)
         if len(trades) > max_trades: trades = trades[:max_trades]
         try:
             with open(TRADES_FILE, 'w') as f: json.dump(trades, f, indent=4)
@@ -152,7 +150,7 @@ def bingx_request(method, path, params, settings):
 
 def place_real_order(symbol, trade_type, quantity, price, settings):
     leverage = settings.get("leverage", 10)
-    leverage_params = {'symbol': symbol, 'side': trade_type, 'leverage': leverage}
+    leverage_params = {'symbol': symbol, 'side': 'LONG' if trade_type == 'LONG' else 'SHORT', 'leverage': leverage} # Side harus LONG/SHORT untuk leverage
     _, err_leverage = bingx_request('POST', '/openApi/swap/v2/trade/leverage', leverage_params, settings)
     if err_leverage:
         print_colored(f"Gagal mengatur leverage ke {leverage}x untuk {symbol}: {err_leverage}", Fore.RED)
@@ -409,54 +407,66 @@ class LocalAI:
         return dashboard_data
 
 def close_trade_sync(trade, exit_price, reason):
-    with state_lock:
-        if trade.get('is_real'):
-            success, error = close_real_order(trade['instrumentId'], trade.get('type'), trade.get('quantity'), current_settings)
-            if not success:
-                print_colored(f"KRITIS: Gagal menutup posisi real untuk trade ID {trade['id']}. Error: {error}. Tidak mengubah status trade lokal.", Fore.RED, Style.BRIGHT)
-                send_termux_notification("‼️ GAGAL TUTUP POSISI REAL ‼️", f"ID: {trade['id']}, Pair: {trade['instrumentId']}, Error: {error}")
-                return
-        pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
-        exit_dt = datetime.utcnow()
-        trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
-        instrument_id = trade['instrumentId']
-        cooldown_candles = current_settings.get('cooldown_candles_after_trade', 0)
-        if cooldown_candles > 0 and instrument_id in market_state:
-            timeframe_str = current_settings.get("watched_pairs", {}).get(instrument_id, "5m")
-            tf_map_ms = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000}
-            candle_duration_ms = tf_map_ms.get(timeframe_str, 300000)
-            cooldown_duration_ms = cooldown_candles * candle_duration_ms
-            last_candle_ms = market_state[instrument_id].get("candle_data", [{}])[-1].get("time", int(exit_dt.timestamp() * 1000))
-            market_state[instrument_id]['cooldown_until_timestamp'] = last_candle_ms + cooldown_duration_ms
-            end_time_str = datetime.utcfromtimestamp((last_candle_ms + cooldown_duration_ms) / 1000).strftime('%H:%M:%S')
-            print_colored(f"[{instrument_id}] Cooldown diaktifkan untuk {cooldown_candles} lilin. Tidak ada trade baru sampai setelah {end_time_str} UTC.", Fore.YELLOW)
-        save_trades()
-        pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
-        mode = "REAL" if trade.get('is_real') else "DEMO"
-        notif_title = f"🔴 Posisi {mode} {trade.get('type')} Ditutup: {trade['instrumentId']}"
-        notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
-        send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
+    # This function is synchronous and expects to be called from a context that has already acquired the state_lock
+    if trade.get('is_real'):
+        success, error = close_real_order(trade['instrumentId'], trade.get('type'), trade.get('quantity'), current_settings)
+        if not success:
+            print_colored(f"KRITIS: Gagal menutup posisi real untuk trade ID {trade['id']}. Error: {error}. Tidak mengubah status trade lokal.", Fore.RED, Style.BRIGHT)
+            send_termux_notification("‼️ GAGAL TUTUP POSISI REAL ‼️", f"ID: {trade['id']}, Pair: {trade['instrumentId']}, Error: {error}")
+            return # Important: do not modify local trade if real one fails to close
+            
+    pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
+    exit_dt = datetime.utcnow()
+    trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
+    
+    instrument_id = trade['instrumentId']
+    cooldown_candles = current_settings.get('cooldown_candles_after_trade', 0)
+    if cooldown_candles > 0 and instrument_id in market_state:
+        timeframe_str = current_settings.get("watched_pairs", {}).get(instrument_id, "5m")
+        tf_map_ms = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000}
+        candle_duration_ms = tf_map_ms.get(timeframe_str, 300000)
+        # Ensure candle_data exists before accessing
+        last_candle_ms = int(exit_dt.timestamp() * 1000)
+        if market_state[instrument_id].get("candle_data"):
+            last_candle_ms = market_state[instrument_id]["candle_data"][-1].get("time", last_candle_ms)
+            
+        market_state[instrument_id]['cooldown_until_timestamp'] = last_candle_ms + (cooldown_candles * candle_duration_ms)
+        end_time_str = datetime.utcfromtimestamp(market_state[instrument_id]['cooldown_until_timestamp'] / 1000).strftime('%H:%M:%S')
+        print_colored(f"[{instrument_id}] Cooldown diaktifkan untuk {cooldown_candles} lilin. Tidak ada trade baru sampai setelah {end_time_str} UTC.", Fore.YELLOW)
+
+    # Note: save_trades() should be called outside this function by the caller that holds the lock.
+    pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
+    mode = "REAL" if trade.get('is_real') else "DEMO"
+    notif_title = f"🔴 Posisi {mode} {trade.get('type')} Ditutup: {trade['instrumentId']}"
+    notif_content = f"PnL (Net): {pnl_net:.2f}% | Exit: {exit_price:.4f} | {reason}"
+    send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.MAGENTA)
 
 async def run_autopilot_analysis(instrument_id):
     global is_ai_thinking
     if is_ai_thinking: return
-    pair_state = market_state.get(instrument_id)
-    if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: return
-    current_candle_time = pair_state["candle_data"][-1]['time']
-    cooldown_end_time = pair_state.get('cooldown_until_timestamp', 0)
-    if current_candle_time < cooldown_end_time: return
+    
+    with state_lock:
+        pair_state = market_state.get(instrument_id)
+        if not pair_state or not pair_state.get("candle_data") or len(pair_state["candle_data"]) < 100 + 15: return
+        current_candle_time = pair_state["candle_data"][-1]['time']
+        cooldown_end_time = pair_state.get('cooldown_until_timestamp', 0)
+        if current_candle_time < cooldown_end_time: return
+        open_pos = next((t for t in trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
+        
     is_ai_thinking = True
     try:
-        with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == instrument_id and t['status'] == 'OPEN'), None)
+        # We already have open_pos, no need to re-check inside the lock
         relevant_trades_history = [t for t in trades if t['instrumentId'] == instrument_id]
         ai = LocalAI(current_settings, relevant_trades_history)
         funding_rate = pair_state.get("funding_rate", 0.0)
         decision = ai.get_decision(pair_state["candle_data"], open_pos, funding_rate)
+        
         if decision.get('action') in ["BUY", "SELL"] and not open_pos:
             is_real = current_settings.get("is_real_trading", False)
             entry_price = pair_state["candle_data"][-1]['close']
             trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
             quantity = 0
+            
             if is_real:
                 risk_usdt = float(current_settings.get('risk_usdt_per_trade', 5.0))
                 sl_pct = float(current_settings.get('stop_loss_pct', 0.25))
@@ -468,20 +478,22 @@ async def run_autopilot_analysis(instrument_id):
                     print_colored(f"REAL TRADE DIBATALKAN: Kalkulasi SL menghasilkan nol.", Fore.RED)
                     is_ai_thinking = False; return
                 quantity = risk_usdt / sl_size_in_usdt
-                bingx_symbol = instrument_id
-                order_id, error = place_real_order(bingx_symbol, trade_type, quantity, entry_price, current_settings)
+                order_id, error = place_real_order(instrument_id, trade_type, quantity, entry_price, current_settings)
                 if error:
                     send_termux_notification(f"‼️ GAGAL BUKA POSISI REAL ‼️", f"{instrument_id} {trade_type}: {error}")
                     is_ai_thinking = False; return
-            snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
-            new_trade = {
-                "id": int(time.time()), "instrumentId": instrument_id, "type": trade_type,
-                "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": entry_price,
-                "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot,
-                "exitPrice": None, "pl_percent": None, "is_real": is_real, "quantity": quantity
-            }
-            with state_lock: trades.insert(0, new_trade)
-            save_trades()
+
+            with state_lock:
+                snapshot = decision.get("snapshot", {}); snapshot["funding_rate"] = funding_rate
+                new_trade = {
+                    "id": int(time.time()), "instrumentId": instrument_id, "type": trade_type,
+                    "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": entry_price,
+                    "entryReason": decision.get("reason"), "status": 'OPEN', "entry_snapshot": snapshot,
+                    "exitPrice": None, "pl_percent": None, "is_real": is_real, "quantity": quantity
+                }
+                trades.insert(0, new_trade)
+                save_trades()
+                
             mode = "REAL" if is_real else "DEMO"
             notif_title = f"🟢 Posisi {mode} {trade_type} Dibuka: {instrument_id}"
             notif_content = f"Entry @ {new_trade['entryPrice']:.4f} | Qty: {quantity:.4f} | {decision.get('reason')}"
@@ -492,78 +504,107 @@ async def run_autopilot_analysis(instrument_id):
 def autopilot_worker():
     while not stop_event.is_set():
         if is_autopilot_running:
-            for pair_id in list(current_settings.get("watched_pairs", {})): asyncio.run(run_autopilot_analysis(pair_id))
+            watched_pairs_copy = list(current_settings.get("watched_pairs", {}).keys())
+            for pair_id in watched_pairs_copy:
+                asyncio.run(run_autopilot_analysis(pair_id))
         time.sleep(current_settings.get("analysis_interval_sec", 10))
 
 async def check_realtime_position_management(trade_obj, current_candle_data):
+    # This function is now just for checking, the closing action will be done in the main thread with a lock
     if not trade_obj or not trade_obj.get('type') or trade_obj.get('status') != 'OPEN': return
+    
     trade_type = trade_obj.get('type'); entry_price = trade_obj['entryPrice']
     candle_low = current_candle_data['low']; candle_high = current_candle_data['high']
+    exit_price, exit_reason = None, None
+    
+    # Check Stop Loss
     sl_pct = current_settings.get('stop_loss_pct', 0)
     if sl_pct > 0:
         if trade_type == 'LONG':
             sl_price = entry_price * (1 - sl_pct / 100)
-            if candle_low <= sl_price:
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
+            if candle_low <= sl_price: exit_price, exit_reason = sl_price, f"Stop Loss @ {-sl_pct:.2f}%"
         elif trade_type == 'SHORT':
             sl_price = entry_price * (1 + sl_pct / 100)
-            if candle_high >= sl_price:
-                close_trade_sync(trade_obj, sl_price, f"Stop Loss @ {-sl_pct:.2f}%"); return
-    if current_settings.get('use_trailing_tp', True):
-        activation_pct = current_settings.get("trailing_tp_activation_pct", 0); gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
-        if activation_pct <= 0 or gap_pct <= 0: return
-        pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type)
-        ts_price = None
-        with state_lock:
-            if pnl_at_best >= activation_pct:
-                current_cp = trade_obj.get('current_tp_checkpoint_level', 0.0)
-                if current_cp == 0.0: current_cp = activation_pct
-                steps_passed = math.floor((pnl_at_best - current_cp) / gap_pct)
-                if steps_passed >= 0:
-                    new_cp = current_cp + (steps_passed * gap_pct); trade_obj['current_tp_checkpoint_level'] = new_cp
-                    new_ts_level = new_cp - gap_pct
-                    if trade_type == 'LONG': trade_obj['trailing_stop_price'] = entry_price * (1 + new_ts_level / 100)
-                    else: trade_obj['trailing_stop_price'] = entry_price * (1 - new_ts_level / 100)
-            ts_price = trade_obj.get('trailing_stop_price')
-        if ts_price is not None:
-            if (trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price):
-                close_trade_sync(trade_obj, ts_price, "Trailing TP")
-    else:
+            if candle_high >= sl_price: exit_price, exit_reason = sl_price, f"Stop Loss @ {-sl_pct:.2f}%"
+
+    # Check Trailing TP if no SL was hit
+    if not exit_price and current_settings.get('use_trailing_tp', True):
+        activation_pct = current_settings.get("trailing_tp_activation_pct", 0)
+        gap_pct = current_settings.get("trailing_tp_gap_pct", 0)
+        if activation_pct > 0 and gap_pct > 0:
+            pnl_at_best = calculate_pnl(entry_price, candle_high if trade_type == 'LONG' else candle_low, trade_type)
+            ts_price = None
+            
+            with state_lock: # Lock needed to modify trade_obj
+                if pnl_at_best >= activation_pct:
+                    current_cp = trade_obj.get('current_tp_checkpoint_level', activation_pct)
+                    steps_passed = math.floor((pnl_at_best - current_cp) / gap_pct)
+                    if steps_passed >= 0:
+                        new_cp = current_cp + (steps_passed * gap_pct)
+                        trade_obj['current_tp_checkpoint_level'] = new_cp
+                        new_ts_level = new_cp - gap_pct
+                        if trade_type == 'LONG': trade_obj['trailing_stop_price'] = entry_price * (1 + new_ts_level / 100)
+                        else: trade_obj['trailing_stop_price'] = entry_price * (1 - new_ts_level / 100)
+                ts_price = trade_obj.get('trailing_stop_price')
+
+            if ts_price is not None:
+                if (trade_type == 'LONG' and candle_low <= ts_price) or (trade_type == 'SHORT' and candle_high >= ts_price):
+                    exit_price, exit_reason = ts_price, "Trailing TP"
+
+    # Check Static TP if no SL or TSL was hit
+    if not exit_price and not current_settings.get('use_trailing_tp', True):
         static_tp_pct = current_settings.get("trailing_tp_activation_pct", 0)
-        if static_tp_pct <= 0: return
-        if trade_type == 'LONG':
-            tp_price = entry_price * (1 + static_tp_pct / 100)
-            if candle_high >= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
-        elif trade_type == 'SHORT':
-            tp_price = entry_price * (1 - static_tp_pct / 100)
-            if candle_low <= tp_price: close_trade_sync(trade_obj, tp_price, f"Static TP @ {static_tp_pct:.2f}%")
+        if static_tp_pct > 0:
+            if trade_type == 'LONG':
+                tp_price = entry_price * (1 + static_tp_pct / 100)
+                if candle_high >= tp_price: exit_price, exit_reason = tp_price, f"Static TP @ {static_tp_pct:.2f}%"
+            elif trade_type == 'SHORT':
+                tp_price = entry_price * (1 - static_tp_pct / 100)
+                if candle_low <= tp_price: exit_price, exit_reason = tp_price, f"Static TP @ {static_tp_pct:.2f}%"
+
+    # If an exit condition was met, close the trade
+    if exit_price is not None and exit_reason:
+        with state_lock:
+            # Re-fetch trade object to ensure it's still open before closing
+            trade_to_close = next((t for t in trades if t['id'] == trade_obj['id'] and t['status'] == 'OPEN'), None)
+            if trade_to_close:
+                close_trade_sync(trade_to_close, exit_price, exit_reason)
+                save_trades()
 
 def data_refresh_worker():
     while not stop_event.is_set():
         start_time = time.time()
         watched_pairs_copy = list(current_settings.get("watched_pairs", {}).items())
+        
         for pair_id, timeframe in watched_pairs_copy:
-            if pair_id not in market_state: market_state[pair_id] = {}
+            with state_lock:
+                if pair_id not in market_state: market_state[pair_id] = {}
+            
             candle_data = fetch_recent_candles(pair_id, timeframe)
             funding_rate = fetch_funding_rate(pair_id)
-            market_state[pair_id]['funding_rate'] = funding_rate if funding_rate is not None else market_state[pair_id].get('funding_rate', 0.0)
-            if candle_data:
-                market_state[pair_id]["candle_data"] = candle_data
-                with state_lock: open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-                if open_pos: asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
-            time.sleep(0.1)
+            
+            with state_lock:
+                if funding_rate is not None:
+                    market_state[pair_id]['funding_rate'] = funding_rate
+                
+                if candle_data:
+                    market_state[pair_id]["candle_data"] = candle_data
+                    open_pos = next((t for t in trades if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+                    if open_pos:
+                        # Run the check in a new coroutine, it will handle its own locking for closing
+                        asyncio.run(check_realtime_position_management(open_pos, candle_data[-1]))
+            time.sleep(0.1) # Small delay between API calls
+
         elapsed_time = time.time() - start_time
         sleep_duration = max(0, current_settings.get("refresh_interval_seconds", 1) - elapsed_time)
         stop_event.wait(sleep_duration)
 
-# --- PERUBAHAN BESAR: FUNGSI BACKTEST DIUBAH MENJADI SELF-LEARN ---
 def self_learn_worker():
     with learning_lock:
         if learning_state["is_running"]: return
-        load_trades() # Muat trade terbaru
+        load_trades()
         with state_lock: trades_copy = list(trades)
         
-        # Logika untuk memulai dari trade tertua atau dari sekarang jika tidak ada trade
         start_dt = datetime.utcnow()
         instrument_id = list(current_settings.get("watched_pairs", {}).keys())[0] if current_settings.get("watched_pairs") else None
         
@@ -574,7 +615,7 @@ def self_learn_worker():
             start_dt = datetime.fromisoformat(oldest_trade['entryTimestamp'].replace('Z', ''))
         
         if not instrument_id:
-            learning_state.update({"is_running": False, "message": "Error: Tidak ada pair di watchlist untuk memulai."})
+            with learning_lock: learning_state.update({"is_running": False, "message": "Error: Tidak ada pair di watchlist untuk memulai."})
             return
             
         learning_state.update({"is_running": True, "message": "Initializing self-learn process...", "progress": 0})
@@ -598,7 +639,6 @@ def self_learn_worker():
                 print_colored("Self-Learn complete: Max trade history reached.", Fore.GREEN)
                 break
 
-            # Fetch data batch
             candle_batch = None
             max_retries = 5
             for attempt in range(max_retries):
@@ -615,13 +655,11 @@ def self_learn_worker():
                 print_colored("\nSelf-Learn complete: No more historical data available.", Fore.YELLOW)
                 break
 
-            # Data dari Bybit diurutkan dari terbaru ke terlama, kita balik agar dari terlama ke terbaru
             candle_batch.reverse()
-            next_end_timestamp_ms = candle_batch[0]['time'] # Waktu terlama untuk batch berikutnya
+            next_end_timestamp_ms = candle_batch[0]['time']
 
-            # --- LOGIKA INTI SELF-LEARN ---
             i = 100 + 15
-            while i < len(candle_batch) - 1: # -1 untuk memastikan ada candle setelahnya
+            while i < len(candle_batch) - 1:
                 if len(trades) + len(newly_found_trades) >= max_trades: break
 
                 candle_window = candle_batch[i - (100 + 15) : i + 1]
@@ -632,7 +670,6 @@ def self_learn_worker():
                 decision = ai.get_decision(candle_window, None, 0.0)
 
                 if decision.get('action') in ["BUY", "SELL"]:
-                    # Ditemukan potensi trade, sekarang kita lihat masa depannya
                     trade_type = "LONG" if decision['action'] == "BUY" else "SHORT"
                     entry_candle = candle_window[-1]
                     entry_price = entry_candle['close']
@@ -650,18 +687,18 @@ def self_learn_worker():
 
                     exit_price, exit_reason, exit_dt = None, None, None
 
-                    # Loop "look-ahead" untuk menentukan hasil trade
                     for j in range(i + 1, len(candle_batch)):
                         future_candle = candle_batch[j]
                         future_dt = datetime.utcfromtimestamp(future_candle['time'] / 1000)
-
-                        hit_sl = (trade_type == 'LONG' and future_candle['low'] <= sl_price) or \
-                                 (trade_type == 'SHORT' and future_candle['high'] >= sl_price)
                         
-                        hit_tp = (trade_type == 'LONG' and future_candle['high'] >= tp_price) or \
-                                 (trade_type == 'SHORT' and future_candle['low'] <= tp_price)
+                        hit_sl = (trade_type == 'LONG' and future_candle['low'] <= sl_price) or (trade_type == 'SHORT' and future_candle['high'] >= sl_price)
+                        hit_tp = (trade_type == 'LONG' and future_candle['high'] >= tp_price) or (trade_type == 'SHORT' and future_candle['low'] <= tp_price)
 
-                        if hit_sl:
+                        if hit_sl and hit_tp:
+                            # If both hit in same candle, assume SL is first
+                            exit_price, exit_reason, exit_dt = sl_price, f"Learned SL @ {-sl_pct:.2f}% (TP Hit Same Candle)", future_dt
+                            break
+                        elif hit_sl:
                             exit_price, exit_reason, exit_dt = sl_price, f"Learned SL @ {-sl_pct:.2f}%", future_dt
                             break
                         elif hit_tp:
@@ -669,59 +706,47 @@ def self_learn_worker():
                             break
                     
                     if exit_price is not None:
-                        # Trade memiliki hasil (win/loss), kita simpan
                         pnl_gross = calculate_pnl(entry_price, exit_price, trade_type)
                         new_trade = {
-                            "id": int(entry_dt.timestamp()), 
-                            "instrumentId": instrument_id, 
-                            "type": trade_type,
-                            "entryTimestamp": entry_dt.isoformat() + 'Z', 
-                            "entryPrice": entry_price, 
-                            "entryReason": f"Self-Learn: {decision.get('reason')}", 
-                            "status": 'CLOSED', 
-                            "entry_snapshot": decision.get("snapshot", {}),
-                            "exitPrice": exit_price,
-                            "exitTimestamp": exit_dt.isoformat() + 'Z',
-                            "pl_percent": pnl_gross
+                            "id": int(entry_dt.timestamp()), "instrumentId": instrument_id, "type": trade_type,
+                            "entryTimestamp": entry_dt.isoformat() + 'Z', "entryPrice": entry_price, 
+                            "entryReason": f"Self-Learn: {decision.get('reason')}", "status": 'CLOSED', 
+                            "entry_snapshot": decision.get("snapshot", {}), "exitPrice": exit_price,
+                            "exitTimestamp": exit_dt.isoformat() + 'Z', "pl_percent": pnl_gross,
+                            "is_real": False, "quantity": 0
                         }
                         newly_found_trades.append(new_trade)
                         color = Fore.GREEN if pnl_gross > 0 else Fore.RED
                         print_colored(f"Self-Learn Found: {trade_type} @ {entry_price:.4f} on {entry_dt.strftime('%Y-%m-%d %H:%M')}. Result: {pnl_gross:.2f}% ({exit_reason})", color)
                         
-                        # Skip beberapa candle untuk menghindari trade yang tumpang tindih
                         i += current_settings.get('cooldown_candles_after_trade', 3)
                     else:
-                        # Tidak ada hasil dalam batch ini, lanjutkan
                         i += 1
                 else:
                     i += 1
             
-            # Pindah ke batch data historis berikutnya yang lebih lama
             end_timestamp_ms = next_end_timestamp_ms
             with learning_lock:
                 learning_state["total_trades"] = len(trades) + len(newly_found_trades)
                 learning_state["message"] = f"Learning... analyzing data around {datetime.utcfromtimestamp(end_timestamp_ms / 1000).strftime('%Y-%m-%d')}"
 
-            # Simpan trade yang ditemukan secara berkala
             if newly_found_trades:
                 with state_lock: trades.extend(newly_found_trades)
                 save_trades()
                 newly_found_trades = []
             
-            time.sleep(0.5) # Jeda kecil agar tidak membebani API
+            time.sleep(0.5)
 
     except Exception as e:
         print_colored(f"An error occurred during self-learn process: {e}", Fore.RED); traceback.print_exc()
         with learning_lock: learning_state.update({"is_running": False, "message": f"Error: {e}"})
     finally:
-        # Pastikan sisa trade yang ditemukan tersimpan
         if newly_found_trades:
             with state_lock: trades.extend(newly_found_trades)
             save_trades()
         with learning_lock:
             if learning_state["is_running"]: 
                 learning_state.update({"is_running": False, "message": "Self-Learn process stopped."})
-
 
 HTML_SKELETON_TRADINGVIEW = """
 <!DOCTYPE html>
@@ -846,13 +871,11 @@ HTML_SKELETON_TRADINGVIEW = """
             <div class="header-actions">
                 <button id="ai-status-btn" class="action-btn ai-status"></button>
                 <button id="trade-mode-btn" class="action-btn"></button>
-                <!-- PERUBAHAN: Tombol diubah dari Backtest ke Self Learn -->
                 <button id="self-learn-btn" class="action-btn">Self Learn</button>
                 <button id="settings-btn" class="action-btn">Settings</button>
             </div>
         </header>
 
-        <!-- PERUBAHAN: Wrapper status diubah dari backtest ke learning -->
         <section id="learning-status-wrapper" class="is-hidden" style="margin-bottom: 2rem; background-color: var(--card-color); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem;">
             <h3 style="margin:0 0 1rem 0; font-size: 1.1rem; color: var(--accent-primary);">AI Self-Learning in Progress</h3>
             <p id="learning-message" style="margin: 0 0 1rem 0; color: var(--text-muted);"></p>
@@ -935,7 +958,7 @@ HTML_SKELETON_TRADINGVIEW = """
         const API_ENDPOINT_BASE = '/api/data';
         let REFRESH_INTERVAL_MS = {{ current_settings.refresh_interval_seconds * 1000 }};
         const formatPercent = v => typeof v === 'number' ? v.toFixed(2) + '%' : 'N/A';
-        const formatPrice = v => typeof v === 'number' ? (v < 1 ? v.toPrecision(4) : v.toFixed(2)) : 'N/A';
+        const formatPrice = v => typeof v === 'number' ? (v < 0.1 ? v.toPrecision(4) : v.toFixed(4)) : 'N/A';
         const getTrendColorClass = v => v === 'Bullish' ? 'text-green' : (v === 'Bearish' ? 'text-red' : 'text-yellow');
         const getPnlColorClass = v => v > 0 ? 'text-green' : 'text-red';
         const postRequest = async (url, data) => { try { await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams(data) }); } catch (e) { console.error(`POST to ${url} failed:`, e); }};
@@ -1012,7 +1035,6 @@ HTML_SKELETON_TRADINGVIEW = """
             });
             updateGlobalAnalysisPanel(data.global_ai_analysis);
             
-            // PERUBAHAN: Mengupdate UI untuk status self-learning
             const state = data.learning_state;
             const wrapper = document.getElementById('learning-status-wrapper');
             const btn = document.getElementById('self-learn-btn');
@@ -1100,9 +1122,8 @@ HTML_SKELETON_TRADINGVIEW = """
             const message = isCurrentlyReal ? "Anda akan beralih ke mode DEMO." : "PERINGATAN! Anda akan beralih ke mode REAL. Bot akan menggunakan API key Anda untuk mengeksekusi order sungguhan di BingX. Lanjutkan?";
             if (confirm(message)) { postRequest('/toggle-trade-mode', {}); }
         });
-        // PERUBAHAN: Event listener untuk tombol self-learn
         document.getElementById('self-learn-btn').addEventListener('click', () => {
-            if (confirm('This will start the AI self-learning process. The AI will analyze historical data to find and save new trading examples. Continue?')) { postRequest('/start-self-learn', {}); }
+            if (confirm('Ini akan memulai proses self-learning AI. AI akan menganalisis data historis untuk menemukan dan menyimpan contoh trading baru. Lanjutkan?')) { postRequest('/start-self-learn', {}); }
         });
         document.getElementById('add-pair-btn').addEventListener('click',()=> { const p=document.getElementById('new-pair-input').value.toUpperCase();const tf=document.getElementById('new-tf-input').value; if(p)postRequest('/api/watchlist/add',{pair:p,tf:tf});});
         document.getElementById('settings-form').addEventListener('submit', e => { e.preventDefault(); postRequest('/api/settings', Object.fromEntries(new FormData(e.target).entries())).then(() => window.location.reload()); });
@@ -1124,7 +1145,6 @@ def get_api_data():
         trades_copy = list(trades)
         market_state_copy = dict(market_state)
         settings_copy = dict(current_settings)
-    # PERUBAHAN: Mengambil state learning, bukan backtest
     with learning_lock:
         learning_state_copy = dict(learning_state)
     
@@ -1137,9 +1157,13 @@ def get_api_data():
         pair_state = market_state_copy.get(pair_id, {})
         full_candle_data = pair_state.get("candle_data", [])
         current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
+        
         open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+        
         pnl = 0.0
-        if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+        if open_pos and current_price > 0:
+            pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+
         trend = "N/A"
         if len(full_candle_data) > 100 + 15:
             relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
@@ -1147,8 +1171,17 @@ def get_api_data():
             analysis_result = ai_instance.get_market_analysis(full_candle_data)
             if analysis_result:
                 trend = analysis_result.get('bias', 'N/A').title()
-                if pair_id == active_chart_pair and not open_pos: global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
-        market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend}
+                if pair_id == active_chart_pair and not open_pos:
+                    global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
+
+        market_data_view[pair_id] = {
+            "price": current_price, 
+            "funding": pair_state.get("funding_rate", 0.0), 
+            "timeframe": timeframe, 
+            "open_position": open_pos, 
+            "pnl": pnl, 
+            "trend": trend
+        }
 
     for trade in trades_copy:
         if trade.get('status') == 'CLOSED':
@@ -1169,13 +1202,11 @@ def get_api_data():
         "trades": trades_copy,
         "settings": settings_copy,
         "global_ai_analysis": global_ai_analysis,
-        # PERUBAHAN: Mengirim state learning ke frontend
         "learning_state": learning_state_copy
     })
 
 @app.route('/toggle-trade-mode', methods=['POST'])
 def toggle_trade_mode():
-    global current_settings
     with state_lock:
         is_real = current_settings.get('is_real_trading', False)
         current_settings['is_real_trading'] = not is_real
@@ -1192,111 +1223,155 @@ def toggle_ai():
     print_colored(f"Autopilot {'diaktifkan' if is_autopilot_running else 'dimatikan'} dari Web UI.", Fore.YELLOW)
     return jsonify(success=True)
 
-# PERUBAHAN: Endpoint diubah dari /start-backtest menjadi /start-self-learn
 @app.route('/start-self-learn', methods=['POST'])
 def start_self_learn():
     with learning_lock:
         if learning_state["is_running"]: 
             return jsonify(success=False, message="Self-learn process is already running.")
-        # Memanggil worker yang baru
         learn_thread = threading.Thread(target=self_learn_worker, daemon=True)
         learn_thread.start()
     return jsonify(success=True, message="Self-learn process started.")
 
 @app.route('/trade/manual', methods=['POST'])
 def trade_manual():
-    data = request.form; pair = data.get('pair'); trade_type = data.get('type')
-    if not pair or not trade_type: return jsonify(success=False, error="Data tidak lengkap"), 400
-    pair_state = market_state.get(pair, {}); candle_data = pair_state.get("candle_data")
-    current_price = candle_data[-1].get('close') if candle_data else None
-    if not current_price: return jsonify(success=False, error="Harga pasar tidak tersedia"), 400
-    is_real = current_settings.get("is_real_trading", False); quantity = 0.0
-    if is_real:
-        print_colored(f"Mencoba membuka posisi REAL manual {trade_type} {pair}...", Fore.YELLOW)
-        try:
-            risk_usdt = float(current_settings.get('risk_usdt_per_trade', 5.0))
-            sl_pct = float(current_settings.get('stop_loss_pct', 0.25))
-            if risk_usdt <= 0 or sl_pct <= 0: return jsonify(success=False, error="Risk/SL harus > 0 untuk Real Trade."), 400
-            sl_size_in_usdt = current_price * (sl_pct / 100)
-            if sl_size_in_usdt == 0: return jsonify(success=False, error="Kalkulasi SL menghasilkan nol."), 400
-            quantity = risk_usdt / sl_size_in_usdt
-            order_id, error = place_real_order(pair, trade_type, quantity, current_price, current_settings)
-            if error: return jsonify(success=False, error=f"Gagal menempatkan order real: {error}"), 500
-        except (ValueError, TypeError) as e: return jsonify(success=False, error=f"Pengaturan trading tidak valid: {e}"), 400
-    entry_snapshot = {}
-    if candle_data and len(candle_data) >= 100 + 15:
-        with state_lock: relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
-        ai_analyzer = LocalAI(current_settings, relevant_trades_history)
-        analysis_result = ai_analyzer.get_market_analysis(candle_data)
-        if analysis_result:
-            analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
-            entry_snapshot = analysis_result
+    data = request.form
+    pair = data.get('pair')
+    trade_type = data.get('type')
+    
+    if not pair or not trade_type:
+        return jsonify(success=False, error="Data tidak lengkap"), 400
+
     with state_lock:
-        if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'): return jsonify(success=False, error="Posisi untuk pair ini sudah terbuka."), 400
-        new_trade = {"id": int(time.time()), "instrumentId": pair, "type": trade_type, "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price, "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None, "pl_percent": None, "entry_snapshot": entry_snapshot, "is_real": is_real, "quantity": quantity}
+        if any(t for t in trades if t['instrumentId'] == pair and t['status'] == 'OPEN'):
+            return jsonify(success=False, error="Posisi untuk pair ini sudah terbuka."), 400
+        
+        pair_state = market_state.get(pair, {})
+        candle_data = pair_state.get("candle_data")
+        current_price = candle_data[-1].get('close') if candle_data else None
+
+        if not current_price:
+            return jsonify(success=False, error="Harga pasar tidak tersedia"), 400
+
+        is_real = current_settings.get("is_real_trading", False)
+        quantity = 0.0
+
+        if is_real:
+            print_colored(f"Mencoba membuka posisi REAL manual {trade_type} {pair}...", Fore.YELLOW)
+            try:
+                risk_usdt = float(current_settings.get('risk_usdt_per_trade', 5.0))
+                sl_pct = float(current_settings.get('stop_loss_pct', 0.25))
+                if risk_usdt <= 0 or sl_pct <= 0: return jsonify(success=False, error="Risk/SL harus > 0 untuk Real Trade."), 400
+                sl_size_in_usdt = current_price * (sl_pct / 100)
+                if sl_size_in_usdt == 0: return jsonify(success=False, error="Kalkulasi SL menghasilkan nol."), 400
+                quantity = risk_usdt / sl_size_in_usdt
+                order_id, error = place_real_order(pair, trade_type, quantity, current_price, current_settings)
+                if error: return jsonify(success=False, error=f"Gagal menempatkan order real: {error}"), 500
+            except (ValueError, TypeError) as e: return jsonify(success=False, error=f"Pengaturan trading tidak valid: {e}"), 400
+
+        entry_snapshot = {}
+        if candle_data and len(candle_data) >= 100 + 15:
+            relevant_trades_history = [t for t in trades if t['instrumentId'] == pair]
+            ai_analyzer = LocalAI(current_settings, relevant_trades_history)
+            analysis_result = ai_analyzer.get_market_analysis(candle_data)
+            if analysis_result:
+                analysis_result["funding_rate"] = pair_state.get("funding_rate", 0.0)
+                entry_snapshot = analysis_result
+
+        new_trade = {
+            "id": int(time.time()), "instrumentId": pair, "type": trade_type,
+            "entryTimestamp": datetime.utcnow().isoformat() + 'Z', "entryPrice": current_price,
+            "entryReason": "Manual Entry", "status": 'OPEN', "exitPrice": None,
+            "pl_percent": None, "entry_snapshot": entry_snapshot,
+            "is_real": is_real, "quantity": quantity
+        }
         trades.insert(0, new_trade)
-        mode_str = "REAL" if is_real else "DEMO"; notif_title = f"🟢 Posisi {mode_str} {trade_type} Dibuka: {pair}"
-        notif_content = f"Manual Entry @ {current_price:.4f}"
-        if is_real: notif_content += f" | Qty: {quantity:.4f}"
-        send_termux_notification(notif_title, notif_content); print_colored(notif_content, Fore.BLUE, Style.BRIGHT)
         save_trades()
+
+    mode_str = "REAL" if is_real else "DEMO"
+    notif_title = f"🟢 Posisi {mode_str} {trade_type} Dibuka: {pair}"
+    notif_content = f"Manual Entry @ {current_price:.4f}"
+    if is_real: notif_content += f" | Qty: {quantity:.4f}"
+    send_termux_notification(notif_title, notif_content)
+    print_colored(notif_content, Fore.BLUE, Style.BRIGHT)
+    
     return jsonify(success=True)
+
 
 @app.route('/trade/close', methods=['POST'])
 def trade_close():
-    trade_id = int(request.form.get('trade_id'))
-    trade_to_close = None
-    with state_lock: trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
-    if not trade_to_close: return jsonify(success=False, error="Trade tidak ditemukan"), 404
-    pair = trade_to_close['instrumentId']
-    current_price = market_state.get(pair, {}).get("candle_data", [{}])[-1].get('close')
-    if not current_price: return jsonify(success=False, error="Harga tidak tersedia"), 400
-    close_trade_sync(trade_to_close, current_price, "Manual Close")
+    try:
+        trade_id = int(request.form.get('trade_id'))
+    except (ValueError, TypeError):
+        return jsonify(success=False, error="Trade ID tidak valid"), 400
+
+    with state_lock:
+        trade_to_close = next((t for t in trades if t['id'] == trade_id and t['status'] == 'OPEN'), None)
+        
+        if not trade_to_close:
+            return jsonify(success=False, error="Trade tidak ditemukan atau sudah ditutup"), 404
+
+        pair = trade_to_close['instrumentId']
+        candle_data = market_state.get(pair, {}).get("candle_data")
+        current_price = candle_data[-1].get('close') if candle_data else None
+
+        if not current_price:
+            return jsonify(success=False, error="Harga pasar tidak tersedia untuk menutup posisi"), 400
+        
+        # Panggil fungsi sinkron untuk menutup trade di dalam lock
+        close_trade_sync(trade_to_close, current_price, "Manual Close")
+        save_trades()
+
     return jsonify(success=True)
+
 
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
-    global current_settings
     with state_lock:
         form_data = request.form.to_dict()
+        # Handle checkbox separately as it won't be in form data if unchecked
         current_settings['use_trailing_tp'] = 'use_trailing_tp' in form_data
         
         for key, value in form_data.items():
             if key == 'use_trailing_tp': continue
             
-            # Cari tipe data yang benar dari default settings
             if key in current_settings:
-                target_type = type(current_settings.get(key))
+                # Get the type from the existing setting to cast correctly
+                target_type = type(current_settings[key])
                 try:
-                    if target_type == bool: # Should be handled by checkbox logic, but as fallback
-                        current_settings[key] = bool(value)
+                    if target_type == bool:
+                        current_settings[key] = value.lower() in ['true', 'on', '1']
                     elif target_type == float:
                         current_settings[key] = float(value)
                     elif target_type == int:
                         current_settings[key] = int(value)
-                    else:
-                        current_settings[key] = value # String
+                    else: # string
+                        current_settings[key] = value
                 except (ValueError, TypeError):
-                    print_colored(f"Peringatan: Gagal mengubah pengaturan '{key}' ke tipe {target_type}", Fore.YELLOW)
+                    print_colored(f"Peringatan: Gagal mengubah '{key}' dengan nilai '{value}'. Menggunakan nilai lama.", Fore.YELLOW)
         save_settings()
-    print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
+        
+    print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan perubahan.", Fore.GREEN)
     return jsonify(success=True)
 
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
     pair = request.form.get('pair'); tf = request.form.get('tf', '1H')
     if pair:
-        with state_lock: current_settings['watched_pairs'][pair] = tf; save_settings()
-        print_colored(f"{pair} ({tf}) ditambahkan ke watchlist.", Fore.GREEN)
+        with state_lock:
+            current_settings['watched_pairs'][pair.upper()] = tf
+            save_settings()
+        print_colored(f"{pair.upper()} ({tf}) ditambahkan ke watchlist.", Fore.GREEN)
     return jsonify(success=True)
 
 @app.route('/api/watchlist/remove', methods=['POST'])
 def remove_watchlist():
     pair = request.form.get('pair')
-    with state_lock:
-        if pair in current_settings['watched_pairs']:
-            del current_settings['watched_pairs'][pair]; save_settings()
-            print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
+    if pair:
+        with state_lock:
+            if pair in current_settings['watched_pairs']:
+                del current_settings['watched_pairs'][pair]
+                save_settings()
+                print_colored(f"{pair} dihapus dari watchlist.", Fore.YELLOW)
     return jsonify(success=True)
 
 if __name__ == "__main__":
@@ -1304,8 +1379,12 @@ if __name__ == "__main__":
     autopilot_thread = threading.Thread(target=autopilot_worker, daemon=True)
     data_thread = threading.Thread(target=data_refresh_worker, daemon=True)
     autopilot_thread.start(); data_thread.start()
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-    print_colored("\nMenutup aplikasi...", Fore.YELLOW)
-    stop_event.set()
-    autopilot_thread.join(); data_thread.join()
-    print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
+    
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    finally:
+        print_colored("\nMenutup aplikasi...", Fore.YELLOW)
+        stop_event.set()
+        autopilot_thread.join()
+        data_thread.join()
+        print_colored("Aplikasi berhasil ditutup.", Fore.CYAN)
