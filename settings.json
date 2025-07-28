@@ -17,8 +17,8 @@
     "similarity_threshold_loss": 12,
     "cooldown_candles_after_trade": 3,
     "is_real_trading": false,
-    "bingx_api_key": "",
-    "bingx_api_secret": "",
+    "bingx_api_key": "Y2DV19toTzEpRgeuq4yW2f6MRzzP36YC2U9iMKHI91ThKI4C0HHGRQrPm315kpmzpNITgMhr6qLYLw0gEO0aAQ",
+    "bingx_api_secret": "1lyvm8QhRdXIkimxLsoSP12U2RNGgfZNfSjRxGy2R8vcA7TzV74uILdMf2aC7b94lDaIEDe5rZCBWSuRoEbQ",
     "leverage": 10,
     "risk_usdt_per_trade": 5.0,
     "min_win_to_risk_ratio": 1.0
