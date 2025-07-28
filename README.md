@@ -7,3 +7,6 @@ scheduler.py -> untuk membuat device AIbox meng upload device.json yang berisi i
 maintance.py -> untuk device yang mau listen langsung ke server untuk menerima alert apakah suhu terlalu panas atau baterai sudah dibawah 50%
 
 backtester.html -> membuat json untuk backtest AI
+
+
+backtester.py -> membuat trades json secara auto by AI (AI membuat strategy sendiri dan belajar sendiri dengan kondisi market sekarang)
