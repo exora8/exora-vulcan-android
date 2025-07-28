@@ -1,3 +1,4 @@
+
 import json
 import os
 import time
@@ -86,9 +87,7 @@ default_settings = {
 "bingx_api_secret": "",
 "leverage": 10,
 "risk_usdt_per_trade": 5.0,
-
---- PERUBAHAN BARU: Menambahkan parameter kualitas kemenangan ---
-
+# --- PERUBAHAN BARU: Menambahkan parameter kualitas kemenangan ---
 "min_win_to_risk_ratio": 0.5
 }
 if os.path.exists(SETTINGS_FILE):
@@ -142,19 +141,20 @@ headers = {'X-BX-APIKEY': api_key}
 url = f"{BINGX_API_URL}{path}?{params_str}&signature={signature}"
 
 try:
-if method.upper() == 'POST':
-response = requests.post(url, headers=headers, timeout=15)
-else: # GET
-response = requests.get(url, headers=headers, timeout=15)
-response.raise_for_status()
-data = response.json()
-if data.get("code") == 0:
-return data.get('data'), None
-else:
-return None, data.get('msg', 'Unknown BingX Error')
+    if method.upper() == 'POST':
+        response = requests.post(url, headers=headers, timeout=15)
+    else: # GET
+        response = requests.get(url, headers=headers, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    if data.get("code") == 0:
+        return data.get('data'), None
+    else:
+        return None, data.get('msg', 'Unknown BingX Error')
 except Exception as e:
-print_colored(f"Error saat request ke BingX {path}: {e}", Fore.RED)
-return None, str(e)
+    print_colored(f"Error saat request ke BingX {path}: {e}", Fore.RED)
+    return None, str(e)
+
 
 def place_real_order(symbol, trade_type, quantity, price, settings):
 leverage = settings.get("leverage", 10)
@@ -163,24 +163,28 @@ Generated code
 leverage_params = {'symbol': symbol, 'side': trade_type, 'leverage': leverage}
 _, err_leverage = bingx_request('POST', '/openApi/swap/v2/trade/leverage', leverage_params, settings)
 if err_leverage:
-print_colored(f"Gagal mengatur leverage ke {leverage}x untuk {symbol}: {err_leverage}", Fore.RED)
-return None, f"Leverage error: {err_leverage}"
+    print_colored(f"Gagal mengatur leverage ke {leverage}x untuk {symbol}: {err_leverage}", Fore.RED)
+    return None, f"Leverage error: {err_leverage}"
 
 order_params = {
-'symbol': symbol,
-'side': 'BUY' if trade_type == 'LONG' else 'SELL',
-'positionSide': 'LONG' if trade_type == 'LONG' else 'SHORT',
-'type': 'MARKET',
-'quantity': quantity
+    'symbol': symbol,
+    'side': 'BUY' if trade_type == 'LONG' else 'SELL',
+    'positionSide': 'LONG' if trade_type == 'LONG' else 'SHORT',
+    'type': 'MARKET',
+    'quantity': quantity
 }
 data, error = bingx_request('POST', '/openApi/swap/v2/trade/order', order_params, settings)
 if error:
-print_colored(f"Gagal membuka posisi real {trade_type} {symbol}: {error}", Fore.RED)
-return None, error
+    print_colored(f"Gagal membuka posisi real {trade_type} {symbol}: {error}", Fore.RED)
+    return None, error
 
 print_colored(f"Order REAL berhasil ditempatkan: {data.get('orderId')}", Fore.GREEN)
 return data.get('orderId'), None
-
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+IGNORE_WHEN_COPYING_END
 
 def close_real_order(symbol, trade_type, quantity, settings):
 close_params = {
@@ -283,41 +287,33 @@ if not trade or trade.get('status') != 'CLOSED' or trade.get('pl_percent') is No
 return False
 
 Generated code
-
-1. Hitung PnL bersih setelah dipotong biaya
-
+# 1. Hitung PnL bersih setelah dipotong biaya
 net_pnl_percent = trade.get('pl_percent', 0.0) - (2 * settings.get('fee_pct', 0.1))
 
-2. Jika PnL bersih negatif atau nol, ini jelas loss.
-
+# 2. Jika PnL bersih negatif atau nol, ini jelas loss.
 if net_pnl_percent <= 0:
-return False
+    return False
 
-3. Jika trade adalah "Manual Entry", selalu anggap valid jika profit.
-
+# 3. Jika trade adalah "Manual Entry", selalu anggap valid jika profit.
 if trade.get('entryReason') == "Manual Entry":
-return True
-
-4. Cek rasio profit terhadap risiko (SL). Ini inti dari validasi.
-
+    return True
+    
+# 4. Cek rasio profit terhadap risiko (SL). Ini inti dari validasi.
 stop_loss_pct = settings.get('stop_loss_pct', 1.0)
 min_ratio = settings.get('min_win_to_risk_ratio', 0.5)
 
-Pastikan SL tidak nol untuk menghindari pembagian dengan nol
-
+# Pastikan SL tidak nol untuk menghindari pembagian dengan nol
 if stop_loss_pct <= 0:
-return True # Jika tidak ada SL, anggap semua profit valid
+    return True # Jika tidak ada SL, anggap semua profit valid
 
 required_pnl = stop_loss_pct * min_ratio
 
-5. Jika profit bersih lebih besar atau sama dengan profit yang dibutuhkan, ini adalah WIN VALID.
-
+# 5. Jika profit bersih lebih besar atau sama dengan profit yang dibutuhkan, ini adalah WIN VALID.
 if net_pnl_percent >= required_pnl:
-return True
+    return True
 
-6. Jika sampai di sini, artinya PnL positif tapi di bawah ambang batas. Ini adalah 'LUCKY WIN'.
-AI akan memperlakukannya sebagai loss.
-
+# 6. Jika sampai di sini, artinya PnL positif tapi di bawah ambang batas. Ini adalah 'LUCKY WIN'.
+# AI akan memperlakukannya sebagai loss.
 return False
 IGNORE_WHEN_COPYING_START
 content_copy
@@ -372,126 +368,113 @@ return body / full_range if full_range > 0 else 1.0
 
 Generated code
 def get_market_analysis(self, candle_data):
-if len(candle_data) < 100 + 15: return None
-ema9 = self.calculate_ema(candle_data, 9)
-ema50 = self.calculate_ema(candle_data, 50)
-ema100 = self.calculate_ema(candle_data, 100)
-if len(ema9) < 2 or not ema50 or not ema100: return None
-pre_entry_candles = candle_data[-16:-1]; pre_entry_ema9 = ema9[-16:-1]
-analysis = {
-"ema9_current": ema9[-1], "ema9_prev": ema9[-2], "ema50": ema50[-1], "ema100": ema100[-1],
-"current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'],
-"bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING",
-"pre_entry_candle_solidity": [self.analyze_candle_solidity(c) for c in pre_entry_candles],
-"pre_entry_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles],
-"details": {"candles": [{"open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in pre_entry_candles], "ema9": pre_entry_ema9}
-}
-return analysis
+    if len(candle_data) < 100 + 15: return None
+    ema9 = self.calculate_ema(candle_data, 9)
+    ema50 = self.calculate_ema(candle_data, 50)
+    ema100 = self.calculate_ema(candle_data, 100)
+    if len(ema9) < 2 or not ema50 or not ema100: return None
+    pre_entry_candles = candle_data[-16:-1]; pre_entry_ema9 = ema9[-16:-1]
+    analysis = {
+        "ema9_current": ema9[-1], "ema9_prev": ema9[-2], "ema50": ema50[-1], "ema100": ema100[-1],
+        "current_candle_close": candle_data[-1]['close'], "prev_candle_close": candle_data[-2]['close'],
+        "bias": "BULLISH" if ema50[-1] > ema100[-1] else "BEARISH" if ema50[-1] < ema100[-1] else "RANGING",
+        "pre_entry_candle_solidity": [self.analyze_candle_solidity(c) for c in pre_entry_candles],
+        "pre_entry_candle_direction": ['UP' if c['close'] > c['open'] else 'DOWN' for c in pre_entry_candles],
+        "details": {"candles": [{"open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in pre_entry_candles], "ema9": pre_entry_ema9}
+    }
+    return analysis
 
 def compare_setups(self, current_analysis, past_snapshot):
-if not past_snapshot or not past_snapshot.get('details'): return 0
-similarity_score = 1
-current_pos_vs_ema50 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema50'] else 'below'
-past_pos_vs_ema50 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema50', 0) else 'below'
-if current_pos_vs_ema50 == past_pos_vs_ema50: similarity_score += 1
-current_pos_vs_ema9 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema9_current'] else 'below'
-past_pos_vs_ema9 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema9_current', 0) else 'below'
-if current_pos_vs_ema9 == past_pos_vs_ema9: similarity_score += 1
-current_ema9_slope = 'up' if current_analysis['ema9_current'] > current_analysis['ema9_prev'] else 'down'
-past_ema9_slope = 'up' if past_snapshot.get('ema9_current', 0) > past_snapshot.get('ema9_prev', 0) else 'down'
-if current_ema9_slope == past_ema9_slope: similarity_score += 1
-if 'pre_entry_candle_solidity' in current_analysis and 'pre_entry_candle_solidity' in past_snapshot:
-avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 15
-past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15)); avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0
-if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
-current_dirs = current_analysis.get('pre_entry_candle_direction'); past_dirs = past_snapshot.get('pre_entry_candle_direction')
-if current_dirs and past_dirs:
-match_count = 0
-for i in range(1, min(len(current_dirs), len(past_dirs)) + 1):
-if current_dirs[-i] == past_dirs[-i]: match_count += 1
-else: break
-similarity_score += match_count
-return similarity_score
+    if not past_snapshot or not past_snapshot.get('details'): return 0
+    similarity_score = 1
+    current_pos_vs_ema50 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema50'] else 'below'
+    past_pos_vs_ema50 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema50', 0) else 'below'
+    if current_pos_vs_ema50 == past_pos_vs_ema50: similarity_score += 1
+    current_pos_vs_ema9 = 'above' if current_analysis['current_candle_close'] > current_analysis['ema9_current'] else 'below'
+    past_pos_vs_ema9 = 'above' if past_snapshot.get('current_candle_close', 0) > past_snapshot.get('ema9_current', 0) else 'below'
+    if current_pos_vs_ema9 == past_pos_vs_ema9: similarity_score += 1
+    current_ema9_slope = 'up' if current_analysis['ema9_current'] > current_analysis['ema9_prev'] else 'down'
+    past_ema9_slope = 'up' if past_snapshot.get('ema9_current', 0) > past_snapshot.get('ema9_prev', 0) else 'down'
+    if current_ema9_slope == past_ema9_slope: similarity_score += 1
+    if 'pre_entry_candle_solidity' in current_analysis and 'pre_entry_candle_solidity' in past_snapshot:
+        avg_solidity_current = sum(current_analysis['pre_entry_candle_solidity']) / 15
+        past_solidity_list = past_snapshot.get('pre_entry_candle_solidity', ([0] * 15)); avg_solidity_past = sum(past_solidity_list) / 15 if past_solidity_list else 0
+        if abs(avg_solidity_current - avg_solidity_past) < 0.2: similarity_score += 1
+    current_dirs = current_analysis.get('pre_entry_candle_direction'); past_dirs = past_snapshot.get('pre_entry_candle_direction')
+    if current_dirs and past_dirs:
+        match_count = 0
+        for i in range(1, min(len(current_dirs), len(past_dirs)) + 1):
+            if current_dirs[-i] == past_dirs[-i]: match_count += 1
+            else: break
+        similarity_score += match_count
+    return similarity_score
 
 def find_best_match(self, current_analysis, trade_list):
-best_match = None; highest_score = 0
-if not trade_list: return None, 0
-for trade in trade_list:
-snapshot = trade.get("entry_snapshot")
-if not snapshot or not snapshot.get('details'): continue
-score = self.compare_setups(current_analysis, snapshot)
-if score > highest_score:
-highest_score = score
-best_match = trade
-return best_match, highest_score
+    best_match = None; highest_score = 0
+    if not trade_list: return None, 0
+    for trade in trade_list:
+        snapshot = trade.get("entry_snapshot")
+        if not snapshot or not snapshot.get('details'): continue
+        score = self.compare_setups(current_analysis, snapshot)
+        if score > highest_score:
+            highest_score = score
+            best_match = trade
+    return best_match, highest_score
 
 def get_decision(self, candle_data, open_position, funding_rate=0.0):
-analysis = self.get_market_analysis(candle_data)
-if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
-if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
+    analysis = self.get_market_analysis(candle_data)
+    if not analysis: return {"action": "HOLD", "reason": "Data teknikal tidak cukup."}
+    if open_position: return {"action": "HOLD", "reason": "Posisi terbuka."}
 
-Generated code
-# --- PERUBAHAN BARU: Menggunakan fungsi validasi untuk memilah trade ---
-# AI sekarang menganggap "lucky win" sebagai loss.
-winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and is_trade_considered_a_win(t, self.settings)]
-losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and not is_trade_considered_a_win(t, self.settings)]
-# --- AKHIR PERUBAHAN ---
+    # --- PERUBAHAN BARU: Menggunakan fungsi validasi untuk memilah trade ---
+    # AI sekarang menganggap "lucky win" sebagai loss.
+    winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and is_trade_considered_a_win(t, self.settings)]
+    losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and not is_trade_considered_a_win(t, self.settings)]
+    # --- AKHIR PERUBAHAN ---
 
-best_win_match, win_score = self.find_best_match(analysis, winning_trades)
-if best_win_match and win_score >= self.settings.get("similarity_threshold_win", 12):
-    best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
-    if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 12):
-         return {"action": "HOLD", "reason": f"High Confidence Win (Skor: {win_score}) dibatalkan oleh kemiripan Loss (Skor: {loss_score})"}
-    reason = f"High Confidence: Mirip win valid (ID: {best_win_match.get('id', 'N/A')}, Skor: {win_score})"
-    return {"action": "BUY" if best_win_match.get('type') == 'LONG' else "SELL", "reason": reason, "snapshot": analysis}
+    best_win_match, win_score = self.find_best_match(analysis, winning_trades)
+    if best_win_match and win_score >= self.settings.get("similarity_threshold_win", 12):
+        best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
+        if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 12):
+             return {"action": "HOLD", "reason": f"High Confidence Win (Skor: {win_score}) dibatalkan oleh kemiripan Loss (Skor: {loss_score})"}
+        reason = f"High Confidence: Mirip win valid (ID: {best_win_match.get('id', 'N/A')}, Skor: {win_score})"
+        return {"action": "BUY" if best_win_match.get('type') == 'LONG' else "SELL", "reason": reason, "snapshot": analysis}
 
-potential_trade_type = None
-if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
-elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
+    potential_trade_type = None
+    if analysis['bias'] == 'BULLISH' and analysis['prev_candle_close'] <= analysis['ema9_prev'] and analysis['current_candle_close'] > analysis['ema9_current']: potential_trade_type = 'LONG'
+    elif analysis['bias'] == 'BEARISH' and analysis['prev_candle_close'] >= analysis['ema9_prev'] and analysis['current_candle_close'] < analysis['ema9_current']: potential_trade_type = 'SHORT'
 
-if potential_trade_type:
-    current_candle = candle_data[-1]
-    ema9_current = analysis['ema9_current']
-    candle_touched_ema9 = (current_candle['low'] <= ema9_current <= current_candle['high'])
-    if not candle_touched_ema9: return {"action": "HOLD", "reason": f"Sinyal batal. Candle tidak menyentuh EMA 9."}
+    if potential_trade_type:
+        current_candle = candle_data[-1]
+        ema9_current = analysis['ema9_current']
+        candle_touched_ema9 = (current_candle['low'] <= ema9_current <= current_candle['high'])
+        if not candle_touched_ema9: return {"action": "HOLD", "reason": f"Sinyal batal. Candle tidak menyentuh EMA 9."}
 
-    best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
-    if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 12):
-        return {"action": "HOLD", "reason": f"Peringatan: Mirip loss/lucky win ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"}
-    if potential_trade_type == 'LONG' and funding_rate > self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
-    if potential_trade_type == 'SHORT' and funding_rate < -self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
-    avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15
-    if avg_solidity < self.settings.get("caution_level", 0.5): return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
-    ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
-    return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
-return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
+        best_loss_match, loss_score = self.find_best_match(analysis, losing_trades)
+        if best_loss_match and loss_score >= self.settings.get("similarity_threshold_loss", 12):
+            return {"action": "HOLD", "reason": f"Peringatan: Mirip loss/lucky win ID {best_loss_match.get('id', 'N/A')}. Skor: {loss_score}"}
+        if potential_trade_type == 'LONG' and funding_rate > self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal LONG batal. Funding rate tinggi: {funding_rate:.4f}%"}
+        if potential_trade_type == 'SHORT' and funding_rate < -self.settings.get("max_allowed_funding_rate_pct", 0.075): return {"action": "HOLD", "reason": f"Sinyal SHORT batal. Funding rate negatif: {funding_rate:.4f}%"}
+        avg_solidity = sum(analysis.get('pre_entry_candle_solidity', [0])) / 15
+        if avg_solidity < self.settings.get("caution_level", 0.5): return {"action": "HOLD", "reason": f"Sinyal batal. Pasar ragu-ragu (Solidity: {avg_solidity:.2f})"}
+        ai_reason = (f"AI: {potential_trade_type} berdasarkan konfirmasi tren {analysis['bias']}.")
+        return {"action": "BUY" if potential_trade_type == 'LONG' else "SELL", "reason": ai_reason, "snapshot": analysis}
+    return {"action": "HOLD", "reason": f"Menunggu setup. Bias: {analysis['bias']}."}
 
 def get_similarity_analysis_for_dashboard(self, current_analysis):
-# --- PERUBAHAN BARU: Menggunakan fungsi validasi untuk memilah trade ---
-winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and is_trade_considered_a_win(t, self.settings)]
-losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and not is_trade_considered_a_win(t, self.settings)]
-# --- AKHIR PERUBAHAN ---
+    # --- PERUBAHAN BARU: Menggunakan fungsi validasi untuk memilah trade ---
+    winning_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and is_trade_considered_a_win(t, self.settings)]
+    losing_trades = [t for t in self.past_trades if t.get('status') == 'CLOSED' and not is_trade_considered_a_win(t, self.settings)]
+    # --- AKHIR PERUBAHAN ---
 
-Generated code
-best_win_match, win_score = self.find_best_match(current_analysis, winning_trades)
-best_loss_match, loss_score = self.find_best_match(current_analysis, losing_trades)
-dashboard_data = {"current_details": current_analysis.get('details')}
-if best_win_match:
-    dashboard_data['win_match'] = {"id": best_win_match.get('id'), "score": win_score, "details": best_win_match.get('entry_snapshot', {}).get('details')}
-if best_loss_match:
-     dashboard_data['loss_match'] = {"id": best_loss_match.get('id'), "score": loss_score, "details": best_loss_match.get('entry_snapshot', {}).get('details')}
-return dashboard_data
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
-
+    best_win_match, win_score = self.find_best_match(current_analysis, winning_trades)
+    best_loss_match, loss_score = self.find_best_match(current_analysis, losing_trades)
+    dashboard_data = {"current_details": current_analysis.get('details')}
+    if best_win_match:
+        dashboard_data['win_match'] = {"id": best_win_match.get('id'), "score": win_score, "details": best_win_match.get('entry_snapshot', {}).get('details')}
+    if best_loss_match:
+         dashboard_data['loss_match'] = {"id": best_loss_match.get('id'), "score": loss_score, "details": best_loss_match.get('entry_snapshot', {}).get('details')}
+    return dashboard_data
 IGNORE_WHEN_COPYING_START
 content_copy
 download
@@ -509,26 +492,20 @@ return
 
 Generated code
 pnl_gross = calculate_pnl(trade['entryPrice'], exit_price, trade.get('type'))
-exit_dt = datetime.utcnow()
-trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
+    exit_dt = datetime.utcnow()
+    trade.update({ 'status': 'CLOSED', 'exitPrice': exit_price, 'exitTimestamp': exit_dt.isoformat() + 'Z', 'pl_percent': pnl_gross })
 
-Generated code
-instrument_id = trade['instrumentId']
-cooldown_candles = current_settings.get('cooldown_candles_after_trade', 0)
-if cooldown_candles > 0 and instrument_id in market_state:
-    timeframe_str = current_settings.get("watched_pairs", {}).get(instrument_id, "5m")
-    tf_map_ms = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000}
-    candle_duration_ms = tf_map_ms.get(timeframe_str, 300000)
-    cooldown_duration_ms = cooldown_candles * candle_duration_ms
-    last_candle_ms = market_state[instrument_id].get("candle_data", [{}])[-1].get("time", int(exit_dt.timestamp() * 1000))
-    market_state[instrument_id]['cooldown_until_timestamp'] = last_candle_ms + cooldown_duration_ms
-    end_time_str = datetime.utcfromtimestamp((last_candle_ms + cooldown_duration_ms) / 1000).strftime('%H:%M:%S')
-    print_colored(f"[{instrument_id}] Cooldown diaktifkan untuk {cooldown_candles} lilin. Tidak ada trade baru sampai setelah {end_time_str} UTC.", Fore.YELLOW)
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
+    instrument_id = trade['instrumentId']
+    cooldown_candles = current_settings.get('cooldown_candles_after_trade', 0)
+    if cooldown_candles > 0 and instrument_id in market_state:
+        timeframe_str = current_settings.get("watched_pairs", {}).get(instrument_id, "5m")
+        tf_map_ms = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000, '1H': 3600000}
+        candle_duration_ms = tf_map_ms.get(timeframe_str, 300000)
+        cooldown_duration_ms = cooldown_candles * candle_duration_ms
+        last_candle_ms = market_state[instrument_id].get("candle_data", [{}])[-1].get("time", int(exit_dt.timestamp() * 1000))
+        market_state[instrument_id]['cooldown_until_timestamp'] = last_candle_ms + cooldown_duration_ms
+        end_time_str = datetime.utcfromtimestamp((last_candle_ms + cooldown_duration_ms) / 1000).strftime('%H:%M:%S')
+        print_colored(f"[{instrument_id}] Cooldown diaktifkan untuk {cooldown_candles} lilin. Tidak ada trade baru sampai setelah {end_time_str} UTC.", Fore.YELLOW)
 
 save_trades()
 pnl_net = pnl_gross - (2 * current_settings.get('fee_pct', 0.1))
@@ -871,22 +848,20 @@ HTML_SKELETON_TRADINGVIEW = """
         progress::-moz-progress-bar { background-color: var(--accent-primary); border-radius: 4px; transition: width 0.3s ease;}
         .api-warning { background-color: #442020; border: 1px solid var(--red); padding: 1rem; border-radius: 8px; margin-top: 1rem; }
 
-
 Generated code
 @media (max-width: 768px) {
-h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
-.pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
-.header { flex-direction: column; align-items: flex-start; gap: 1rem; }
-.history-item { flex-direction: column; align-items: flex-start; }
-.history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
-}
+        h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; }
+        .pnl-stats, .watchlist, .form-grid, .analysis-container { grid-template-columns: 1fr; }
+        .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+        .history-item { flex-direction: column; align-items: flex-start; }
+        .history-pnl { width: 100%; text-align: left; margin-top: 0.5rem; }
+    }
 </style>
 IGNORE_WHEN_COPYING_START
 content_copy
 download
 Use code with caution.
 IGNORE_WHEN_COPYING_END
-
 </head>
 <body>
     <div class="container">
@@ -926,9 +901,7 @@ IGNORE_WHEN_COPYING_END
         <ul id="history-list" class="history-list"></ul>
     </div>
 
-
 Generated code
-
 <div id="settings-modal" class="settings-modal">
     <div class="settings-content">
         <div style="display:flex; justify-content:space-between; align-items:center;"><h2>Settings</h2><button id="close-settings-btn" style="background:none; border:none; color:var(--text-color); font-size: 2rem; cursor:pointer;">×</button></div>
@@ -1159,14 +1132,11 @@ Generated code
         setInterval(fetchData, REFRESH_INTERVAL_MS);
     });
 </script>
-
-
 IGNORE_WHEN_COPYING_START
 content_copy
 download
 Use code with caution.
 IGNORE_WHEN_COPYING_END
-
 </body>
 </html>
 """
@@ -1192,46 +1162,44 @@ global_ai_analysis = None
 fee_pct = settings_copy.get('fee_pct', 0.1)
 
 for pair_id, timeframe in settings_copy.get("watched_pairs", {}).items():
-pair_state = market_state_copy.get(pair_id, {})
-full_candle_data = pair_state.get("candle_data", [])
-current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
-open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
-pnl = 0.0
-if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
-trend = "N/A"
-if len(full_candle_data) > 100 + 15:
-relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
-ai_instance = LocalAI(settings_copy, relevant_trades_history)
-analysis_result = ai_instance.get_market_analysis(full_candle_data)
-if analysis_result:
-trend = analysis_result.get('bias', 'N/A').title()
-if pair_id == active_chart_pair and not open_pos: global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
-market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend}
+    pair_state = market_state_copy.get(pair_id, {})
+    full_candle_data = pair_state.get("candle_data", [])
+    current_price = full_candle_data[-1].get('close', 0.0) if full_candle_data else 0.0
+    open_pos = next((t for t in trades_copy if t['instrumentId'] == pair_id and t['status'] == 'OPEN'), None)
+    pnl = 0.0
+    if open_pos and current_price > 0: pnl = calculate_pnl(open_pos['entryPrice'], current_price, open_pos.get('type')) - fee_pct
+    trend = "N/A"
+    if len(full_candle_data) > 100 + 15:
+        relevant_trades_history = [t for t in trades_copy if t['instrumentId'] == pair_id]
+        ai_instance = LocalAI(settings_copy, relevant_trades_history)
+        analysis_result = ai_instance.get_market_analysis(full_candle_data)
+        if analysis_result:
+            trend = analysis_result.get('bias', 'N/A').title()
+            if pair_id == active_chart_pair and not open_pos: global_ai_analysis = ai_instance.get_similarity_analysis_for_dashboard(analysis_result)
+    market_data_view[pair_id] = {"price": current_price, "funding": pair_state.get("funding_rate", 0.0), "timeframe": timeframe, "open_position": open_pos, "pnl": pnl, "trend": trend}
 
---- PERUBAHAN BARU: Menambahkan status display untuk frontend ---
-
+# --- PERUBAHAN BARU: Menambahkan status display untuk frontend ---
 for trade in trades_copy:
-if trade.get('status') == 'CLOSED':
-if is_trade_considered_a_win(trade, settings_copy):
-trade['display_status'] = 'valid-win'
-else:
-net_pnl = trade.get('pl_percent', 0.0) - (2 * fee_pct)
-trade['display_status'] = 'lucky-win' if net_pnl > 0 else 'loss'
-else:
-trade['display_status'] = 'open'
-
---- AKHIR PERUBAHAN ---
+    if trade.get('status') == 'CLOSED':
+        if is_trade_considered_a_win(trade, settings_copy):
+            trade['display_status'] = 'valid-win'
+        else:
+            net_pnl = trade.get('pl_percent', 0.0) - (2 * fee_pct)
+            trade['display_status'] = 'lucky-win' if net_pnl > 0 else 'loss'
+    else:
+        trade['display_status'] = 'open'
+# --- AKHIR PERUBAHAN ---
 
 return jsonify({
-"is_ai_running": is_autopilot_running,
-"pnl_today": calculate_todays_pnl(trades_copy, settings_copy),
-"pnl_this_week": calculate_this_weeks_pnl(trades_copy, settings_copy),
-"pnl_last_week": calculate_last_weeks_pnl(trades_copy, settings_copy),
-"market_data": market_data_view,
-"trades": trades_copy,
-"settings": settings_copy,
-"global_ai_analysis": global_ai_analysis,
-"backtest_state": backtest_state_copy
+    "is_ai_running": is_autopilot_running,
+    "pnl_today": calculate_todays_pnl(trades_copy, settings_copy),
+    "pnl_this_week": calculate_this_weeks_pnl(trades_copy, settings_copy),
+    "pnl_last_week": calculate_last_weeks_pnl(trades_copy, settings_copy),
+    "market_data": market_data_view,
+    "trades": trades_copy,
+    "settings": settings_copy,
+    "global_ai_analysis": global_ai_analysis,
+    "backtest_state": backtest_state_copy
 })
 IGNORE_WHEN_COPYING_START
 content_copy
@@ -1325,21 +1293,19 @@ current_settings['use_trailing_tp'] = 'use_trailing_tp' in request.form
 for key, value in request.form.items():
 if key == 'use_trailing_tp': continue
 if key in current_settings or key.startswith("bingx_") or key in ["leverage", "risk_usdt_per_trade", "min_win_to_risk_ratio"]:
-
---- PERUBAHAN BARU: Memastikan semua tipe data numerik di-handle ---
-
+# --- PERUBAHAN BARU: Memastikan semua tipe data numerik di-handle ---
 default_val = current_settings.get(key)
 if default_val is None and key == 'min_win_to_risk_ratio': default_val = 0.0 # Handle new key
 
 Generated code
 target_type = type(default_val)
-try:
-if target_type == float: current_settings[key] = float(value)
-elif target_type == int: current_settings[key] = int(value)
-else: current_settings[key] = value
-except (ValueError, TypeError): pass
-# --- AKHIR PERUBAHAN ---
-save_settings()
+            try:
+                if target_type == float: current_settings[key] = float(value)
+                elif target_type == int: current_settings[key] = int(value)
+                else: current_settings[key] = value
+            except (ValueError, TypeError): pass
+            # --- AKHIR PERUBAHAN ---
+    save_settings()
 print_colored("Pengaturan diperbarui dari Web UI. Halaman akan dimuat ulang untuk menerapkan interval refresh.", Fore.GREEN)
 return jsonify(success=True)
 IGNORE_WHEN_COPYING_START
