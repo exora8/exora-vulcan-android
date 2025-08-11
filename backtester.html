@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chart Kripto (ECharts) dengan Jurnal Otomatis</title>
+    <!-- 1. Impor library Apache ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        body {
+            padding: 0; margin: 0; background-color: #131722;
+            color: #D9D9D9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overflow: hidden;
+        }
+        #app-container { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+        #toolbar {
+            display: flex; align-items: center; padding: 8px 16px;
+            background-color: #1e222d; border-bottom: 1px solid #2A2E39; gap: 20px; flex-wrap: wrap; /* [DIUBAH] flex-wrap ditambahkan */
+        }
+        #search-container input, #backtest-range-container input { /* [DIUBAH] Style digabungkan */
+            background-color: #2A2E39; color: #D9D9D9; border: 1px solid #485158;
+            padding: 8px 12px; border-radius: 4px; outline: none;
+        }
+        #search-container input:focus, #backtest-range-container input:focus { border-color: #589ee9; }
+        #timeframe-controls button, #search-container button {
+            background-color: transparent; color: #D9D9D9; border: none;
+            padding: 8px 12px; cursor: pointer; border-radius: 4px; font-size: 14px;
+        }
+        #timeframe-controls button:hover, #search-container button:hover { background-color: #2A2E39; }
+        #timeframe-controls button.active { background-color: #589ee9; color: white; }
+        #chart-container { flex-grow: 1; position: relative; }
+        #loading-indicator {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            background-color: rgba(40, 40, 40, 0.9); color: white;
+            padding: 8px 15px; border-radius: 5px; display: none; z-index: 1000; font-size: 14px;
+        }
+        #selection-indicator {
+            position: absolute; top: 10px; left: 10px;
+            background-color: #589ee9; color: white;
+            padding: 8px 15px; border-radius: 5px; display: none; z-index: 1000; font-size: 14px;
+        }
+
+        /* --- UI disederhanakan --- */
+        #trade-ui-container { position: fixed; top: 70px; right: 10px; z-index: 1000; display: flex; flex-direction: column; gap: 10px; }
+        #trade-controls { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; align-items: center; gap: 10px; background-color: #1e222d; padding: 10px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.5);}
+        .trade-button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .long-button { background-color: #26a69a; color: white; }
+        .short-button { background-color: #ef5350; color: white; }
+        .settings-button { background-color: #424957; color: white; }
+        .json-button { background-color: #589ee9; color: white; }
+        .trade-button:hover { opacity: 0.9; }
+
+        /* Styling Modal */
+        #modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); z-index: 1999; display: none; justify-content: center; align-items: center;}
+        #settings-modal { background-color: #1e222d; padding: 25px; border-radius: 8px; width: 300px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);}
+        #settings-modal h3 { margin-top: 0; border-bottom: 1px solid #2A2E39; padding-bottom: 10px;}
+        .modal-field { margin-bottom: 15px; }
+        .modal-field label { display: block; margin-bottom: 5px; font-size: 14px; }
+        .modal-field input { width: 90%; background-color: #2A2E39; color: #D9D9D9; border: 1px solid #485158; padding: 8px; border-radius: 4px; }
+        .modal-actions { text-align: right; margin-top: 20px;}
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <div id="toolbar">
+            <div id="search-container">
+                <input type="text" id="search-input" placeholder="Contoh: ETHUSDT" value="BTCUSDT">
+                <button id="search-button">Cari</button>
+            </div>
+            <div id="timeframe-controls">
+                <button data-interval="5">5m</button>
+                <button data-interval="15">15m</button>
+                <button data-interval="60" class="active">1H</button>
+                <button data-interval="240">4H</button>
+                <button data-interval="D">1D</button>
+            </div>
+             <!-- [BARU] Input untuk Backtest Range -->
+            <div id="backtest-range-container">
+                <label for="backtest-start-date" style="font-size: 14px; margin-right: 5px;">Mulai Backtest Dari:</label>
+                <input type="date" id="backtest-start-date">
+            </div>
+        </div>
+        <div id="chart-container"></div>
+        <div id="loading-indicator">Memuat semua data historis...</div> <!-- [DIUBAH] Teks loading diubah -->
+        <div id="selection-indicator"></div>
+    </div>
+
+    <div id="trade-ui-container">
+        <button id="settings-btn" class="trade-button settings-button">⚙️ Pengaturan</button>
+        <button id="download-json-btn" class="trade-button json-button">Download JSON</button>
+    </div>
+
+    <div id="trade-controls">
+        <button id="long-btn" class="trade-button long-button">LONG</button>
+        <button id="short-btn" class="trade-button short-button">SHORT</button>
+    </div>
+
+    <div id="modal-overlay">
+        <div id="settings-modal">
+            <h3>Pengaturan TP/SL</h3>
+            <div class="modal-field">
+                <label for="tp-input">Take Profit (%)</label>
+                <input type="number" id="tp-input" step="0.1" value="1.0">
+            </div>
+            <div class="modal-field">
+                <label for="sl-input">Stop Loss (%)</label>
+                <input type="number" id="sl-input" step="0.1" value="0.5">
+            </div>
+            <div class="modal-actions">
+                <button id="save-settings-btn" class="trade-button json-button">Simpan</button>
+                <button id="close-modal-btn" class="trade-button settings-button">Batal</button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // --- State Aplikasi ---
+        let currentSymbol = 'BTCUSDT';
+        let currentInterval = '60';
+        const LIMIT_PER_FETCH = 200; // Bybit API limit per request
+        let chartInstance = null;
+        let isLoading = false;
+        let allCandleData = [];
+        let allTimestamps = [];
+        let ema9Data = [], ema50Data = [], ema100Data = [];
+
+        // --- State untuk Fitur Trading ---
+        let tradeHistory = [];
+        let selectedCandleIndex = null;
+        let tradeSettings = { tp_percent: 1.0, sl_percent: 0.5 };
+
+        // --- Referensi Elemen DOM ---
+        const chartContainer = document.getElementById('chart-container');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const searchInput = document.getElementById('search-input');
+        const searchButton = document.getElementById('search-button');
+        const timeframeButtons = document.querySelectorAll('#timeframe-controls button');
+        const backtestStartDateInput = document.getElementById('backtest-start-date'); // [BARU]
+        const selectionIndicator = document.getElementById('selection-indicator');
+        const longBtn = document.getElementById('long-btn');
+        const shortBtn = document.getElementById('short-btn');
+        const settingsBtn = document.getElementById('settings-btn');
+        const downloadJsonBtn = document.getElementById('download-json-btn');
+        const modalOverlay = document.getElementById('modal-overlay');
+        const saveSettingsBtn = document.getElementById('save-settings-btn');
+        const closeModalBtn = document.getElementById('close-modal-btn');
+        const tpInput = document.getElementById('tp-input');
+        const slInput = document.getElementById('sl-input');
+
+        // --- Fungsi Kalkulasi (tidak berubah) ---
+        function calculateEMA(closePrices, period) {
+            if (closePrices.length < period) return new Array(closePrices.length).fill(null);
+            const k = 2 / (period + 1);
+            let emaArray = [];
+            let sum = 0;
+            for (let i = 0; i < period; i++) sum += closePrices[i];
+            let prevEma = sum / period;
+            for (let i = 0; i < period - 1; i++) emaArray.push(null);
+            emaArray.push(prevEma);
+            for (let i = period; i < closePrices.length; i++) {
+                const currentEma = (closePrices[i] * k) + (prevEma * (1 - k));
+                emaArray.push(currentEma);
+                prevEma = currentEma;
+            }
+            return emaArray;
+        }
+        function calculateCandleSolidity(candle) { const [open, close, low, high] = candle; return high - low === 0 ? 1 : Math.abs(close - open) / (high - low); }
+        function getCandleDirection(candle) { return candle[1] >= candle[0] ? "UP" : "DOWN"; }
+        
+        // --- Fungsi API & Chart ---
+        async function fetchBybitData(symbol, interval, limit, endTime) {
+            // Fungsi ini tidak berubah, tetap mengambil data per batch
+            let url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`;
+            if (endTime) url += `&end=${endTime}`;
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+                const data = await response.json();
+                if (data.retCode !== 0) throw new Error(`API Error: ${data.retMsg}`);
+                const list = data.result.list.reverse();
+                const candles = list.map(c => [parseFloat(c[1]), parseFloat(c[4]), parseFloat(c[3]), parseFloat(c[2])]);
+                const timestamps = list.map(c => {
+                    const d = new Date(parseInt(c[0]));
+                    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+                });
+                return { candles, timestamps };
+            } catch (error) {
+                console.error("Gagal mengambil data:", error);
+                alert(`Gagal memuat data untuk ${symbol}.`);
+                return { candles: [], timestamps: [] };
+            }
+        }
+
+        function setChartOption() {
+            chartInstance.setOption({
+                backgroundColor: '#131722', tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                grid: { left: '3%', right: '5%', bottom: '15%', containLabel: true },
+                xAxis: { type: 'category', data: allTimestamps, axisLine: { lineStyle: { color: '#8392A5' } } },
+                yAxis: { scale: true, axisLine: { lineStyle: { color: '#8392A5' } }, splitLine: { lineStyle: { color: '#2A2E39' } } },
+                dataZoom: [ { type: 'inside', start: 50, end: 100 }, { show: true, type: 'slider', top: '90%', start: 50, end: 100 } ],
+                series: [
+                    { type: 'candlestick', name: currentSymbol, data: allCandleData, itemStyle: { color: '#26A69A', color0: '#EF5350', borderColor: '#26A69A', borderColor0: '#EF5350' } },
+                    { name: 'EMA(9)', type: 'line', data: ema9Data, smooth: true, showSymbol: false, lineStyle: { color: '#f6bf54', width: 1.5 } },
+                    { name: 'EMA(50)', type: 'line', data: ema50Data, smooth: true, showSymbol: false, lineStyle: { color: '#589ee9', width: 1.5 } },
+                    { name: 'EMA(100)', type: 'line', data: ema100Data, smooth: true, showSymbol: false, lineStyle: { color: '#d9d9d9', width: 1.5, type: 'dashed' } }
+                ]
+            }, { notMerge: true });
+        }
+
+        // --- [DIUBAH TOTAL] Fungsi reloadChart sekarang memuat semua data dari tanggal mulai ---
+        async function reloadChart() {
+            if (isLoading) return;
+            isLoading = true;
+            loadingIndicator.style.display = 'block';
+
+            // Reset data & jurnal
+            allCandleData = [];
+            allTimestamps = [];
+            tradeHistory = [];
+            
+            const startDateString = backtestStartDateInput.value;
+            if (!startDateString) {
+                alert("Silakan pilih tanggal mulai untuk backtest.");
+                loadingIndicator.style.display = 'none';
+                isLoading = false;
+                return;
+            }
+            const backtestStartTimestamp = new Date(startDateString).getTime();
+
+            let collectedCandles = [];
+            let collectedTimestamps = [];
+            let currentEndTime = Date.now(); // Mulai fetch dari sekarang, mundur ke belakang
+
+            console.log(`Memulai fetch data untuk ${currentSymbol} dari ${new Date(backtestStartTimestamp).toLocaleString()} hingga sekarang.`);
+
+            while (true) {
+                const { candles, timestamps } = await fetchBybitData(currentSymbol, currentInterval, LIMIT_PER_FETCH, currentEndTime);
+
+                if (candles.length === 0) {
+                    console.log("Tidak ada data lebih lanjut atau akhir dari riwayat tercapai.");
+                    break; // Berhenti jika API tidak mengembalikan data lagi
+                }
+                
+                // Tambahkan data yang baru didapat ke AWAL dari array koleksi
+                collectedCandles = [...candles, ...collectedCandles];
+                collectedTimestamps = [...timestamps, ...collectedTimestamps];
+
+                const oldestTimestampInBatch = Date.parse(timestamps[0].replace(' ', 'T'));
+                
+                // Cek apakah data tertua yang kita punya sudah melewati tanggal mulai yang diinginkan
+                if (oldestTimestampInBatch <= backtestStartTimestamp) {
+                    console.log("Batas awal backtest tercapai. Menghentikan fetch.");
+                    break;
+                }
+
+                // Siapkan untuk iterasi berikutnya, mundur dari candle tertua yang baru saja didapat
+                currentEndTime = oldestTimestampInBatch;
+            }
+
+            // Filter data untuk memastikan tidak ada candle sebelum tanggal mulai
+            const startIndex = collectedTimestamps.findIndex(ts => Date.parse(ts.replace(' ', 'T')) >= backtestStartTimestamp);
+
+            if (startIndex !== -1) {
+                allCandleData = collectedCandles.slice(startIndex);
+                allTimestamps = collectedTimestamps.slice(startIndex);
+            } else {
+                 allCandleData = []; // Tidak ada data yang ditemukan setelah tanggal mulai
+                 allTimestamps = [];
+            }
+            
+            console.log(`Berhasil memuat ${allCandleData.length} candle sejak ${startDateString}.`);
+            
+            // Hitung indikator untuk semua data yang terkumpul
+            const closePrices = allCandleData.map(d => d[1]);
+            ema9Data = calculateEMA(closePrices, 9);
+            ema50Data = calculateEMA(closePrices, 50);
+            ema100Data = calculateEMA(closePrices, 100);
+
+            // Tampilkan di chart
+            setChartOption();
+            
+            loadingIndicator.style.display = 'none';
+            isLoading = false;
+        }
+
+        // --- [TIDAK DIPAKAI] Fungsi loadMoreData tidak lagi diperlukan ---
+        // async function loadMoreData() { /* ... */ }
+
+
+        // --- Fungsi Trading (tidak berubah) ---
+        function determineTradeOutcome(startIndex, entryPrice, tradeType) {
+            const tpPrice = tradeType === 'LONG' ? entryPrice * (1 + tradeSettings.tp_percent / 100) : entryPrice * (1 - tradeSettings.tp_percent / 100);
+            const slPrice = tradeType === 'LONG' ? entryPrice * (1 - tradeSettings.sl_percent / 100) : entryPrice * (1 + tradeSettings.sl_percent / 100);
+            for (let i = startIndex + 1; i < allCandleData.length; i++) {
+                const candle = allCandleData[i], low = candle[2], high = candle[3], timestamp = allTimestamps[i];
+                if (tradeType === 'LONG') {
+                    if (high >= tpPrice) return { outcome: 'WIN', exitPrice: tpPrice, exitTimestamp: timestamp };
+                    if (low <= slPrice) return { outcome: 'LOSS', exitPrice: slPrice, exitTimestamp: timestamp };
+                } else {
+                    if (low <= tpPrice) return { outcome: 'WIN', exitPrice: tpPrice, exitTimestamp: timestamp };
+                    if (high >= slPrice) return { outcome: 'LOSS', exitPrice: slPrice, exitTimestamp: timestamp };
+                }
+            }
+            return { outcome: 'UNDETERMINED' };
+        }
+        function enterTrade(tradeType) {
+            if (selectedCandleIndex === null) { alert("Silakan klik sebuah candle di chart terlebih dahulu!"); return; }
+            const LOOKBACK_PERIOD = 15;
+            if (selectedCandleIndex < LOOKBACK_PERIOD) { alert(`Tidak cukup data historis. Perlu setidaknya ${LOOKBACK_PERIOD} candle sebelum candle terpilih.`); return; }
+            const entryCandle = allCandleData[selectedCandleIndex];
+            const entryPrice = entryCandle[1];
+            const result = determineTradeOutcome(selectedCandleIndex, entryPrice, tradeType);
+            if (result.outcome === 'UNDETERMINED') { alert("Hasil trade tidak dapat ditentukan (TP/SL tidak tercapai dalam data yang terlihat). Trade tidak dicatat."); return; }
+            const pnl_factor = (tradeType === 'LONG') ? (result.exitPrice - entryPrice) : (entryPrice - result.exitPrice);
+            const pl_percent = (pnl_factor / entryPrice) * 100;
+            const snapshotCandles = allCandleData.slice(selectedCandleIndex - LOOKBACK_PERIOD, selectedCandleIndex);
+            const entrySnapshot = {
+                ema9_current: ema9Data[selectedCandleIndex], ema9_prev: ema9Data[selectedCandleIndex - 1],
+                ema50: ema50Data[selectedCandleIndex], ema100: ema100Data[selectedCandleIndex],
+                current_candle_close: entryCandle[1], prev_candle_close: allCandleData[selectedCandleIndex - 1][1],
+                bias: entryCandle[1] > ema50Data[selectedCandleIndex] ? "BULLISH" : "BEARISH",
+                pre_entry_candle_solidity: snapshotCandles.map(c => calculateCandleSolidity(c)),
+                pre_entry_candle_direction: snapshotCandles.map(c => getCandleDirection(c)),
+                details: { candles: snapshotCandles.map(c => ({ open: c[0], high: c[3], low: c[2], close: c[1] })), ema9: ema9Data.slice(selectedCandleIndex - LOOKBACK_PERIOD, selectedCandleIndex) },
+                funding_rate: 0.0
+            };
+            const newTrade = {
+                id: Date.now(), instrumentId: `${currentSymbol}`, type: tradeType,
+                entryTimestamp: new Date().toISOString(), entryPrice: entryPrice,
+                entryReason: `AUTO ${result.outcome}`, status: "CLOSED", exitPrice: result.exitPrice, pl_percent: pl_percent,
+                entry_snapshot: entrySnapshot, is_real: false, quantity: 0.0,
+                exitTimestamp: new Date(result.exitTimestamp.replace(' ', 'T')).toISOString()
+            };
+            tradeHistory.push(newTrade);
+            alert(`Trade ${result.outcome} ${tradeType} untuk ${currentSymbol} berhasil dicatat! P/L: ${pl_percent.toFixed(2)}%`);
+            selectedCandleIndex = null;
+            selectionIndicator.style.display = 'none';
+        }
+
+        // --- Fungsi Inisialisasi dan Event Listeners ---
+        function handleChartClick(params) {
+            if (params.componentType === 'series' && params.seriesType === 'candlestick') {
+                selectedCandleIndex = params.dataIndex;
+                selectionIndicator.textContent = `Candle Terpilih: ${allTimestamps[selectedCandleIndex]} | Close: ${allCandleData[selectedCandleIndex][1]}`;
+                selectionIndicator.style.display = 'block';
+            }
+        }
+        function generateAndDownloadJson() {
+            if (tradeHistory.length === 0) { alert("Tidak ada data trade."); return; }
+            const jsonString = JSON.stringify(tradeHistory, null, 4);
+            const blob = new Blob([jsonString], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url; a.download = `trade_journal_${currentSymbol}_${new Date().getTime()}.json`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        }
+
+        function init() {
+            chartInstance = echarts.init(chartContainer);
+            
+            // [DIHAPUS] Event listener untuk datazoom dihapus karena semua data sudah di-load.
+            // chartInstance.on('datazoom', (params) => { if ((params.batch ? params.batch[0].start : params.start) < 1) loadMoreData(); });
+            
+            chartInstance.on('click', handleChartClick);
+
+            const performSearch = () => {
+                const newSymbol = searchInput.value.trim().toUpperCase();
+                if (newSymbol) {
+                    currentSymbol = newSymbol;
+                    reloadChart(); // reloadChart sekarang menggunakan simbol dan tanggal baru
+                }
+            };
+
+            searchButton.addEventListener('click', performSearch);
+            searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') performSearch(); });
+            
+            timeframeButtons.forEach(button => button.addEventListener('click', () => {
+                timeframeButtons.forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+                const newInterval = button.getAttribute('data-interval');
+                if (newInterval !== currentInterval) {
+                    currentInterval = newInterval;
+                    reloadChart(); // Memuat ulang semua data dengan timeframe baru
+                }
+            }));
+
+            window.addEventListener('resize', () => { if (chartInstance) chartInstance.resize(); });
+
+            // Event listeners UI
+            longBtn.addEventListener('click', () => enterTrade('LONG'));
+            shortBtn.addEventListener('click', () => enterTrade('SHORT'));
+            downloadJsonBtn.addEventListener('click', generateAndDownloadJson);
+            settingsBtn.addEventListener('click', () => {
+                tpInput.value = tradeSettings.tp_percent;
+                slInput.value = tradeSettings.sl_percent;
+                modalOverlay.style.display = 'flex';
+            });
+            closeModalBtn.addEventListener('click', () => { modalOverlay.style.display = 'none'; });
+            saveSettingsBtn.addEventListener('click', () => {
+                tradeSettings.tp_percent = parseFloat(tpInput.value);
+                tradeSettings.sl_percent = parseFloat(slInput.value);
+                alert(`Pengaturan disimpan: TP ${tradeSettings.tp_percent}%, SL ${tradeSettings.sl_percent}%`);
+                modalOverlay.style.display = 'none';
+            });
+            
+            // [BARU] Set nilai default untuk input tanggal (misal: 1 bulan yang lalu)
+            const today = new Date();
+            const oneMonthAgo = new Date(today.setMonth(today.getMonth() - 1));
+            backtestStartDateInput.value = oneMonthAgo.toISOString().split('T')[0];
+
+            // Muat chart untuk pertama kali
+            reloadChart();
+        }
+
+        init();
+    </script>
+</body>
+</html>

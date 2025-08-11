@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Analisis Trade v7.8 (Real-time AI)</title>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --border-color: #333;
+            --text-color: #e0e0e0;
+            --text-muted: #888;
+            --primary-color: #2962ff;
+            --primary-hover: #0039cb;
+            --green-pnl: #00c853;
+            --red-pnl: #d50000;
+            --shadow: 0 8px 24px rgba(0,0,0,0.2);
+            --card-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 15px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 1rem;
+            color: var(--text-color);
+            font-size: clamp(1.8rem, 5vw, 2.5rem);
+            animation: fadeInUp 0.5s ease-out;
+        }
+        
+        h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            color: var(--primary-color);
+        }
+
+        .status-section {
+            background-color: var(--card-bg);
+            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            box-shadow: var(--card-shadow);
+            text-align: center;
+            margin-bottom: 2rem;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap; /* BARU: Agar rapi di layar kecil */
+            animation: fadeInUp 0.6s ease-out;
+        }
+        
+        #updateStatus { color: var(--text-muted); font-style: italic; }
+
+        /* BARU: Style untuk input file */
+        .file-input-container {
+            border-left: 2px solid var(--border-color);
+            padding-left: 15px;
+            margin-left: 10px;
+        }
+        .file-input-container label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-right: 10px;
+        }
+        #fileInput {
+            color: var(--text-color);
+        }
+        /* Style agar tombol file lebih baik */
+        input[type="file"]::file-selector-button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        input[type="file"]::file-selector-button:hover {
+            background-color: var(--primary-hover);
+        }
+        
+        .loader {
+            width: 20px;
+            height: 20px;
+            border: 3px solid var(--border-color);
+            border-top: 3px solid var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #resultsContainer { display: none; }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: var(--card-shadow);
+            border-left: 4px solid var(--primary-color);
+            animation: fadeInUp 0.7s ease-out backwards;
+            transition: all 0.3s ease;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: var(--shadow);
+        }
+        .card .value {
+            font-size: clamp(1.8rem, 5vw, 2.2rem);
+            font-weight: bold;
+        }
+        
+        .pnl-value-positive { color: var(--green-pnl); }
+        .pnl-value-negative { color: var(--red-pnl); }
+
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+        }
+        .tab-button {
+            padding: 12px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--text-muted);
+            font-size: 1rem;
+            font-weight: 500;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -1px;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+        }
+        .tab-button.active, .tab-button:hover {
+            color: var(--primary-color);
+        }
+        .tab-button.active {
+            border-bottom-color: var(--primary-color);
+        }
+        .tab-content { display: none; animation: fadeInUp 0.4s ease-out; }
+        .tab-content.active { display: block; }
+        
+        .calendar-container {
+            padding: clamp(15px, 3vw, 20px);
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            margin-bottom: 2rem;
+        }
+        .calendar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .calendar-header h2 { border: none; margin-bottom: 0; }
+        .calendar-header button {
+            background-color: var(--primary-color);
+            color: white; border: none; padding: 8px 15px; border-radius: 8px; cursor: pointer; transition: background-color 0.3s;
+        }
+        .calendar-header button:hover { background-color: var(--primary-hover); }
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 5px;
+        }
+        .calendar-day, .calendar-day-header {
+            background-color: #161616;
+            min-height: 80px;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            display: flex;
+            flex-direction: column;
+        }
+        .calendar-day-header { min-height: auto; text-align: center; font-weight: bold; color: var(--text-muted); }
+        .calendar-day.other-month { background-color: transparent; }
+        .calendar-day.has-trades { cursor: pointer; border: 1px solid transparent; transition: border-color 0.3s; }
+        .calendar-day.has-trades:hover { border-color: var(--primary-color); }
+        .day-number { font-weight: bold; }
+        .day-pnl { margin-top: auto; font-size: 1rem; text-align: right; font-weight: 500; }
+
+        .modal {
+            display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .modal-content {
+            background-color: var(--card-bg);
+            margin: 15% auto;
+            padding: 25px;
+            border: 1px solid var(--border-color);
+            width: 90%;
+            max-width: 500px;
+            border-radius: 12px;
+            position: relative;
+            box-shadow: var(--shadow);
+            animation: fadeInUp 0.4s ease;
+        }
+        .close-button {
+            color: var(--text-muted); position: absolute; top: 10px; right: 20px;
+            font-size: 32px; font-weight: bold; cursor: pointer; transition: color 0.3s;
+        }
+        .close-button:hover { color: var(--text-color); }
+        .modal-trade-list { list-style-type: none; padding: 0; max-height: 40vh; overflow-y: auto;}
+        .modal-trade-list li {
+            padding: 12px; border-bottom: 1px solid var(--border-color);
+            cursor: pointer; display: flex; justify-content: space-between; transition: background-color 0.2s;
+        }
+        .modal-trade-list li:hover { background-color: #2a2a2a; }
+        .modal-trade-list li:last-child { border-bottom: none; }
+
+        .chart-section {
+            padding: 20px;
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+        }
+        
+        .pnl-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .pnl-table-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .pnl-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .pnl-table th, .pnl-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .pnl-table th {
+            background-color: #2a2a2a;
+            position: sticky;
+            top: 0;
+        }
+
+        /* STYLES FOR EQUITY CALCULATOR */
+        .calculator-form {
+            padding: 20px;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+            align-items: flex-end;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .input-group label, .checkbox-group label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+        .input-group input {
+            padding: 10px;
+            background-color: #333;
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding-top: 1.5rem; /* Aligns with button */
+        }
+        .checkbox-group input {
+            width: 18px;
+            height: 18px;
+        }
+        #calculateEquityBtn {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            font-weight: bold;
+            height: 40px;
+            width: 100%;
+        }
+        #calculateEquityBtn:hover {
+            background-color: var(--primary-hover);
+        }
+        #equitySummary {
+            margin-top: 15px;
+            padding: 15px;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        #equitySummary p {
+            margin: 0;
+            font-size: 1.1rem;
+        }
+        #equitySummary span {
+            font-weight: bold;
+        }
+        /* END STYLES */
+
+        @media (max-width: 480px) {
+            .calendar-container { padding: 10px; }
+            .calendar-header { margin-bottom: 15px; }
+            .calendar-header h2 { font-size: 1rem; margin: 0 5px; text-align: center; }
+            .calendar-header button { padding: 6px 10px; font-size: 0.75rem; }
+            .calendar-grid { gap: 3px; }
+            .calendar-day-header { font-size: 0.6rem; padding: 4px 0; min-height: auto; font-weight: normal; }
+            .calendar-day {
+                min-height: 60px; padding: 4px; border-radius: 4px;
+                justify-content: space-between; font-size: 0.7rem;
+            }
+            .day-number { align-self: flex-start; }
+            .day-pnl { align-self: flex-end; font-size: 0.75rem; line-height: 1.1; margin-top: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Dashboard Analisis Trade</h1>
+
+        <div class="status-section">
+            <div class="loader" id="loader"></div>
+            <span id="updateStatus">Memuat data awal...</span>
+
+            <!-- BARU: Input untuk memilih file lokal -->
+            <div class="file-input-container">
+                <label for="fileInput">Atau Pilih File Lokal:</label>
+                <input type="file" id="fileInput" accept=".json">
+            </div>
+            <!-- AKHIR BAGIAN BARU -->
+        </div>
+
+        <div id="resultsContainer">
+            <div class="tabs">
+                <button class="tab-button active" onclick="openTab(event, 'details')">Trade Details</button>
+                <button class="tab-button" onclick="openTab(event, 'growth')">Growth Curve (All)</button>
+                <button class="tab-button" onclick="openTab(event, 'aiPerformance')">AI Pure Performance</button>
+                <button class="tab-button" onclick="openTab(event, 'equityCalculator')">Kalkulator Pertumbuhan</button>
+                <button class="tab-button" onclick="openTab(event, 'calendar')">P/L Summary</button>
+            </div>
+
+            <div id="details" class="tab-content active">
+                <div class="summary-grid">
+                    <div class="card" style="animation-delay: 0.1s;"><h2 style="border:none">Total Trades</h2><p class="value" id="totalTradesValue">-</p></div>
+                    <div class="card" style="animation-delay: 0.2s;"><h2 style="border:none">Winrate</h2><p class="value" id="winrateValue">-</p></div>
+                    <div class="card" style="animation-delay: 0.3s;"><h2 style="border:none">Rata-rata P/L</h2><p class="value" id="averagePnlValue">-</p></div>
+                    <div class="card" style="animation-delay: 0.4s;"><h2 style="border:none">Max Profit / Hari</h2><p class="value pnl-value-positive" id="maxProfitValue">-</p></div>
+                    <div class="card" style="animation-delay: 0.5s;"><h2 style="border:none">Max Drawdown / Hari</h2><p class="value pnl-value-negative" id="maxDrawdownValue">-</p></div>
+                </div>
+                <div class="chart-section">
+                    <h2>Detail Trade Chart</h2>
+                    <select id="tradeSelector" style="width:100%; padding:10px; margin-bottom:20px; background-color:#333; color:var(--text-color); border:1px solid var(--border-color); border-radius:8px;"></select>
+                    <div id="tradeChart"></div>
+                </div>
+            </div>
+            
+            <div id="growth" class="tab-content">
+                <div class="chart-section">
+                    <h2>Grafik Pertumbuhan Kumulatif (P/L %) - Semua Trade</h2>
+                    <div id="growthChart"></div>
+                </div>
+            </div>
+
+            <div id="aiPerformance" class="tab-content">
+                <!-- AI Backtest Section -->
+                <h2 style="color: var(--text-color); border-color: var(--primary-color); margin-bottom: 1rem;">AI Performance (Backtest)</h2>
+                <div class="summary-grid">
+                    <div class="card"><h2 style="border:none">Total AI Trades</h2><p class="value" id="aiTotalTradesValue">-</p></div>
+                    <div class="card"><h2 style="border:none">AI Winrate</h2><p class="value" id="aiWinrateValue">-</p></div>
+                    <div class="card"><h2 style="border:none">AI Rata-rata P/L</h2><p class="value" id="aiAveragePnlValue">-</p></div>
+                </div>
+                 <div class="chart-section">
+                    <div id="aiGrowthChart"></div>
+                </div>
+
+                <!-- NEW: Real-time AI Section -->
+                <h2 style="color: var(--text-color); border-color: var(--primary-color); margin-top: 2.5rem; margin-bottom: 1rem;">Real-time AI Performance</h2>
+                <div class="summary-grid">
+                    <div class="card"><h2 style="border:none">Total Real-time Trades</h2><p class="value" id="rtAiTotalTradesValue">-</p></div>
+                    <div class="card"><h2 style="border:none">Real-time Winrate</h2><p class="value" id="rtAiWinrateValue">-</p></div>
+                    <div class="card"><h2 style="border:none">Real-time Rata-rata P/L</h2><p class="value" id="rtAiAveragePnlValue">-</p></div>
+                </div>
+                 <div class="chart-section" style="margin-top: 20px;">
+                    <div id="realtimeAiGrowthChart"></div>
+                 </div>
+            </div>
+            
+            <div id="equityCalculator" class="tab-content">
+                 <div class="chart-section">
+                    <h2>Simulasi Pertumbuhan Ekuitas (Semua Trade)</h2>
+                    <div class="calculator-form">
+                        <div class="form-grid">
+                            <div class="input-group">
+                                <label for="initialCapitalInput">Modal Awal ($)</label>
+                                <input type="number" id="initialCapitalInput" value="1000">
+                            </div>
+                            
+                            <div class="input-group" id="percentRiskGroup">
+                                <label for="riskPercentInput">Risiko per Trade (%)</label>
+                                <input type="number" id="riskPercentInput" value="1" step="0.1">
+                            </div>
+                            
+                            <div class="input-group" id="dynamicBetGroup" style="display: none;">
+                                <label for="initialBetSizeInput">Ukuran Bet Awal ($)</label>
+                                <input type="number" id="initialBetSizeInput" value="10" step="1">
+                            </div>
+                            
+                            <div class="input-group">
+                                <label for="leverageInput">Leverage (misal: 10)</label>
+                                <input type="number" id="leverageInput" value="1" min="1" step="1">
+                            </div>
+                            
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="dynamicBetCheckbox">
+                                <label for="dynamicBetCheckbox">Dynamic Bet</label>
+                            </div>
+                             
+                            <button id="calculateEquityBtn">Hitung Ulang</button>
+                        </div>
+                    </div>
+                    <div id="equitySummary"></div>
+                    <div id="equityCurveChart"></div>
+                </div>
+            </div>
+
+            <div id="calendar" class="tab-content">
+                 <div class="calendar-container">
+                    <div class="calendar-header">
+                        <button id="prevMonthBtn">< Sebelumnya</button>
+                        <h2 id="calendarMonthYear"></h2>
+                        <button id="nextMonthBtn">Berikutnya ></button>
+                    </div>
+                    <div class="calendar-grid" id="calendarGridHeaders"></div>
+                    <div class="calendar-grid" id="calendarGrid"></div>
+                </div>
+                
+                <div class="pnl-summary-grid">
+                    <div class="card">
+                        <h2>Weekly P/L</h2>
+                        <div class="pnl-table-container" id="weeklyPnlTable"></div>
+                    </div>
+                    <div class="card">
+                        <h2>Monthly P/L</h2>
+                        <div class="pnl-table-container" id="monthlyPnlTable"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="dayTradesModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" id="modalCloseBtn">×</span>
+            <h2 id="modalDateHeader">Trades</h2>
+            <ul id="modalTradeList" class="modal-trade-list"></ul>
+        </div>
+    </div>
+
+    <script>
+        const TRADES_URL = 'https://raw.githubusercontent.com/exora8/exora-vulcan-android/refs/heads/main/trades.json';
+        const REFRESH_INTERVAL_MS = 60000;
+
+        let allClosedTrades = [], tradesByDate = {}, dailyPnl = {};
+        let tradeChartInstance = null, growthChartInstance = null, equityCurveChartInstance = null, aiGrowthChartInstance = null, realtimeAiGrowthChartInstance = null;
+        let calendarDate = new Date();
+        let autoRefreshInterval = null;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // ... listener yang sudah ada
+            document.getElementById('prevMonthBtn').addEventListener('click', () => changeMonth(-1));
+            document.getElementById('nextMonthBtn').addEventListener('click', () => changeMonth(1));
+            document.getElementById('tradeSelector').addEventListener('change', handleTradeSelection);
+            document.getElementById('modalCloseBtn').onclick = closeModal;
+            window.onclick = (event) => {
+                if (event.target == document.getElementById('dayTradesModal')) closeModal();
+            };
+            
+            document.getElementById('calculateEquityBtn').addEventListener('click', runEquitySimulation);
+            document.getElementById('dynamicBetCheckbox').addEventListener('change', toggleBetMode);
+            
+            ['initialCapitalInput', 'riskPercentInput', 'initialBetSizeInput', 'leverageInput'].forEach(id => {
+                document.getElementById(id).addEventListener('change', runEquitySimulation);
+            });
+
+            // BARU: Menambahkan listener untuk input file
+            document.getElementById('fileInput').addEventListener('change', handleFileSelect);
+            
+            toggleBetMode(); 
+            fetchAndProcessTrades(); // Tetap memuat dari URL saat pertama kali dibuka
+            // Pindahkan pengaturan interval ke dalam fungsi fetch agar bisa dikontrol
+        });
+        
+        // BARU: Fungsi untuk menangani pemilihan file lokal
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                return; // Tidak ada file yang dipilih
+            }
+
+            // Hentikan auto-refresh jika sedang berjalan
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+
+            const statusEl = document.getElementById('updateStatus');
+            const loaderEl = document.getElementById('loader');
+            statusEl.textContent = `Membaca file lokal: ${file.name}...`;
+            loaderEl.style.display = 'block';
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const trades = JSON.parse(e.target.result);
+                    analyzeAndDisplayTrades(trades);
+                    statusEl.textContent = `Data dari file '${file.name}' berhasil dimuat.`;
+                } catch (error) {
+                    console.error('Error parsing JSON from file:', error);
+                    statusEl.textContent = 'Gagal memuat file. File bukan format JSON yang valid.';
+                    alert('Gagal memuat file. Pastikan file yang dipilih adalah format JSON yang benar.');
+                } finally {
+                     loaderEl.style.display = 'none';
+                }
+            };
+            reader.onerror = function() {
+                console.error("Error reading file:", reader.error);
+                statusEl.textContent = 'Terjadi kesalahan saat membaca file.';
+                alert('Terjadi kesalahan saat membaca file.');
+                loaderEl.style.display = 'none';
+            };
+            reader.readAsText(file);
+        }
+
+        function toggleBetMode() {
+            const isDynamic = document.getElementById('dynamicBetCheckbox').checked;
+            document.getElementById('percentRiskGroup').style.display = isDynamic ? 'none' : 'block';
+            document.getElementById('dynamicBetGroup').style.display = isDynamic ? 'block' : 'none';
+            if (allClosedTrades.length > 0) {
+                 runEquitySimulation();
+            }
+        }
+        
+        async function fetchAndProcessTrades() {
+            const statusEl = document.getElementById('updateStatus');
+            const loaderEl = document.getElementById('loader');
+            statusEl.textContent = 'Memperbarui data dari URL...';
+            loaderEl.style.display = 'block';
+
+            // Hentikan interval sebelumnya untuk mencegah tumpukan
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            
+            try {
+                const response = await fetch(`${TRADES_URL}?t=${new Date().getTime()}`);
+                if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
+                const trades = await response.json();
+                analyzeAndDisplayTrades(trades);
+                statusEl.textContent = `Terakhir diperbarui dari URL: ${new Date().toLocaleTimeString('id-ID')}`;
+                
+                // Setel interval lagi HANYA jika fetch berhasil
+                autoRefreshInterval = setInterval(fetchAndProcessTrades, REFRESH_INTERVAL_MS);
+            } catch (error) {
+                console.error('Error fetching trades:', error);
+                statusEl.textContent = `Gagal memperbarui dari URL. Coba muat file lokal.`;
+                alert('Gagal mengambil data trade dari URL. Periksa koneksi internet atau konsol untuk detail.');
+            } finally {
+                loaderEl.style.display = 'none';
+            }
+        }
+
+        function analyzeAndDisplayTrades(trades) {
+            const closedTrades = trades.filter(trade => trade.status === 'CLOSED');
+            if (closedTrades.length === 0) {
+                document.getElementById('updateStatus').textContent = "Tidak ada trade dengan status 'CLOSED' ditemukan dalam data.";
+                alert("Tidak ada trade dengan status 'CLOSED' ditemukan.");
+                return;
+            }
+            
+            const selector = document.getElementById('tradeSelector');
+            const previouslySelectedTradeId = selector.value;
+            
+            let initialSortedTrades = closedTrades.sort((a, b) => new Date(a.exitTimestamp) - new Date(b.exitTimestamp));
+
+            tradesByDate = {}, dailyPnl = {}, weeklyPnl = {}, monthlyPnl = {};
+            
+            let validTradesForProcessing = [];
+            initialSortedTrades.forEach((trade, index) => {
+                const entryDate = new Date(trade.entryTimestamp);
+                const exitDate = new Date(trade.exitTimestamp);
+                
+                if (isNaN(entryDate.getTime()) || isNaN(exitDate.getTime())) {
+                    console.warn('Skipping trade due to invalid timestamp:', trade);
+                    return;
+                }
+                
+                trade.originalIndex = index;
+                validTradesForProcessing.push(trade);
+                
+                const dailyKey = entryDate.toISOString().split('T')[0]; 
+                const weeklyKey = getWeekStartDate(exitDate);
+                const monthlyKey = exitDate.toISOString().slice(0, 7);
+                
+                if (!tradesByDate[dailyKey]) tradesByDate[dailyKey] = [];
+                tradesByDate[dailyKey].push(trade);
+
+                dailyPnl[dailyKey] = (dailyPnl[dailyKey] || 0) + trade.pl_percent;
+                weeklyPnl[weeklyKey] = (weeklyPnl[weeklyKey] || 0) + trade.pl_percent;
+                monthlyPnl[monthlyKey] = (monthlyPnl[monthlyKey] || 0) + trade.pl_percent;
+            });
+            
+            allClosedTrades = validTradesForProcessing;
+            if (allClosedTrades.length === 0) {
+                 document.getElementById('updateStatus').textContent = "Tidak ada trade valid ditemukan.";
+                alert("Tidak ada trade 'CLOSED' dengan timestamp yang valid ditemukan.");
+                return;
+            }
+            
+            const pnlValues = Object.values(dailyPnl);
+            const maxProfitPerDay = pnlValues.length > 0 ? Math.max(0, ...pnlValues) : 0;
+            const maxDrawdownPerDay = pnlValues.length > 0 ? Math.min(0, ...pnlValues) : 0;
+            
+            let cumulativePnl = 0;
+            const growthData = allClosedTrades.map(trade => {
+                cumulativePnl += trade.pl_percent;
+                return { x: new Date(trade.exitTimestamp).getTime(), y: cumulativePnl };
+            });
+            if (growthData.length > 0) {
+                growthData.unshift({ x: new Date(allClosedTrades[0].entryTimestamp).getTime(), y: 0 });
+            }
+
+            displaySummary({
+                totalTrades: allClosedTrades.length,
+                winrate: (allClosedTrades.filter(t => t.pl_percent > 0).length / allClosedTrades.length) * 100,
+                averagePnl: allClosedTrades.reduce((acc, t) => acc + t.pl_percent, 0) / allClosedTrades.length,
+                maxProfitPerDay, maxDrawdownPerDay
+            });
+            populateTradeSelector();
+            
+            if (previouslySelectedTradeId && selector.querySelector(`option[value="${previouslySelectedTradeId}"]`)) {
+                selector.value = previouslySelectedTradeId;
+            }
+            
+            renderGrowthChart(growthData);
+            renderPnLCalendar();
+            renderPnlSummaryTables(weeklyPnl, monthlyPnl);
+            runEquitySimulation();
+            
+            const backtestAiTrades = allClosedTrades.filter(trade => 
+                trade.entryReason && trade.entryReason.startsWith('Backtest')
+            );
+            const realtimeAiTrades = allClosedTrades.filter(trade => 
+                trade.entryReason && trade.entryReason.startsWith('AI:')
+            );
+            renderAiPerformance(backtestAiTrades, realtimeAiTrades);
+
+            document.getElementById('resultsContainer').style.display = 'block';
+            
+            const selectedTradeIndex = document.getElementById('tradeSelector').value;
+            const selectedTrade = allClosedTrades.find(t => t.originalIndex == selectedTradeIndex);
+            if (selectedTrade) {
+                 renderTradeChart(selectedTrade);
+            }
+        }
+        
+        function renderAiPerformance(backtestTrades, realtimeTrades) {
+            // --- PART 1: BACKTEST AI PERFORMANCE (Existing Logic) ---
+            const backtestContainer = document.getElementById('aiGrowthChart').parentElement;
+            
+            if (!backtestTrades || backtestTrades.length === 0) {
+                document.getElementById('aiTotalTradesValue').textContent = '0';
+                document.getElementById('aiWinrateValue').textContent = '0.00%';
+                document.getElementById('aiAveragePnlValue').textContent = '0.00%';
+                if (aiGrowthChartInstance) aiGrowthChartInstance.destroy();
+                document.querySelector("#aiGrowthChart").innerHTML = '<p style="text-align: center; padding: 20px;">Tidak ada data trade AI (Backtest) yang ditemukan.</p>';
+            } else {
+                let processedAiTrades = [...backtestTrades];
+                const lastTrade = processedAiTrades[processedAiTrades.length - 1];
+                const lastTradeDate = new Date(lastTrade.exitTimestamp);
+                const currentDate = new Date();
+
+                if (lastTradeDate.getFullYear() === currentDate.getFullYear() && lastTradeDate.getMonth() === currentDate.getMonth()) {
+                    const incompleteMonth = lastTradeDate.getMonth();
+                    const incompleteYear = lastTradeDate.getFullYear();
+                    processedAiTrades = processedAiTrades.filter(trade => {
+                        const tradeDate = new Date(trade.exitTimestamp);
+                        return !(tradeDate.getFullYear() === incompleteYear && tradeDate.getMonth() === incompleteMonth);
+                    });
+                }
+                
+                if (processedAiTrades.length === 0) {
+                     document.getElementById('aiTotalTradesValue').textContent = '0';
+                     document.getElementById('aiWinrateValue').textContent = '0.00%';
+                     document.getElementById('aiAveragePnlValue').textContent = '0.00%';
+                     if (aiGrowthChartInstance) aiGrowthChartInstance.destroy();
+                     document.querySelector("#aiGrowthChart").innerHTML = '<p style="text-align: center; padding: 20px;">Tidak ada data backtest dari bulan-bulan yang telah selesai.</p>';
+                } else {
+                    const aiWinrate = (processedAiTrades.filter(t => t.pl_percent > 0).length / processedAiTrades.length) * 100;
+                    const aiAveragePnl = processedAiTrades.reduce((acc, t) => acc + t.pl_percent, 0) / processedAiTrades.length;
+                    
+                    document.getElementById('aiTotalTradesValue').textContent = processedAiTrades.length;
+                    document.getElementById('aiWinrateValue').textContent = `${aiWinrate.toFixed(2)}%`;
+                    const avgPnlEl = document.getElementById('aiAveragePnlValue');
+                    avgPnlEl.textContent = `${aiAveragePnl.toFixed(2)}%`;
+                    avgPnlEl.className = `value ${aiAveragePnl >= 0 ? 'pnl-value-positive' : 'pnl-value-negative'}`;
+
+                    const reversedAiTrades = [...processedAiTrades].reverse();
+                    let cumulativePnl = 0;
+                    const reversedGrowthData = [];
+                    for (const trade of reversedAiTrades) {
+                        cumulativePnl += trade.pl_percent;
+                        reversedGrowthData.push({ x: new Date(trade.exitTimestamp).getTime(), y: cumulativePnl });
+                    }
+                    if (processedAiTrades.length > 0) {
+                         const lastCompleteTradeTime = new Date(processedAiTrades[processedAiTrades.length - 1].exitTimestamp).getTime();
+                         reversedGrowthData.push({ x: lastCompleteTradeTime + 1, y: 0 }); 
+                    }
+                    const aiGrowthData = reversedGrowthData.sort((a, b) => a.x - b.x);
+
+                    if (aiGrowthChartInstance) aiGrowthChartInstance.destroy();
+                    const options = {
+                        series: [{ name: 'AI Reversed Cumulative P/L', data: aiGrowthData }],
+                        chart: { type: 'area', height: 450, zoom: { enabled: true }, animations: { enabled: true } },
+                        dataLabels: { enabled: false },
+                        stroke: { curve: 'stepline', width: 2 },
+                        title: { text: 'AI Growth Curve (Reversed, Complete Months Only)', align: 'left', style: { color: 'var(--text-color)' } },
+                        xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
+                        yaxis: { labels: { style: { colors: 'var(--text-muted)' }, formatter: (val) => `${val.toFixed(1)}%` } },
+                        tooltip: { x: { format: 'dd MMM yyyy HH:mm' }, y: { title: { formatter: () => 'P/L Kumulatif Mundur' } } }, 
+                        theme: { mode: 'dark' },
+                        fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.7, opacityTo: 0.2, stops: [0, 90, 100] } }
+                    };
+                    document.querySelector("#aiGrowthChart").innerHTML = ''; // Clear message
+                    aiGrowthChartInstance = new ApexCharts(document.querySelector("#aiGrowthChart"), options);
+                    aiGrowthChartInstance.render();
+                }
+            }
+
+            // --- PART 2: REAL-TIME AI PERFORMANCE (New Logic) ---
+            const rtContainer = document.getElementById('realtimeAiGrowthChart');
+            
+            if (!realtimeTrades || realtimeTrades.length === 0) {
+                document.getElementById('rtAiTotalTradesValue').textContent = '0';
+                document.getElementById('rtAiWinrateValue').textContent = '0.00%';
+                document.getElementById('rtAiAveragePnlValue').textContent = '0.00%';
+                if (realtimeAiGrowthChartInstance) realtimeAiGrowthChartInstance.destroy();
+                rtContainer.innerHTML = '<p style="text-align: center; padding: 20px;">Tidak ada data trade Real-time AI yang ditemukan.</p>';
+            } else {
+                const rtWinrate = (realtimeTrades.filter(t => t.pl_percent > 0).length / realtimeTrades.length) * 100;
+                const rtAveragePnl = realtimeTrades.reduce((acc, t) => acc + t.pl_percent, 0) / realtimeTrades.length;
+                
+                document.getElementById('rtAiTotalTradesValue').textContent = realtimeTrades.length;
+                document.getElementById('rtAiWinrateValue').textContent = `${rtWinrate.toFixed(2)}%`;
+                const rtAvgPnlEl = document.getElementById('rtAiAveragePnlValue');
+                rtAvgPnlEl.textContent = `${rtAveragePnl.toFixed(2)}%`;
+                rtAvgPnlEl.className = `value ${rtAveragePnl >= 0 ? 'pnl-value-positive' : 'pnl-value-negative'}`;
+
+                let cumulativePnl = 0;
+                const rtGrowthData = realtimeTrades.map(trade => {
+                    cumulativePnl += trade.pl_percent;
+                    return { x: new Date(trade.exitTimestamp).getTime(), y: cumulativePnl };
+                });
+                if (rtGrowthData.length > 0) {
+                    rtGrowthData.unshift({ x: new Date(realtimeTrades[0].entryTimestamp).getTime(), y: 0 });
+                }
+
+                if (realtimeAiGrowthChartInstance) realtimeAiGrowthChartInstance.destroy();
+                const options = {
+                    series: [{ name: 'Real-time Cumulative P/L', data: rtGrowthData }],
+                    chart: { type: 'area', height: 450, zoom: { enabled: true }, animations: { enabled: true } },
+                    dataLabels: { enabled: false },
+                    stroke: { curve: 'stepline', width: 2 },
+                    title: { text: 'Real-time AI Growth Curve', align: 'left', style: { color: 'var(--text-color)' } },
+                    xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
+                    yaxis: { labels: { style: { colors: 'var(--text-muted)' }, formatter: (val) => `${val.toFixed(1)}%` } },
+                    tooltip: { x: { format: 'dd MMM yyyy HH:mm' } },
+                    theme: { mode: 'dark' },
+                    fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.7, opacityTo: 0.2, stops: [0, 90, 100] } }
+                };
+                rtContainer.innerHTML = ''; // Clear message
+                realtimeAiGrowthChartInstance = new ApexCharts(rtContainer, options);
+                realtimeAiGrowthChartInstance.render();
+            }
+        }
+
+
+        function displaySummary(data) {
+            document.getElementById('totalTradesValue').textContent = data.totalTrades;
+            document.getElementById('winrateValue').textContent = `${(data.winrate || 0).toFixed(2)}%`;
+            const avgPnlElement = document.getElementById('averagePnlValue');
+            avgPnlElement.textContent = `${(data.averagePnl || 0).toFixed(2)}%`;
+            avgPnlElement.className = `value ${data.averagePnl >= 0 ? 'pnl-value-positive' : 'pnl-value-negative'}`;
+            document.getElementById('maxProfitValue').textContent = `${data.maxProfitPerDay.toFixed(2)}%`;
+            document.getElementById('maxDrawdownValue').textContent = `${data.maxDrawdownPerDay.toFixed(2)}%`;
+        }
+        
+        function populateTradeSelector() {
+            const selector = document.getElementById('tradeSelector');
+            selector.innerHTML = ''; 
+            [...allClosedTrades].reverse().forEach((trade) => {
+                const option = document.createElement('option');
+                option.value = trade.originalIndex;
+                const pnlStatus = trade.pl_percent > 0 ? 'WIN' : (trade.pl_percent < 0 ? 'LOSS' : 'BE');
+                option.textContent = `${new Date(trade.entryTimestamp).toLocaleString('id-ID')} - ${trade.type} - ${trade.instrumentId} - ${pnlStatus}: ${trade.pl_percent.toFixed(2)}%`;
+                selector.appendChild(option);
+            });
+            if (selector.options.length > 0 && !selector.value) {
+                selector.value = selector.options[0].value;
+            }
+        }
+
+        function handleTradeSelection(event) {
+            const selectedTrade = allClosedTrades.find(trade => trade.originalIndex == event.target.value);
+            renderTradeChart(selectedTrade);
+        }
+        
+        function runEquitySimulation() {
+            if (allClosedTrades.length === 0) return;
+
+            const initialCapital = parseFloat(document.getElementById('initialCapitalInput').value);
+            const leverage = parseFloat(document.getElementById('leverageInput').value);
+            const isDynamicBet = document.getElementById('dynamicBetCheckbox').checked;
+
+            if (isNaN(initialCapital) || initialCapital <= 0 || isNaN(leverage) || leverage < 1) {
+                alert("Mohon periksa input Modal Awal dan Leverage. Keduanya harus angka positif (Leverage >= 1).");
+                return;
+            }
+            
+            const tradesForSim = allClosedTrades; 
+            const losingTrades = tradesForSim.filter(t => t.pl_percent < 0);
+            if (losingTrades.length === 0) {
+                alert("Simulasi tidak dapat dijalankan karena tidak ada data trade yang rugi untuk dijadikan dasar perhitungan risiko (1R).");
+                return;
+            }
+            const avgLossPct = losingTrades.reduce((sum, t) => sum + t.pl_percent, 0) / losingTrades.length;
+            const baseRiskUnit = Math.abs(avgLossPct);
+
+            let currentEquity = initialCapital;
+            let peakEquity = initialCapital;
+            let maxDrawdown = 0;
+            const equityData = [{
+                x: new Date(tradesForSim[0].entryTimestamp).getTime() - 3600000,
+                y: initialCapital
+            }];
+            
+            let dollarRisk, currentBetSize, nextDoublingMilestone;
+
+            if (isDynamicBet) {
+                currentBetSize = parseFloat(document.getElementById('initialBetSizeInput').value);
+                if (isNaN(currentBetSize) || currentBetSize <= 0) {
+                     alert("Mohon masukkan Ukuran Bet Awal yang valid (angka positif).");
+                     return;
+                }
+                nextDoublingMilestone = initialCapital * 2;
+            } else {
+                const riskPercent = parseFloat(document.getElementById('riskPercentInput').value);
+                 if (isNaN(riskPercent) || riskPercent <= 0) {
+                     alert("Mohon masukkan Risiko per Trade (%) yang valid (angka positif).");
+                     return;
+                }
+            }
+            
+            for (const trade of tradesForSim) {
+                if (isDynamicBet) {
+                    if (currentEquity >= nextDoublingMilestone) {
+                        currentBetSize *= 2;
+                        nextDoublingMilestone *= 2;
+                    }
+                    dollarRisk = currentBetSize;
+                } else {
+                    const riskPercent = parseFloat(document.getElementById('riskPercentInput').value);
+                    dollarRisk = currentEquity * (riskPercent / 100);
+                }
+
+                const rMultiple = trade.pl_percent / baseRiskUnit;
+                const dollarPnl = dollarRisk * rMultiple * leverage;
+                
+                currentEquity += dollarPnl;
+                
+                if (currentEquity > peakEquity) peakEquity = currentEquity;
+                
+                const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
+                if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+
+                equityData.push({
+                    x: new Date(trade.exitTimestamp).getTime(),
+                    y: currentEquity
+                });
+            }
+
+            renderEquityCurveChart(equityData, initialCapital);
+            displayEquitySummary({
+                initial: initialCapital,
+                final: currentEquity,
+                profit: currentEquity - initialCapital,
+                maxDrawdown: maxDrawdown
+            });
+        }
+        
+        function renderTradeChart(trade) {
+            if (!trade) return;
+            if (tradeChartInstance) tradeChartInstance.destroy();
+
+            if (!trade.entry_snapshot || !trade.entry_snapshot.details || !trade.entry_snapshot.details.candles) {
+                document.querySelector("#tradeChart").innerHTML = '<p style="text-align:center; padding: 20px;">Data lilin tidak tersedia untuk trade ini.</p>';
+                return;
+            }
+            const candleData = trade.entry_snapshot.details.candles;
+
+            const candleDurationMs = 5 * 60 * 1000;
+            const entryTime = new Date(trade.entryTimestamp).getTime();
+            
+            const seriesData = candleData.map((candle, index) => ({
+                x: entryTime - ((candleData.length - index) * candleDurationMs),
+                y: [candle.open, candle.high, candle.low, candle.close]
+            }));
+            const options = {
+                series: [{ data: seriesData }],
+                chart: { type: 'candlestick', height: 450, toolbar: { show: true }, animations: { enabled: true, easing: 'easeinout', speed: 500 } },
+                theme: { mode: 'dark', palette: 'palette1' },
+                annotations: {
+                    yaxis: [{ y: trade.entryPrice, borderColor: trade.type === 'LONG' ? 'var(--green-pnl)' : 'var(--red-pnl)', strokeDashArray: 4, label: { borderColor: trade.type === 'LONG' ? 'var(--green-pnl)' : 'var(--red-pnl)', style: { color: '#fff', background: trade.type === 'LONG' ? 'var(--green-pnl)' : 'var(--red-pnl)' }, text: `Entry: ${trade.entryPrice.toFixed(5)}` } }, { y: trade.exitPrice, borderColor: 'var(--text-muted)', strokeDashArray: 4, label: { borderColor: 'var(--text-muted)', style: { color: '#fff', background: 'var(--text-muted)' }, text: `Exit: ${trade.exitPrice.toFixed(5)}` } }],
+                    points: [{ x: new Date(trade.entryTimestamp).getTime(), y: trade.entryPrice, marker: { size: 8, fillColor: '#fff', strokeColor: trade.type === 'LONG' ? 'var(--green-pnl)' : 'var(--red-pnl)', strokeWidth: 3, shape: trade.type === 'LONG' ? 'arrowUp' : 'arrowDown' } }, { x: new Date(trade.exitTimestamp).getTime(), y: trade.exitPrice, marker: { size: 6, fillColor: 'var(--text-muted)', strokeColor: 'var(--text-muted)', shape: 'circle' } }]
+                },
+                title: { text: `${trade.instrumentId} - ${trade.type}`, align: 'left', style: { color: 'var(--text-color)' } },
+                xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
+                yaxis: { tooltip: { enabled: true }, labels: { style: { colors: 'var(--text-muted)' }, formatter: (val) => val.toFixed(5) } },
+                tooltip: { x: { format: 'dd MMM yyyy HH:mm' } }
+            };
+            document.querySelector("#tradeChart").innerHTML = ''; // Clear message
+            tradeChartInstance = new ApexCharts(document.querySelector("#tradeChart"), options);
+            tradeChartInstance.render();
+        }
+
+        function renderGrowthChart(growthData) {
+            if (growthChartInstance) growthChartInstance.destroy();
+            const options = {
+                series: [{ name: 'Cumulative P/L', data: growthData }],
+                chart: { type: 'area', height: 450, zoom: { enabled: true }, animations: { enabled: true } },
+                dataLabels: { enabled: false }, stroke: { curve: 'stepline', width: 2 },
+                title: { text: 'Cumulative P/L Growth (All Trades)', align: 'left', style: { color: 'var(--text-color)' } },
+                xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
+                yaxis: { labels: { style: { colors: 'var(--text-muted)' }, formatter: (val) => `${val.toFixed(1)}%` } },
+                tooltip: { x: { format: 'dd MMM yyyy HH:mm' } }, theme: { mode: 'dark' },
+                fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.7, opacityTo: 0.2, stops: [0, 90, 100] } }
+            };
+            growthChartInstance = new ApexCharts(document.querySelector("#growthChart"), options);
+            growthChartInstance.render();
+        }
+        
+        function renderEquityCurveChart(equityData, initialCapital) {
+            if (equityCurveChartInstance) equityCurveChartInstance.destroy();
+            
+            const options = {
+                series: [{ name: 'Simulasi Ekuitas', data: equityData }],
+                chart: { type: 'area', height: 450, zoom: { enabled: true }, animations: { enabled: true } },
+                dataLabels: { enabled: false },
+                stroke: { curve: 'stepline', width: 2 },
+                title: { text: 'Kurva Pertumbuhan Ekuitas (Simulasi)', align: 'left', style: { color: 'var(--text-color)' } },
+                annotations: {
+                    yaxis: [{
+                        y: initialCapital,
+                        borderColor: '#999',
+                        label: { borderColor: '#999', style: { color: '#fff', background: '#999' }, text: 'Modal Awal' }
+                    }]
+                },
+                xaxis: { type: 'datetime', labels: { style: { colors: 'var(--text-muted)' } } },
+                yaxis: {
+                    labels: { style: { colors: 'var(--text-muted)' }, formatter: (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
+                },
+                tooltip: {
+                    x: { format: 'dd MMM yyyy' },
+                    y: { formatter: (val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
+                },
+                theme: { mode: 'dark' },
+                fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.7, opacityTo: 0.2, stops: [0, 90, 100] } }
+            };
+            
+            equityCurveChartInstance = new ApexCharts(document.querySelector("#equityCurveChart"), options);
+            equityCurveChartInstance.render();
+        }
+        
+        function displayEquitySummary(summary) {
+            const summaryEl = document.getElementById('equitySummary');
+            const profitClass = summary.profit >= 0 ? 'pnl-value-positive' : 'pnl-value-negative';
+            
+            summaryEl.innerHTML = `
+                <p>Modal Akhir: <span class="${profitClass}">$${summary.final.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></p>
+                <p>Total Profit: <span class="${profitClass}">$${summary.profit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></p>
+                <p>Max Drawdown: <span class="pnl-value-negative">${summary.maxDrawdown.toFixed(2)}%</span></p>
+            `;
+        }
+
+        function renderPnlSummaryTables(weeklyPnl, monthlyPnl) {
+            document.getElementById('weeklyPnlTable').innerHTML = createPnlTable(weeklyPnl, "Week Starting");
+            document.getElementById('monthlyPnlTable').innerHTML = createPnlTable(monthlyPnl, "Month");
+        }
+
+        function createPnlTable(pnlData, keyHeader) {
+            let tableHtml = `<table class="pnl-table"><thead><tr><th>${keyHeader}</th><th>Total P/L</th></tr></thead><tbody>`;
+            const sortedKeys = Object.keys(pnlData).sort((a, b) => new Date(b) - new Date(a));
+            if (sortedKeys.length === 0) return '<p>No trade data.</p>';
+            
+            for (const key of sortedKeys) {
+                const value = pnlData[key];
+                const pnlClass = value >= 0 ? 'pnl-value-positive' : 'pnl-value-negative';
+                tableHtml += `<tr><td>${key}</td><td class="${pnlClass}">${value.toFixed(2)}%</td></tr>`;
+            }
+            return tableHtml + '</tbody></table>';
+        }
+
+        function getWeekStartDate(d) {
+            const date = new Date(d);
+            const day = date.getDay();
+            const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+            return new Date(date.setDate(diff)).toISOString().split('T')[0];
+        }
+        
+        function changeMonth(direction) {
+            calendarDate.setMonth(calendarDate.getMonth() + direction);
+            renderPnLCalendar();
+        }
+
+        function renderPnLCalendar() {
+            const grid = document.getElementById('calendarGrid');
+            const headerGrid = document.getElementById('calendarGridHeaders');
+            grid.innerHTML = ''; headerGrid.innerHTML = '';
+            document.getElementById('calendarMonthYear').textContent = calendarDate.toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+            
+            const month = calendarDate.getMonth(), year = calendarDate.getFullYear();
+            const firstDayOfMonth = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            ['M', 'S', 'S', 'R', 'K', 'J', 'S'].forEach(day => headerGrid.innerHTML += `<div class="calendar-day-header">${day}</div>`);
+            
+            const startDay = (firstDayOfMonth === 0) ? 6 : firstDayOfMonth - 1;
+            for (let i = 0; i < startDay; i++) grid.innerHTML += `<div class="calendar-day other-month"></div>`;
+
+            for (let i = 1; i <= daysInMonth; i++) {
+                const dayCell = document.createElement('div');
+                const dateKey = new Date(year, month, i).toISOString().split('T')[0];
+                dayCell.className = 'calendar-day';
+                dayCell.innerHTML = `<span class="day-number">${i}</span>`;
+                if (dailyPnl[dateKey]) {
+                    dayCell.classList.add('has-trades');
+                    const pnl = dailyPnl[dateKey];
+                    dayCell.innerHTML += `<div class="day-pnl ${pnl >= 0 ? 'pnl-value-positive' : 'pnl-value-negative'}">${pnl.toFixed(2)}%</div>`;
+                    dayCell.onclick = () => showDayTradesModal(dateKey);
+                }
+                grid.appendChild(dayCell);
+            }
+        }
+        
+        function showDayTradesModal(dateKey) {
+            const trades = tradesByDate[dateKey];
+            if (!trades) return;
+            document.getElementById('modalDateHeader').textContent = `Trades pada ${new Date(dateKey).toLocaleDateString('id-ID', { year: 'numeric', month: 'long', day: 'numeric' })}`;
+            const list = document.getElementById('modalTradeList');
+            list.innerHTML = '';
+            trades.forEach(trade => {
+                const item = document.createElement('li');
+                const pnlClass = trade.pl_percent >= 0 ? 'pnl-value-positive' : 'pnl-value-negative';
+                item.innerHTML = `<span>${new Date(trade.entryTimestamp).toLocaleTimeString('id-ID')} - ${trade.type}</span><span class="${pnlClass}">${trade.pl_percent.toFixed(2)}%</span>`;
+                item.onclick = () => {
+                    const tradeToRender = allClosedTrades.find(t => t.originalIndex === trade.originalIndex);
+                    if (tradeToRender) renderTradeChart(tradeToRender);
+                    document.getElementById('tradeSelector').value = trade.originalIndex;
+                    closeModal();
+                    openTab(null, 'details');
+                };
+                list.appendChild(item);
+            });
+            document.getElementById('dayTradesModal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('dayTradesModal').style.display = 'none';
+        }
+        
+        function openTab(evt, tabName) {
+            document.querySelectorAll(".tab-content").forEach(tc => tc.style.display = "none");
+            document.querySelectorAll(".tab-button").forEach(tb => tb.classList.remove("active"));
+            document.getElementById(tabName).style.display = "block";
+            const activeTabButton = evt ? evt.currentTarget : document.querySelector(`.tab-button[onclick*="'${tabName}'"]`);
+            if (activeTabButton) activeTabButton.classList.add("active");
+            
+            if (tabName === 'details' && tradeChartInstance) tradeChartInstance.updateOptions({});
+            if (tabName === 'growth' && growthChartInstance) growthChartInstance.updateOptions({});
+            // Force redraw for both charts in the AI tab
+            if (tabName === 'aiPerformance') {
+                if (aiGrowthChartInstance) aiGrowthChartInstance.updateOptions({});
+                if (realtimeAiGrowthChartInstance) realtimeAiGrowthChartInstance.updateOptions({});
+            }
+            if (tabName === 'equityCalculator' && equityCurveChartInstance) equityCurveChartInstance.updateOptions({});
+        }
+    </script>
+</body>
+</html>
